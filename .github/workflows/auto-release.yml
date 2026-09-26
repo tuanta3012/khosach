@@ -215,7 +215,7 @@ jobs:
       # 12. Cập nhật version.json
       - name: Update version.json
         run: |
-          APK_URL="https://github.com/tuanta3012/sotietkiem/releases/download/v${{ steps.auto_version.outputs.NAME }}/khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
+          APK_URL="https://github.com/tuanta3012/khosach/releases/download/v${{ steps.auto_version.outputs.NAME }}/khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
           cat <<EOF > version.json
           {
             "version": "${{ steps.auto_version.outputs.NAME }}",
