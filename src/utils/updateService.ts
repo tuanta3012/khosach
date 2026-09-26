@@ -16,8 +16,8 @@ export interface UpdateCheckResult {
 
 // Danh sách URL lấy version.json (hỗ trợ fallback nếu một domain bị chặn)
 const VERSION_URLS = [
-  'https://raw.githubusercontent.com/tuanta3012/khosach/main/version.json',
   'https://github.com/tuanta3012/khosach/raw/refs/heads/main/version.json',
+  'https://raw.githubusercontent.com/tuanta3012/khosach/main/version.json'
 ];
 
 /**
@@ -48,6 +48,7 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
     try {
       // Thêm cache-busting timestamp để luôn lấy bản mới nhất
       const cacheBustUrl = `${url}?t=${Date.now()}`;
+      console.log(`[UpdateService] Đang tải thông tin phiên bản từ: ${url}`);
       const response = await fetch(cacheBustUrl, {
         method: 'GET',
         headers: {
@@ -62,6 +63,9 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
           const remoteVer = data.version.trim();
           const hasUpdate = compareSemver(remoteVer, CURRENT_APP_VERSION) > 0;
           
+          console.log(`[UpdateService] So sánh: Máy đang chạy: v${CURRENT_APP_VERSION} | Server mới nhất: v${remoteVer}`);
+          console.log(`[UpdateService] Kết quả so sánh (Có bản mới không?): ${hasUpdate ? 'CÓ (Sẽ hiện thông báo)' : 'KHÔNG (Bạn đang dùng bản mới nhất)'}`);
+
           const defaultApkUrl = `https://github.com/tuanta3012/khosach/releases/download/v${remoteVer}/khosach_v${remoteVer}.apk`;
 
           return {
@@ -72,8 +76,11 @@ export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
             apkUrl: data.apkUrl || defaultApkUrl,
           };
         }
+      } else {
+        console.warn(`[UpdateService] Yêu cầu thất bại với mã lỗi HTTP: ${response.status}`);
       }
     } catch (err) {
+      console.error(`[UpdateService] Không thể kết nối tới URL: ${url}`, err);
       lastError = err;
     }
   }
