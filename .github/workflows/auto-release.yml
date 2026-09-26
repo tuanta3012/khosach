@@ -103,7 +103,6 @@ jobs:
               <string name="title_activity_main">Kho Sách Cá Nhân</string>
               <string name="package_name">com.tietkiemgiadinh.app</string>
               <string name="custom_url_scheme">com.tietkiemgiadinh.app</string>
-              <string name="server_client_id">864440372329-fgoo89lqp196nvcptmfc7pquofuj8agt.apps.googleusercontent.com</string>
           </resources>
           EOF
 
@@ -226,6 +225,6 @@ jobs:
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add version.json
-          git commit -m "chore: auto-update version.json [skip ci]" || echo "No changes to commit"
+          git add version.json keystore/debug.keystore.b64 2>/dev/null || git add version.json
+          git commit -m "chore: auto-update version.json & keystore [skip ci]" || echo "No changes to commit"
           git push

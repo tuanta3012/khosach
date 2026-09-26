@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Settings as SettingsIcon, Tag, Plus, Trash2, Check, RefreshCw } from 'lucide-react';
+import { X, Settings as SettingsIcon, Tag, Plus, Trash2, Check, RefreshCw, ArrowUpCircle } from 'lucide-react';
 import { LibrarySettings } from '../types';
 import { useToast } from '../context/ToastContext';
+import { CURRENT_APP_VERSION } from '../version';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -9,6 +10,7 @@ interface SettingsModalProps {
   settings: LibrarySettings;
   onSaveSettings: (newSettings: LibrarySettings) => Promise<void>;
   onResetMasterData?: () => Promise<void>;
+  onCheckUpdates?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -17,6 +19,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   settings,
   onSaveSettings,
   onResetMasterData,
+  onCheckUpdates,
 }) => {
   const { showToast } = useToast();
   const [categories, setCategories] = useState<string[]>(settings.categoriesList || []);
@@ -135,6 +138,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </button>
                 </span>
               ))}
+            </div>
+          </div>
+
+          {/* Quản lý cập nhật phiên bản */}
+          <div className="pt-4 border-t border-slate-100">
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex items-center justify-between gap-3">
+              <div>
+                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <ArrowUpCircle className="w-4 h-4 text-emerald-600" />
+                  Phiên bản ứng dụng
+                </span>
+                <span className="text-xs text-slate-500 block mt-0.5">
+                  Bản cài đặt hiện tại: <strong className="text-slate-700">v{CURRENT_APP_VERSION}</strong>
+                </span>
+              </div>
+              {onCheckUpdates && (
+                <button
+                  type="button"
+                  onClick={onCheckUpdates}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition shadow-xs"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Kiểm tra cập nhật</span>
+                </button>
+              )}
             </div>
           </div>
 

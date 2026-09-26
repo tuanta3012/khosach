@@ -33,8 +33,6 @@ interface DataSyncModalProps {
   userEmail?: string;
   driveSyncUrl?: string;
   onSaveDriveSyncUrl?: (url: string) => void;
-  onGoogleSignIn?: () => Promise<void>;
-  onGoogleSignOut?: () => Promise<void>;
 }
 
 export const DataSyncModal: React.FC<DataSyncModalProps> = ({
@@ -45,8 +43,6 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   userEmail,
   driveSyncUrl = '',
   onSaveDriveSyncUrl,
-  onGoogleSignIn,
-  onGoogleSignOut,
 }) => {
   const { showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);

@@ -21,8 +21,11 @@ import { BatchScanner } from './components/BatchScanner';
 import { AddEditBookModal } from './components/AddEditBookModal';
 import { DataSyncModal } from './components/DataSyncModal';
 import { SettingsModal } from './components/SettingsModal';
+import { UpdateModal } from './components/UpdateModal';
 import { useToast } from './context/ToastContext';
 import { checkDuplicateBook } from './utils/fuzzyMatcher';
+import { checkForAppUpdate, UpdateCheckResult } from './utils/updateService';
+import { CURRENT_APP_VERSION } from './version';
 
 // Unique categories list extracted from user master books
 const DEFAULT_CATEGORIES = Array.from(
@@ -52,6 +55,10 @@ export default function App() {
   const [editingBook, setEditingBook] = useState<BookRecord | null>(null);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  
+  // App Update State
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
 
   // User auth state
   const [currentUser] = useState<AuthUser | null>(() => {
@@ -124,6 +131,38 @@ export default function App() {
       if (unsubscribe) unsubscribe();
     };
   }, []);
+
+  // 3. Tự động kiểm tra bản cập nhật mới (version.json từ GitHub)
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        const res = await checkForAppUpdate();
+        if (res.hasUpdate) {
+          setUpdateInfo(res);
+          setIsUpdateModalOpen(true);
+        }
+      } catch (err) {
+        console.log('Update check skipped:', err);
+      }
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Kiểm tra cập nhật thủ công khi người dùng bấm nút
+  const handleManualCheckUpdates = async () => {
+    try {
+      const res = await checkForAppUpdate();
+      if (res.hasUpdate) {
+        setUpdateInfo(res);
+        setIsUpdateModalOpen(true);
+      } else {
+        showToast(`Bạn đang sử dụng phiên bản mới nhất (v${CURRENT_APP_VERSION})!`, 'success');
+      }
+    } catch {
+      showToast('Không thể kết nối đến máy chủ kiểm tra cập nhật.', 'warning');
+    }
+  };
 
   // Lưu 1 cuốn sách
   const handleSaveBook = async (book: BookRecord) => {
@@ -288,6 +327,13 @@ export default function App() {
         settings={settings}
         onSaveSettings={handleSaveSettings}
         onResetMasterData={handleResetMasterData}
+        onCheckUpdates={handleManualCheckUpdates}
+      />
+
+      <UpdateModal
+        isOpen={isUpdateModalOpen}
+        onClose={() => setIsUpdateModalOpen(false)}
+        updateInfo={updateInfo}
       />
     </div>
   );
