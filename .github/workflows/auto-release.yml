@@ -207,7 +207,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.auto_version.outputs.NAME }}
-          name: Bản phát hành Kho Sách v${{ steps.auto_version.outputs.NAME }}
+          name: Phiên bản v${{ steps.auto_version.outputs.NAME }}
           body: |
             Bản dựng APK Android tự động cho ứng dụng Quản Lý Kho Sách Cá Nhân.
           files: khosach_v${{ steps.auto_version.outputs.NAME }}.apk
