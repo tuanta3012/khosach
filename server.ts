@@ -9,6 +9,16 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -137,6 +147,79 @@ Trả về thông tin chuẩn nhất:
       message: err?.message || String(err),
     });
   }
+});
+
+// API: Proxy Check App Update to bypass browser CORS / localized ISP blocks
+app.get('/api/app-update/check', async (req, res) => {
+  const SOURCES = [
+    {
+      name: 'GitHub Raw (refs/heads/main)',
+      url: 'https://raw.githubusercontent.com/tuanta3012/khosach/refs/heads/main/version.json',
+      isApi: false
+    },
+    {
+      name: 'GitHub Raw (main)',
+      url: 'https://raw.githubusercontent.com/tuanta3012/khosach/main/version.json',
+      isApi: false
+    },
+    {
+      name: 'jsDelivr CDN',
+      url: 'https://cdn.jsdelivr.net/gh/tuanta3012/khosach@main/version.json',
+      isApi: false
+    },
+    {
+      name: 'GitHub API',
+      url: 'https://api.github.com/repos/tuanta3012/khosach/contents/version.json',
+      isApi: true
+    }
+  ];
+
+  for (const src of SOURCES) {
+    try {
+      const cacheBustUrl = `${src.url}?t=${Date.now()}`;
+      console.log(`[Server UpdateCheck] Fetching from ${src.name}: ${cacheBustUrl}`);
+      
+      const response = await fetch(cacheBustUrl, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'aistudio-build-updater'
+        }
+      });
+
+      if (response.ok) {
+        const jsonResult = await response.json();
+        let data: any = null;
+
+        if (src.isApi) {
+          if (jsonResult.content && jsonResult.encoding === 'base64') {
+            const decodedStr = Buffer.from(jsonResult.content, 'base64').toString('utf8');
+            data = JSON.parse(decodedStr);
+          }
+        } else {
+          data = jsonResult;
+        }
+
+        if (data && data.version) {
+          console.log(`[Server UpdateCheck] Successfully fetched version ${data.version} from ${src.name}`);
+          return res.json({
+            success: true,
+            version: data.version.trim(),
+            notes: data.notes || '',
+            apkUrl: data.apkUrl || ''
+          });
+        }
+      } else {
+        console.warn(`[Server UpdateCheck] Source ${src.name} returned HTTP ${response.status}`);
+      }
+    } catch (err: any) {
+      console.error(`[Server UpdateCheck] Error fetching from ${src.name}:`, err.message || err);
+    }
+  }
+
+  return res.status(502).json({
+    success: false,
+    error: 'Không thể kết nối đến tất cả các máy chủ cập nhật của GitHub.'
+  });
 });
 
 // Vite Middleware for development
