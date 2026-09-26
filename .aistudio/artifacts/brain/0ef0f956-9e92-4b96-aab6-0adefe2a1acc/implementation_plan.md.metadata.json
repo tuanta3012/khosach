@@ -1,0 +1,6 @@
+{
+  "summary":  "Kế hoạch chuyển đổi toàn diện sang Ứng dụng Quản lý & Tra cứu Kho Sách Cá Nhân (Vietnamese Personal Library Manager) với TanStack Table, Gemini Vision OCR trích xuất gáy sách hàng loạt, kiểm tra trùng lặp Fuzzy Matching, Firestore Cloud Sync & Google Drive Backup.",
+  "updatedAt":  "2026-09-26T07:39:15.804997954Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

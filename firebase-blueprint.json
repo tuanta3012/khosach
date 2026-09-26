@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "BookRecord": {
+      "title": "BookRecord",
+      "description": "Bản ghi quản lý sách trong kho sách cá nhân (100% Text/Numeric: Tên sách, Tác giả, Thể loại, NXB)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "author": { "type": "string" },
+        "category": { "type": "string" },
+        "publisher": { "type": "string" },
+        "created_at": { "type": "number" },
+        "updated_at": { "type": "number" }
+      },
+      "required": ["id", "title", "author"]
+    },
+    "LibrarySettings": {
+      "title": "LibrarySettings",
+      "description": "Cấu hình chung của kho sách",
+      "type": "object",
+      "properties": {
+        "autoEnrichEnabled": { "type": "boolean" },
+        "categoriesList": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/books/{bookId}": {
+      "schema": "BookRecord",
+      "description": "Danh mục sách trong kho sách"
+    },
+    "/settings/{settingId}": {
+      "schema": "LibrarySettings",
+      "description": "Cấu hình kho sách"
+    }
+  }
+}
