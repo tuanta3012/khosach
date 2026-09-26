@@ -8,18 +8,27 @@ html, body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  margin: 0;
+  padding: 0;
+  background-color: #0f172a;
+  color: #f8fafc;
+  overflow-x: hidden;
 }
 
-/* Hiển thị các con số tài chính đều đặn, thẳng hàng đẹp mắt */
+/* Safe Area Insets for Mobile / Capacitor */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
 
-/* Capacitor Status Bar & Notch safe area support */
-.safe-area-header {
-  padding-top: env(safe-area-inset-top, 0px);
+.app-content-container {
+  padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
+  padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
 }
 
-.safe-area-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-}

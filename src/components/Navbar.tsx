@@ -33,7 +33,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <>
       {/* Top Bar for Mobile & Desktop */}
-      <header className="sticky top-0 z-40 bg-slate-900 text-white shadow-md border-b border-slate-800">
+      <header className="sticky top-0 z-40 bg-slate-900 text-white shadow-md border-b border-slate-800 pt-[env(safe-area-inset-top,0px)]">
         <div className="max-w-7xl mx-auto px-3 sm:px-6">
           <div className="flex items-center justify-between h-14 sm:h-16 gap-2">
             {/* Logo & Branding */}
@@ -115,8 +115,8 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       </header>
 
-      {/* Bottom Sticky Navigation Dock for Mobile (Icon-only, compact 50% height) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 h-11 px-6 flex items-center justify-around shadow-2xl">
+      {/* Bottom Sticky Navigation Dock for Mobile (Icon-only, touch-optimized) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-6 pt-2 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] flex items-center justify-around shadow-2xl">
         <button
           onClick={() => onTabChange('table')}
           title={`Kho Sách (${totalBooksCount})`}

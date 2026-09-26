@@ -99,10 +99,10 @@ jobs:
           cat << 'EOF' > android/app/src/main/res/values/strings.xml
           <?xml version='1.0' encoding='utf-8'?>
           <resources>
-              <string name="app_name">Kho Sách Cá Nhân</string>
-              <string name="title_activity_main">Kho Sách Cá Nhân</string>
-              <string name="package_name">com.tietkiemgiadinh.app</string>
-              <string name="custom_url_scheme">com.tietkiemgiadinh.app</string>
+              <string name="app_name">Kho sách</string>
+              <string name="title_activity_main">Kho sách</string>
+              <string name="package_name">com.khosach.app</string>
+              <string name="custom_url_scheme">com.khosach.app</string>
           </resources>
           EOF
 
@@ -161,21 +161,22 @@ jobs:
           
           if [ -f "android/app/build.gradle" ]; then
             python3 -c "
-          with open('android/app/build.gradle', 'r') as f:
-              content = f.read()
-          if 'signingConfigs' not in content:
-              content = content.replace('buildTypes {', '''signingConfigs {
-                  debug {
-                      storeFile file('debug.keystore')
-                      storePassword 'android'
-                      keyAlias 'androiddebugkey'
-                      keyPassword 'android'
-                  }
-              }
-              buildTypes {''')
-              with open('android/app/build.gradle', 'w') as f:
-                  f.write(content)
-          "
+with open('android/app/build.gradle', 'r') as f:
+    content = f.read()
+if 'signingConfigs' not in content:
+    content = content.replace('buildTypes {', '''signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {''')
+content = content.replace('minifyEnabled false', 'minifyEnabled true\n            shrinkResources true')
+with open('android/app/build.gradle', 'w') as f:
+    f.write(content)
+"
           fi
           
           SHA1_VAL=$(keytool -list -v -keystore keystore/debug.keystore -alias androiddebugkey -storepass android | grep "SHA1:" | head -1 | awk '{print $2}')

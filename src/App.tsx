@@ -271,8 +271,8 @@ export default function App() {
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
       />
 
-      {/* Main Content Area optimized for Xiaomi 15T Pro & mobile viewports */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-2.5 sm:p-6 pb-14 md:pb-8">
+      {/* Main Content Area optimized for mobile viewports & safe area insets */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 py-3 pb-24 md:pb-8 app-content-container">
         {currentTab === 'table' && (
           <BookTableView
             books={books}
