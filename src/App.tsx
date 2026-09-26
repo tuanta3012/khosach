@@ -21,10 +21,10 @@ import { BatchScanner } from './components/BatchScanner';
 import { AddEditBookModal } from './components/AddEditBookModal';
 import { DataSyncModal } from './components/DataSyncModal';
 import { SettingsModal } from './components/SettingsModal';
-import { UpdateModal } from './components/UpdateModal';
+import { UpdateChecker } from './components/UpdateChecker';
 import { useToast } from './context/ToastContext';
 import { checkDuplicateBook } from './utils/fuzzyMatcher';
-import { checkForAppUpdate, UpdateCheckResult } from './utils/updateService';
+import { useAutoUpdate } from './hooks/useAutoUpdate';
 import { CURRENT_APP_VERSION } from './version';
 
 // Unique categories list extracted from user master books
@@ -56,9 +56,15 @@ export default function App() {
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   
-  // App Update State
-  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  // App Auto Update (Custom Hook)
+  const {
+    isChecking,
+    updateInfo,
+    isModalOpen: isUpdateModalOpen,
+    checkForUpdate,
+    openApkDownload,
+    closeModal: closeUpdateModal
+  } = useAutoUpdate();
 
   // User auth state
   const [currentUser] = useState<AuthUser | null>(() => {
@@ -132,32 +138,23 @@ export default function App() {
     };
   }, []);
 
-  // 3. Tự động kiểm tra bản cập nhật mới (version.json từ GitHub)
+  // 3. Tự động kiểm tra bản cập nhật mới (bằng useAutoUpdate hook)
   useEffect(() => {
-    const timer = setTimeout(async () => {
-      try {
-        const res = await checkForAppUpdate();
-        if (res.hasUpdate) {
-          setUpdateInfo(res);
-          setIsUpdateModalOpen(true);
-        }
-      } catch (err) {
+    const timer = setTimeout(() => {
+      checkForUpdate().catch((err) => {
         console.log('Update check skipped:', err);
-      }
+      });
     }, 2500);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [checkForUpdate]);
 
   // Kiểm tra cập nhật thủ công khi người dùng bấm nút
   const handleManualCheckUpdates = async () => {
     try {
-      const res = await checkForAppUpdate();
-      if (res.hasUpdate) {
-        setUpdateInfo(res);
-        setIsUpdateModalOpen(true);
-      } else {
-        showToast(`Bạn đang sử dụng phiên bản mới nhất (v${CURRENT_APP_VERSION})!`, 'success');
+      const res = await checkForUpdate(true);
+      if (!res.hasUpdate) {
+        showToast(`Bạn đang sử dụng phiên bản mới nhất (v${res.currentVersion})!`, 'success');
       }
     } catch {
       showToast('Không thể kết nối đến máy chủ kiểm tra cập nhật.', 'warning');
@@ -330,10 +327,11 @@ export default function App() {
         onCheckUpdates={handleManualCheckUpdates}
       />
 
-      <UpdateModal
+      <UpdateChecker
         isOpen={isUpdateModalOpen}
-        onClose={() => setIsUpdateModalOpen(false)}
+        onClose={closeUpdateModal}
         updateInfo={updateInfo}
+        onDownload={openApkDownload}
       />
     </div>
   );
