@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, ArrowUpCircle, Download, Sparkles, CheckCircle2, Loader2 } from 'lucide-react';
+import { X, ArrowUpCircle, Download, Loader2 } from 'lucide-react';
 import { UpdateCheckResult } from '../hooks/useAutoUpdate';
 
 interface UpdateCheckerProps {
@@ -28,87 +28,76 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col animate-in slide-in-from-bottom duration-300">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-200">
+      <div className="bg-white rounded-2xl max-w-sm w-full shadow-xl border border-slate-100 overflow-hidden flex flex-col animate-in scale-in duration-200">
         
-        {/* Header Banner with Premium Gradient */}
-        <div className="p-6 bg-gradient-to-br from-indigo-600 via-violet-700 to-slate-900 text-white relative">
-          <button
-            onClick={onClose}
-            className="absolute top-4 right-4 p-1.5 rounded-full text-white/70 hover:text-white hover:bg-white/10 active:scale-90 transition-all duration-150"
-            aria-label="Đóng"
-          >
-            <X className="w-5 h-5" />
-          </button>
-
-          <div className="w-12 h-12 rounded-2xl bg-white/15 border border-white/20 flex items-center justify-center mb-3 shadow-inner">
-            <ArrowUpCircle className="w-7 h-7 text-indigo-300 animate-bounce" />
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-xl font-extrabold tracking-tight text-white">
-              Phát Hiện Bản Cập Nhật Mới!
+        {/* Compact Header */}
+        <div className="p-4 bg-gradient-to-r from-indigo-600 via-violet-600 to-indigo-700 text-white relative flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ArrowUpCircle className="w-5 h-5 text-indigo-200 animate-pulse shrink-0" />
+            <h3 className="text-sm font-bold text-white tracking-wide">
+              Đã Có Bản Cập Nhật Mới!
             </h3>
-            <span className="px-2.5 py-0.5 text-xs font-black bg-emerald-400 text-slate-950 rounded-full shadow-sm animate-pulse">
+            <span className="px-2 py-0.5 text-[10px] font-black bg-emerald-400 text-slate-950 rounded-full">
               v{updateInfo.latestVersion}
             </span>
           </div>
-          
-          <p className="text-xs text-indigo-100/80 mt-1.5">
-            Phiên bản hiện tại của bạn: <span className="font-semibold text-white">v{updateInfo.currentVersion}</span>
+          <button
+            onClick={onClose}
+            className="p-1 rounded-full text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+            aria-label="Đóng"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Compact Content */}
+        <div className="p-4 space-y-3">
+          {/* Version details & simple note */}
+          <div className="text-xs text-slate-600 leading-normal font-medium">
+            <div className="flex justify-between items-center bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-100 mb-2">
+              <span>Bản hiện tại: <strong className="text-slate-800 font-bold">v{updateInfo.currentVersion}</strong></span>
+              <span className="text-slate-300">|</span>
+              <span>Bản mới nhất: <strong className="text-indigo-600 font-bold">v{updateInfo.latestVersion}</strong></span>
+            </div>
+            <p className="text-slate-500 text-[11px] line-clamp-2 italic text-center mt-1">
+              "{updateInfo.notes || 'Nâng cấp hiệu năng & tối ưu hóa hệ thống.'}"
+            </p>
+          </div>
+
+          {/* Inline Action Controls Side-by-Side */}
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={onClose}
+              className="flex-1 py-2 text-xs font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-50 border border-slate-200 rounded-xl transition-all duration-150 active:scale-98"
+            >
+              Để sau
+            </button>
+            <button
+              onClick={handleDownloadClick}
+              disabled={isDownloading}
+              className="flex-[2] flex items-center justify-center gap-1.5 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-98 text-white text-xs font-black rounded-xl shadow-sm transition-all disabled:opacity-60"
+            >
+              {isDownloading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Đang tải...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span>Nâng Cấp Ngay</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Micro safety text */}
+          <p className="text-[10px] text-emerald-600 text-center font-medium animate-pulse">
+            ✓ Giữ lại 100% dữ liệu sách hiện tại của bạn
           </p>
         </div>
 
-        {/* Update Content Details */}
-        <div className="p-6 space-y-4">
-          
-          {/* Release Notes Container */}
-          <div className="p-4 bg-slate-50 rounded-2xl border border-slate-150 flex flex-col">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block mb-2 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
-              Nội dung cập nhật mới:
-            </span>
-            <div className="max-h-40 overflow-y-auto pr-1 text-xs text-slate-700 font-medium whitespace-pre-line leading-relaxed scrollbar-thin">
-              {updateInfo.notes || 'Bản phát hành này bao gồm một số cải tiến hiệu năng, sửa lỗi nhỏ và nâng cấp trải nghiệm người dùng.'}
-            </div>
-          </div>
-
-          {/* Data Safety Assurance Card */}
-          <div className="text-[11px] text-emerald-800 flex items-start gap-2 bg-emerald-50 p-3.5 rounded-xl border border-emerald-100">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-            <span className="leading-normal">
-              <strong>Yên tâm nâng cấp:</strong> Toàn bộ dữ liệu thư viện sách cá nhân của bạn trên thiết bị sẽ được giữ lại an toàn 100%.
-            </span>
-          </div>
-        </div>
-
-        {/* Action Controls */}
-        <div className="p-6 pt-0 flex flex-col gap-2.5">
-          <button
-            onClick={handleDownloadClick}
-            disabled={isDownloading}
-            className="w-full flex items-center justify-center gap-2 py-3 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white text-sm font-bold rounded-2xl shadow-md shadow-indigo-600/20 transition-all disabled:opacity-50"
-          >
-            {isDownloading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Đang kết nối để tải xuống...</span>
-              </>
-            ) : (
-              <>
-                <Download className="w-4 h-4 stroke-[2.5]" />
-                <span>Tải Về & Cài Đặt (APK)</span>
-              </>
-            )}
-          </button>
-
-          <button
-            onClick={onClose}
-            className="w-full py-2.5 text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-all duration-150"
-          >
-            Để sau
-          </button>
-        </div>
       </div>
     </div>
   );

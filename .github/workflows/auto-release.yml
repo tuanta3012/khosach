@@ -50,8 +50,10 @@ jobs:
                   configurations.all {
                       resolutionStrategy {
                           force 'org.bouncycastle:bcprov-jdk15to18:1.70'
-                          dependencySubstitution {
-                              substitute module('org.bouncycastle:bcprov-jdk18on') with module('org.bouncycastle:bcprov-jdk15to18:1.70')
+                          eachDependency { details ->
+                              if (details.requested.group == 'org.bouncycastle') {
+                                  details.useTarget 'org.bouncycastle:bcprov-jdk15to18:1.70'
+                              }
                           }
                       }
                   }
@@ -59,8 +61,10 @@ jobs:
               configurations.all {
                   resolutionStrategy {
                       force 'org.bouncycastle:bcprov-jdk15to18:1.70'
-                      dependencySubstitution {
-                          substitute module('org.bouncycastle:bcprov-jdk18on') with module('org.bouncycastle:bcprov-jdk15to18:1.70')
+                      eachDependency { details ->
+                          if (details.requested.group == 'org.bouncycastle') {
+                              details.useTarget 'org.bouncycastle:bcprov-jdk15to18:1.70'
+                          }
                       }
                   }
               }
