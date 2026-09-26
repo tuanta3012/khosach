@@ -160,23 +160,23 @@ jobs:
           cp keystore/debug.keystore android/app/debug.keystore
           
           if [ -f "android/app/build.gradle" ]; then
-            python3 -c "
-with open('android/app/build.gradle', 'r') as f:
-    content = f.read()
-if 'signingConfigs' not in content:
-    content = content.replace('buildTypes {', '''signingConfigs {
-        debug {
-            storeFile file('debug.keystore')
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
-        }
-    }
-    buildTypes {''')
-content = content.replace('minifyEnabled false', 'minifyEnabled true\n            shrinkResources true')
-with open('android/app/build.gradle', 'w') as f:
-    f.write(content)
-"
+            node -e '
+              const fs = require("fs");
+              let content = fs.readFileSync("android/app/build.gradle", "utf8");
+              if (!content.includes("signingConfigs")) {
+                content = content.replace("buildTypes {", `signingConfigs {
+                    debug {
+                        storeFile file("debug.keystore")
+                        storePassword "android"
+                        keyAlias "androiddebugkey"
+                        keyPassword "android"
+                    }
+                }
+                buildTypes {`);
+              }
+              content = content.replace("minifyEnabled false", "minifyEnabled true\n            shrinkResources true");
+              fs.writeFileSync("android/app/build.gradle", content, "utf8");
+            '
           fi
           
           SHA1_VAL=$(keytool -list -v -keystore keystore/debug.keystore -alias androiddebugkey -storepass android | grep "SHA1:" | head -1 | awk '{print $2}')
