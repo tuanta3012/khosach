@@ -61,13 +61,8 @@ export function useAutoUpdate() {
       {
         type: 'raw',
         name: 'GitHub Raw version.json',
-        url: `https://raw.githubusercontent.com/tuanta3012/khosach/main/version.json?t=${timestamp}`,
-      },
-      {
-        type: 'release-api',
-        name: 'GitHub Releases API',
-        url: `https://api.github.com/repos/tuanta3012/khosach/releases/latest?t=${timestamp}`,
-      },
+        url: `https://raw.githubusercontent.com/tuanta3012/khosach/refs/heads/main/version.json?t=${timestamp}`,
+      }
     ];
 
     let latestInfo: UpdateInfo | null = null;
@@ -75,8 +70,6 @@ export function useAutoUpdate() {
     for (const src of sources) {
       try {
         console.log(`[useAutoUpdate] Checking update via source: ${src.name}`);
-        
-        // SỬ DỤNG FETCH ĐƠN GIẢN KHÔNG CÓ CUSTOM HEADERS ĐỂ TRÁNH CƠ CHẾ CORS PREFLIGHT (OPTIONS) TRÊN TRÌNH DUYỆT WEB
         const res = await fetch(src.url);
 
         if (res.ok) {
@@ -100,20 +93,6 @@ export function useAutoUpdate() {
               notes: data.notes,
             };
             console.log(`[useAutoUpdate] Succeeded via raw source! Latest version is v${latestInfo.version}`);
-            break;
-          } else if (src.type === 'release-api' && data && data.tag_name) {
-            const cleanVer = data.tag_name.replace(/^v/, '').trim();
-            const apkAsset = data.assets?.find((asset: any) => asset.name.endsWith('.apk'));
-            const apkUrl = apkAsset ? apkAsset.browser_download_url : `https://github.com/tuanta3012/khosach/releases/download/v${cleanVer}/khosach_v${cleanVer}.apk`;
-            
-            latestInfo = {
-              version: cleanVer,
-              apkUrl: apkUrl,
-              downloadUrl: apkUrl,
-              changelog: data.body ? data.body.split('\n').filter((s: string) => s.trim().length > 0) : ['Bản cập nhật v' + cleanVer],
-              notes: data.body || data.name,
-            };
-            console.log(`[useAutoUpdate] Succeeded via release-api source! Latest version is v${latestInfo.version}`);
             break;
           }
         }

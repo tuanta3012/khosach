@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "864440372329",
+    "project_id": "gen-lang-client-0423718439",
+    "storage_bucket": "gen-lang-client-0423718439.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:864440372329:android:4514007374fc2fc492e6f8",
+        "android_client_info": {
+          "package_name": "com.tietkiemgiadinh.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "864440372329-ce061lobnjl3bb45vh4ilm0u6lam627p.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.tietkiemgiadinh.app",
+            "certificate_hash": "65521db4d84afb1662e1f313841f474cc5946528"
+          }
+        },
+        {
+          "client_id": "864440372329-re1ogo5e8r12ce2vui3rtr3a7vv9j1ei.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.tietkiemgiadinh.app",
+            "certificate_hash": "4c01ef4eb3775957c7000b4e8c2cbfbda4ba5488"
+          }
+        },
+        {
+          "client_id": "864440372329-fgoo89lqp196nvcptmfc7pquofuj8agt.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBs4rIC4Y8iFVRVBM-vj_1-iMSoNEpMPDA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "864440372329-fgoo89lqp196nvcptmfc7pquofuj8agt.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
