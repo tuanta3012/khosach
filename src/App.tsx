@@ -21,7 +21,7 @@ import { BatchScanner } from './components/BatchScanner';
 import { AddEditBookModal } from './components/AddEditBookModal';
 import { DataSyncModal } from './components/DataSyncModal';
 import { SettingsModal } from './components/SettingsModal';
-import { UpdateChecker } from './components/UpdateChecker';
+import { AppUpdateModal } from './components/AppUpdateModal';
 import { useToast } from './context/ToastContext';
 import { checkDuplicateBook } from './utils/fuzzyMatcher';
 import { useAutoUpdate } from './hooks/useAutoUpdate';
@@ -56,13 +56,11 @@ export default function App() {
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   
-  // App Auto Update (Custom Hook)
+  // App Auto Update (Sổ Tiết Kiệm Architecture)
   const {
-    isChecking,
     updateInfo,
     isModalOpen: isUpdateModalOpen,
     checkForUpdate,
-    openApkDownload,
     closeModal: closeUpdateModal
   } = useAutoUpdate();
 
@@ -327,11 +325,11 @@ export default function App() {
         onCheckUpdates={handleManualCheckUpdates}
       />
 
-      <UpdateChecker
+      <AppUpdateModal
         isOpen={isUpdateModalOpen}
-        onClose={closeUpdateModal}
+        currentVersion={CURRENT_APP_VERSION}
         updateInfo={updateInfo}
-        onDownload={openApkDownload}
+        onClose={closeUpdateModal}
       />
     </div>
   );

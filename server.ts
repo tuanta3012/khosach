@@ -151,6 +151,27 @@ Trả về thông tin chuẩn nhất:
 
 // API: Proxy Check App Update to bypass browser CORS / localized ISP blocks
 app.get('/api/app-update/check', async (req, res) => {
+  // 1. Thử đọc trực tiếp file local version.json trong Workspace của AI Studio trước tiên để cập nhật tức thì
+  try {
+    const fs = await import('fs');
+    const localPath = path.join(__dirname, 'version.json');
+    if (fs.existsSync(localPath)) {
+      const fileContent = fs.readFileSync(localPath, 'utf8');
+      const localData = JSON.parse(fileContent);
+      if (localData && localData.version) {
+        console.log(`[Server UpdateCheck] Đọc thành công từ Local Workspace: v${localData.version}`);
+        return res.json({
+          success: true,
+          version: localData.version.trim(),
+          notes: localData.notes || '',
+          apkUrl: localData.apkUrl || ''
+        });
+      }
+    }
+  } catch (localErr: any) {
+    console.warn('[Server UpdateCheck] Đọc file local version.json thất bại:', localErr.message);
+  }
+
   const SOURCES = [
     {
       name: 'GitHub Raw (refs/heads/main)',
