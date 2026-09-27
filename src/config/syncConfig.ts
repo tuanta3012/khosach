@@ -57,7 +57,7 @@ const OBFUSCATED_SHEET_PAYLOAD = 'IycrMSNqcHklOi8ncVVfXVEzNmsgOj9qLCQ9LiQqODs6JC
 const OBFUSCATED_SCRIPT_PAYLOAD = 'IycrMSNqcHkyNj49L0YeVVkwNCkmezEqMnsiKiY8JCBwMn8RFDA4NjYgbgAGUwMdNQgmeGIqZ3sqMyAt';
 
 // Payload mã hóa của Google Gemini API Key mặc định (đã xáo trộn hoàn toàn, không lộ chuỗi)
-const OBFUSCATED_GEMINI_PAYLOAD = 'CgJxADJoDRh3HC0EDWBSfn8nYRcsHz0cGWJ6GxE3czEXKGE8MwkTExMEG3t6Vg8pZSsAIyU=';
+const OBFUSCATED_GEMINI_PAYLOAD = 'CgJxADJoDRh3HjxlFGJ8agMpCyAZeBgyM20nKjICfTQ3MwIiZxUuIHgsF191cQBsPn11HAM=';
 
 /**
  * Link Google Sheet mặc định sau khi tự động giải mã trong bộ nhớ RAM

@@ -38,9 +38,10 @@ export function useAutoUpdate() {
     setIsChecking(true);
     let appVersion = CURRENT_APP_VERSION;
 
+    let isNative = false;
     // Lấy version thực tế từ Capacitor App plugin nếu đang chạy trên Android
     try {
-      const isNative = (window as any).Capacitor && (window as any).Capacitor.isNativePlatform();
+      isNative = typeof window !== 'undefined' && !!((window as any).Capacitor?.isNativePlatform?.());
       if (isNative) {
         const info = await App.getInfo();
         if (info && info.version) {
@@ -106,7 +107,13 @@ export function useAutoUpdate() {
     if (latestInfo && latestInfo.version) {
       const hasUpdate = compareVersions(latestInfo.version, appVersion) > 0;
       setUpdateInfo(latestInfo);
-      if (hasUpdate) {
+
+      const isDev = (import.meta as any).env?.DEV || (typeof window !== 'undefined' && (window.location.hostname.includes('run.app') || window.location.hostname === 'localhost'));
+
+      // Chỉ tự động mở modal nếu:
+      // - Người dùng bấm kiểm tra thủ công (isManual = true)
+      // - Hoặc ứng dụng đang chạy dưới dạng native APK trên thiết bị thật và không phải bản web dev
+      if (hasUpdate && (isManual || (isNative && !isDev))) {
         setIsModalOpen(true);
       }
       return {

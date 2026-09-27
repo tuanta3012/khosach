@@ -218,10 +218,16 @@ export default function App() {
     initData();
   }, []);
 
-  // 3. Tự động kiểm tra bản cập nhật mới
+  // 3. Tự động kiểm tra bản cập nhật mới (chỉ chạy ngầm trên thiết bị di động thật sau khi cài APK)
   useEffect(() => {
+    const isNative = typeof window !== 'undefined' && !!((window as any).Capacitor?.isNativePlatform?.());
+    const isDev = (import.meta as any).env?.DEV || (typeof window !== 'undefined' && (window.location.hostname.includes('run.app') || window.location.hostname === 'localhost'));
+
+    // Không tự động kiểm tra trên web dev / Cloud Run dev preview
+    if (!isNative || isDev) return;
+
     const timer = setTimeout(() => {
-      checkForUpdate().catch((err) => {
+      checkForUpdate(false).catch((err) => {
         console.log('Update check skipped:', err);
       });
     }, 2500);
