@@ -4,13 +4,14 @@
  */
 
 export interface BookRecord {
-  id: string; // Auto-generated Firestore Doc ID or UUID
+  id: string; // Unique Book ID or UUID
   title: string; // Tên sách (Bắt buộc)
   author: string; // Tác giả (Bắt buộc)
   category?: string; // Thể loại (Văn học, Lịch sử, Kinh tế, Y học...)
   publisher?: string; // Nhà xuất bản
   created_at?: number; // Epoch Timestamp (ms)
   updated_at?: number; // Epoch Timestamp (ms)
+  is_ai_normalized?: boolean; // Đã chuẩn hóa bằng AI chưa
 }
 
 export interface DraftBookItem {
@@ -43,6 +44,7 @@ export interface LibrarySettings {
   autoSyncDrive?: boolean; // Tự động đẩy dữ liệu sạch lên Drive khi có thay đổi
   lastBackupTime?: string;
   categoriesList: string[];
+  autoNormalizeEnabled?: boolean;
 }
 
 export interface DriveBackupPayload {

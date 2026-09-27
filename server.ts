@@ -22,13 +22,81 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-const ai = new GoogleGenAI({
+const defaultAi = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
   httpOptions: {
     headers: {
       'User-Agent': 'aistudio-build',
     },
   },
+});
+
+function getAiClient(customKey?: string) {
+  if (customKey && typeof customKey === 'string' && customKey.trim().length > 0) {
+    return new GoogleGenAI({
+      apiKey: customKey.trim(),
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+  }
+  return defaultAi;
+}
+
+async function generateContentWithFallback(params: { contents: any; config?: any; apiKey?: string }) {
+  const primaryModel = 'gemini-3.5-flash-lite';
+  const fallbackModel = 'gemini-3.1-flash-lite';
+  const aiClient = getAiClient(params.apiKey);
+
+  try {
+    console.log(`[Server AI] Attempting primary model: ${primaryModel}`);
+    return await aiClient.models.generateContent({
+      model: primaryModel,
+      contents: params.contents,
+      config: params.config,
+    });
+  } catch (err: any) {
+    console.warn(`[Server AI] Primary model ${primaryModel} failed. Falling back to ${fallbackModel}. Error:`, err.message || err);
+    return await aiClient.models.generateContent({
+      model: fallbackModel,
+      contents: params.contents,
+      config: params.config,
+    });
+  }
+}
+
+// API: Kiểm tra tính hợp lệ của Gemini API Key
+app.post('/api/ai/test-key', async (req, res) => {
+  try {
+    const customKey = (req.body?.apiKey || req.headers['x-gemini-api-key'] || process.env.GEMINI_API_KEY) as string;
+    if (!customKey || !customKey.trim()) {
+      return res.status(400).json({ success: false, message: 'Vui lòng cung cấp API Key để kiểm tra.' });
+    }
+    const testAi = getAiClient(customKey.trim());
+    const result = await testAi.models.generateContent({
+      model: 'gemini-3.5-flash-lite',
+      contents: 'Ping',
+    });
+    if (result && result.text) {
+      return res.json({ success: true, message: 'Kết nối Google Gemini thành công!' });
+    }
+    return res.json({ success: true, message: 'API Key hợp lệ và sẵn sàng sử dụng!' });
+  } catch (err: any) {
+    console.warn('[Server AI] Test API Key failed:', err.message || err);
+    let readableError = 'API Key không hợp lệ hoặc đã hết hạn mức.';
+    try {
+      const parsed = JSON.parse(err.message);
+      readableError = parsed?.error?.message || readableError;
+    } catch {
+      readableError = err.message || readableError;
+    }
+    return res.status(400).json({
+      success: false,
+      message: readableError,
+    });
+  }
 });
 
 // API: Batch OCR & Book Extraction from images (Gemini 2.5 Flash / Flash Latest)
@@ -63,9 +131,10 @@ Hãy đọc kỹ tất cả văn bản trong các ảnh này (chứa gáy sách,
 Trả về mảng JSON chứa các sách bóc tách được.`,
     });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+    const apiKey = (req.headers['x-gemini-api-key'] || req.body?.apiKey) as string | undefined;
+    const response = await generateContentWithFallback({
       contents: { parts },
+      apiKey,
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -118,9 +187,10 @@ Trả về thông tin chuẩn nhất:
 - category: Thể loại chuẩn (Văn học, Kinh tế, Lịch sử, Tâm lý, Khoa học...)
 - summary: Tóm tắt 1-2 câu nội dung cuốn sách`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+    const apiKey = (req.headers['x-gemini-api-key'] || req.body?.apiKey) as string | undefined;
+    const response = await generateContentWithFallback({
       contents: prompt,
+      apiKey,
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -144,6 +214,60 @@ Trả về thông tin chuẩn nhất:
     console.error('Error enriching book info:', err);
     return res.status(500).json({
       error: 'Lỗi tra cứu làm giàu thông tin sách.',
+      message: err?.message || String(err),
+    });
+  }
+});
+
+// API: Batch Normalize book metadata using Gemini 2.5 Flash Lite
+app.post('/api/books/batch-normalize', async (req, res) => {
+  try {
+    const { books } = req.body;
+    if (!books || !Array.isArray(books) || books.length === 0) {
+      return res.status(400).json({ error: 'Không có danh sách sách để chuẩn hóa.' });
+    }
+
+    const prompt = `Bạn là biên tập viên thư viện sách chuyên nghiệp. 
+Hãy sửa lỗi chính tả, sửa tiếng Việt không dấu thành có dấu chuẩn xác, viết hoa chữ cái đầu đúng quy tắc tiếng Việt/quốc tế cho danh sách các cuốn sách sau đây. 
+Nếu thông tin tác giả chưa đúng hoặc thiếu dấu, hãy tự động sửa lại chính xác (ví dụ: "nguyen nhat anh" -> "Nguyễn Nhật Ánh"). 
+Nếu nhà xuất bản viết tắt hoặc thiếu dấu, hãy điền đầy đủ (ví dụ: "nxb tre" -> "NXB Trẻ", "nha nam" -> "Nhã Nam", "nxb kim dong" -> "NXB Kim Đồng").
+Nếu thể loại chưa chuẩn, hãy phân loại và đưa về các thể loại chuẩn tiếng Việt phù hợp (như: Văn học, Kinh tế, Lịch sử, Tâm lý học, Khoa học, Thiếu nhi, Kỹ năng sống, Triết học, Mỹ thuật...).
+
+Dưới đây là danh sách sách dạng JSON cần chuẩn hóa:
+${JSON.stringify(books)}
+
+Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ nguyên trường "id" của từng cuốn sách, và bổ sung thuộc tính "is_ai_normalized": true cho tất cả sách đã chuẩn hóa thành công.`;
+
+    const apiKey = (req.headers['x-gemini-api-key'] || req.body?.apiKey) as string | undefined;
+    const response = await generateContentWithFallback({
+      contents: prompt,
+      apiKey,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING, description: 'ID giữ nguyên không đổi' },
+              title: { type: Type.STRING, description: 'Tên sách chuẩn' },
+              author: { type: Type.STRING, description: 'Tác giả chuẩn' },
+              publisher: { type: Type.STRING, description: 'Nhà xuất bản chuẩn' },
+              category: { type: Type.STRING, description: 'Thể loại chuẩn' },
+              is_ai_normalized: { type: Type.BOOLEAN, description: 'Bắt buộc là true' }
+            },
+            required: ['id', 'title', 'author', 'publisher', 'category', 'is_ai_normalized']
+          }
+        }
+      }
+    });
+
+    const output = JSON.parse(response.text || '[]');
+    return res.json({ success: true, normalized: output });
+  } catch (err: any) {
+    console.error('Error in batch normalization API:', err);
+    return res.status(500).json({
+      error: 'Không thể chuẩn hóa hàng loạt dữ liệu sách.',
       message: err?.message || String(err),
     });
   }
@@ -230,6 +354,22 @@ app.all('/api/drive/proxy', async (req, res) => {
       return res.json(data);
     } else {
       const text = await response.text();
+      // If it returned HTML (e.g. 404, Page not found, Login redirect, Script error)
+      const trimmed = text.trim();
+      if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html') || trimmed.includes('<title>Page not found</title>')) {
+        let cleanMsg = 'Máy chủ Google trả về trang web HTML thay vì dữ liệu JSON.';
+        if (text.includes('Page not found') || text.includes('does not exist')) {
+          cleanMsg = 'Liên kết Google Apps Script hoặc Google Sheet không tồn tại (File/Script not found).';
+        } else if (text.includes('accounts.google.com') || text.includes('Sign in') || text.includes('ServiceLogin')) {
+          cleanMsg = 'Liên kết yêu cầu đăng nhập tài khoản Google. Vui lòng kiểm tra quyền chia sẻ công khai.';
+        }
+        return res.status(response.status >= 400 ? response.status : 422).json({
+          status: 'error',
+          success: false,
+          error: cleanMsg,
+          isHtmlError: true,
+        });
+      }
       res.setHeader('Content-Type', contentType || 'text/plain; charset=utf-8');
       return res.send(text);
     }

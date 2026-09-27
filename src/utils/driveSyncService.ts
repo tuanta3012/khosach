@@ -185,7 +185,7 @@ export function sanitizeAppsScriptUrl(url: string): string {
 }
 
 /**
- * Chuẩn hóa Document ID hợp lệ cho Firestore
+ * Chuẩn hóa Book ID hợp lệ
  */
 export function sanitizeDocId(id: string): string {
   if (!id) return '';
@@ -299,7 +299,7 @@ export function getProxyUrl(targetUrl: string): string {
 }
 
 /**
- * Đẩy dữ liệu sạch từ App/Firestore lên Google Drive qua Web App Apps Script
+ * Đẩy dữ liệu sạch từ App/Bộ nhớ máy lên Google Drive qua Web App Apps Script
  */
 export async function pushCleanDataToDriveWebApp(
   webAppUrl: string,
@@ -332,51 +332,40 @@ export async function pushCleanDataToDriveWebApp(
       body: JSON.stringify(payload),
     });
 
-    if (response.ok) {
-      const data = await response.json();
-      if (data.status === 'success') {
-        addSyncLog({
-          type: 'PUSH',
-          url: proxyUrl,
-          payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
-          status: response.status,
-          success: true,
-          responseBody: data,
-        });
-        return {
-          success: true,
-          message: data.message || `Đã đồng bộ thành công ${books.length} cuốn sách lên Google Sheet/Drive!`,
-          count: data.count || books.length,
-        };
-      } else {
-        addSyncLog({
-          type: 'PUSH',
-          url: proxyUrl,
-          payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
-          status: response.status,
-          success: false,
-          responseBody: data,
-          error: data.message || 'Lỗi trả về từ Apps Script',
-        });
-        throw new Error(data.message || 'Lỗi trả về từ Apps Script');
-      }
+    const rawText = await response.text().catch(() => '');
+    let data: any = null;
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      data = null;
+    }
+
+    if (response.ok && data && data.status === 'success') {
+      addSyncLog({
+        type: 'PUSH',
+        url: proxyUrl,
+        payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
+        status: response.status,
+        success: true,
+        responseBody: data,
+      });
+      return {
+        success: true,
+        message: data.message || `Đã đồng bộ thành công ${books.length} cuốn sách lên Google Sheet/Drive!`,
+        count: data.count || books.length,
+      };
     } else {
-      const errorText = await response.text().catch(() => `HTTP ${response.status}`);
-      let parsedError = errorText;
-      let parsedJson: any = null;
-      try {
-        parsedJson = JSON.parse(errorText);
-        if (parsedJson && parsedJson.error) {
-          parsedError = parsedJson.error;
-        }
-      } catch {}
+      let parsedError = (data && (data.error || data.message)) || rawText || `HTTP ${response.status}`;
+      if (rawText.includes('<!DOCTYPE') || rawText.includes('<html')) {
+        parsedError = 'Google Apps Script trả về trang web HTML thay vì JSON. Vui lòng kiểm tra lại quyền Web App (Who has access: Anyone).';
+      }
       addSyncLog({
         type: 'PUSH',
         url: proxyUrl,
         payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
         status: response.status,
         success: false,
-        responseBody: parsedJson || errorText,
+        responseBody: data || rawText.slice(0, 300),
         error: `Proxy trả về lỗi: ${parsedError}`,
       });
       throw new Error(`Proxy trả về lỗi: ${parsedError}`);
@@ -491,9 +480,38 @@ export async function pullDataFromDriveWebApp(
     console.log(`[pullDataFromDriveWebApp] Fetching Apps Script via proxy: ${proxyAppScriptUrl}`);
 
     const response = await fetch(proxyAppScriptUrl);
-    const data = await response.json();
+    const rawText = await response.text().catch(() => '');
+    
+    let data: any = null;
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      let htmlError = 'Phản hồi từ Google không phải dữ liệu JSON hợp lệ.';
+      if (rawText.includes('<!DOCTYPE') || rawText.includes('<html')) {
+        if (rawText.includes('Page not found') || rawText.includes('does not exist')) {
+          htmlError = 'URL Google Apps Script không tồn tại hoặc chưa được triển khai (404 Not Found).';
+        } else if (rawText.includes('accounts.google.com') || rawText.includes('Sign in')) {
+          htmlError = 'URL Google Apps Script yêu cầu đăng nhập. Cần triển khai với quyền "Who has access: Anyone".';
+        } else {
+          htmlError = 'Google Apps Script trả về trang HTML thay vì JSON. Vui lòng kiểm tra lại cấu hình Web App.';
+        }
+      }
+      addSyncLog({
+        type: 'PULL',
+        url: proxyAppScriptUrl,
+        success: false,
+        status: response.status,
+        responseBody: rawText.slice(0, 300),
+        error: htmlError,
+      });
+      return {
+        success: false,
+        books: [],
+        message: htmlError,
+      };
+    }
 
-    if (data.status === 'success' || Array.isArray(data.books)) {
+    if (data && (data.status === 'success' || Array.isArray(data.books))) {
       const rawBooks = data.books || [];
       const parsedBooks: BookRecord[] = rawBooks.map((item: any, idx: number) => {
         const rawId = String(item.id || '');
@@ -523,18 +541,23 @@ export async function pullDataFromDriveWebApp(
         message: `Đã kéo thành công ${parsedBooks.length} cuốn sách từ Google Drive!`,
       };
     } else {
+      const errMsg = data?.error || data?.message || 'Lỗi đọc file từ Apps Script';
       addSyncLog({
         type: 'PULL',
         url: proxyAppScriptUrl,
         success: false,
         status: response.status,
         responseBody: data,
-        error: data.message || 'Lỗi đọc file từ Apps Script',
+        error: errMsg,
       });
-      throw new Error(data.message || 'Lỗi đọc file từ Apps Script');
+      return {
+        success: false,
+        books: [],
+        message: errMsg,
+      };
     }
   } catch (err: any) {
-    console.error('[pullDataFromDriveWebApp] Pull from Drive via proxy error:', err);
+    console.warn('[pullDataFromDriveWebApp] Pull from Drive via proxy error:', err);
     addSyncLog({
       type: 'PULL',
       url: cleanUrl,

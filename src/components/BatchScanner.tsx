@@ -16,6 +16,7 @@ import {
 import { BookRecord, DraftBookItem } from '../types';
 import { flagDuplicateDrafts } from '../utils/fuzzyMatcher';
 import { useToast } from '../context/ToastContext';
+import { scanImages, enrichBook } from '../utils/geminiService';
 
 interface BatchScannerProps {
   existingBooks: BookRecord[];
@@ -89,18 +90,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     setScanStatusMessage(`Đang gửi ${tempImages.length} ảnh lên Gemini 2.5 Flash để bóc tách văn bản...`);
 
     try {
-      const res = await fetch('/api/books/scan-images', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images: tempImages }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || errorData.message || 'Lỗi xử lý AI Vision');
-      }
-
-      const data = await res.json();
+      const data = await scanImages(tempImages);
       const rawExtractedBooks = data.books || [];
 
       // BƯỚC 3: Giải phóng ngay lập tức mảng ảnh Base64 khỏi RAM để tránh rác bộ nhớ di động
@@ -151,18 +141,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
     setEnrichingId(draftId);
     try {
-      const res = await fetch('/api/books/enrich', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: draft.title,
-          author: draft.author,
-          publisher: draft.publisher,
-        }),
-      });
-
-      if (!res.ok) throw new Error('Không thể tra cứu thông tin làm giàu');
-      const data = await res.json();
+      const data = await enrichBook(draft.title, draft.author, draft.publisher);
       const enriched = data.enriched;
 
       if (enriched) {
@@ -235,23 +214,23 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* 1. Khu vực Thu thập Ảnh (Camera & Gallery Input) */}
-      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs p-5 sm:p-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
-          <div>
-            <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs p-4 sm:p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+          <div className="space-y-1">
+            <h2 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2">
               <span className="p-1.5 bg-purple-100 text-purple-700 rounded-xl">
-                <Sparkles className="w-5 h-5" />
+                <Sparkles className="w-4 h-4" />
               </span>
-              <span>Nhập Liệu AI Vision (Bóc tách gáy sách)</span>
+              <span>AI Vision (Quét gáy sách)</span>
             </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-[11px] sm:text-xs text-slate-500 leading-relaxed max-w-xl">
               Chụp liên tục nhiều gáy sách hoặc chọn ảnh từ thư viện thiết bị. Gemini 2.5 Flash xử lý tức thì.
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="grid grid-cols-2 gap-2 w-full sm:flex sm:w-auto shrink-0">
             <input
               type="file"
               ref={cameraInputRef}
@@ -273,73 +252,73 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             <button
               onClick={() => cameraInputRef.current?.click()}
               disabled={isScanning}
-              className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white text-xs font-extrabold rounded-xl shadow-xs transition disabled:opacity-50 h-10"
             >
               <Camera className="w-4 h-4" />
-              <span>Chụp Ảnh Liên Tục</span>
+              <span>Chụp Ảnh</span>
             </button>
 
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isScanning}
-              className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-slate-100 hover:bg-slate-200 active:scale-[0.98] text-slate-700 text-xs font-extrabold rounded-xl transition disabled:opacity-50 h-10"
             >
               <UploadCloud className="w-4 h-4 text-slate-600" />
-              <span>Chọn Từ Thư Viện</span>
+              <span>Thư Viện</span>
             </button>
           </div>
         </div>
 
         {/* Danh sách ảnh tạm trong RAM */}
         {tempImages.length > 0 ? (
-          <div className="mt-4">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-bold text-slate-700">
-                Đang có <span className="text-purple-600">{tempImages.length}</span> ảnh trong hàng đợi RAM:
+          <div className="mt-3.5 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] sm:text-xs font-bold text-slate-700">
+                Hàng đợi: <span className="text-purple-600 font-extrabold">{tempImages.length} ảnh</span>
               </span>
               <button
                 onClick={handleClearImages}
-                className="text-xs font-semibold text-rose-600 hover:underline flex items-center gap-1"
+                className="text-[11px] font-bold text-rose-600 hover:underline flex items-center gap-1"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Xóa sạch ảnh tạm</span>
+                <span>Xóa sạch ảnh</span>
               </button>
             </div>
 
-            <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-8 gap-3 max-h-48 overflow-y-auto p-2 bg-slate-50 rounded-2xl border border-slate-200">
+            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 max-h-32 overflow-y-auto p-2 bg-slate-50 rounded-2xl border border-slate-200">
               {tempImages.map((img, idx) => (
-                <div key={idx} className="relative group aspect-square rounded-xl overflow-hidden border border-slate-300 bg-white shadow-xs">
+                <div key={idx} className="relative aspect-square rounded-lg overflow-hidden border border-slate-300 bg-white shadow-xs">
                   <img src={img} alt={`Ảnh ${idx + 1}`} className="w-full h-full object-cover" />
                   <button
                     onClick={() => handleRemoveImage(idx)}
-                    className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded-full hover:bg-rose-600 transition"
+                    className="absolute top-0.5 right-0.5 p-1 bg-black/60 text-white rounded-full hover:bg-rose-600 transition"
                   >
-                    <X className="w-3 h-3" />
+                    <X className="w-2.5 h-2.5" />
                   </button>
                 </div>
               ))}
             </div>
 
             {/* Nút Kích hoạt Lọc sách AI */}
-            <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 p-4 bg-purple-50/80 border border-purple-200 rounded-2xl">
-              <div className="text-xs text-purple-900">
-                <span className="font-bold block">💡 Cơ chế an toàn bộ nhớ:</span>
-                Toàn bộ ảnh Base64 sẽ được xóa sạch khỏi RAM ngay khi nhận danh sách bóc tách từ Gemini API.
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-3 bg-purple-50/60 border border-purple-100 rounded-2xl">
+              <div className="text-[10px] sm:text-xs text-purple-950 leading-normal">
+                <span className="font-extrabold block">💡 Lưu ý bộ nhớ:</span>
+                Ảnh sẽ được giải phóng ngay sau khi có kết quả từ Gemini.
               </div>
 
               <button
                 onClick={handleStartAIScan}
                 disabled={isScanning}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white text-sm font-bold rounded-xl shadow-md transition disabled:opacity-50"
+                className="flex items-center justify-center gap-2 px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-[0.98] shrink-0"
               >
                 {isScanning ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>{scanStatusMessage || 'Đang bóc tách văn bản...'}</span>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Đang bóc tách...</span>
                   </>
                 ) : (
                   <>
-                    <Sparkles className="w-4 h-4" />
+                    <Sparkles className="w-3.5 h-3.5" />
                     <span>Lọc Sách (AI Parsing)</span>
                   </>
                 )}
@@ -347,144 +326,144 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             </div>
           </div>
         ) : (
-          <div className="mt-4 p-8 border-2 border-dashed border-slate-200 rounded-2xl text-center bg-slate-50/50">
-            <Camera className="w-10 h-10 mx-auto text-slate-300 mb-2" />
-            <p className="text-sm font-bold text-slate-700">Chưa có ảnh nào trong hàng đợi</p>
-            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-              Bấm &quot;Chụp Ảnh Liên Tục&quot; hoặc &quot;Chọn Từ Thư Viện&quot; để thêm ảnh gáy sách hoặc trang phụ sách cần bóc tách.
+          <div className="mt-4 p-6 border border-dashed border-slate-200 rounded-2xl text-center bg-slate-50/40">
+            <Camera className="w-8 h-8 mx-auto text-slate-300 mb-1.5" />
+            <p className="text-xs font-bold text-slate-600">Chưa có ảnh nào trong hàng đợi</p>
+            <p className="text-[10px] text-slate-400 mt-0.5 max-w-sm mx-auto">
+              Chụp hoặc chọn ảnh gáy sách để AI tự động trích xuất thông tin.
             </p>
           </div>
         )}
       </div>
 
       {/* 2. Bảng Chờ Duyệt (Draft / Staging Table) */}
-      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs p-5 sm:p-6">
+      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs p-4 sm:p-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
-          <div>
+          <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="p-1.5 bg-amber-100 text-amber-700 rounded-xl">
-                <Layers className="w-5 h-5" />
+                <Layers className="w-4 h-4" />
               </span>
-              <h2 className="text-lg font-black text-slate-900">
-                Bảng Chờ Duyệt ({draftItems.length} cuốn)
+              <h2 className="text-base sm:text-lg font-black text-slate-900">
+                Bảng Chờ Duyệt ({draftItems.length})
               </h2>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Kiểm tra thông tin, cảnh báo trùng lặp (Fuzzy Matching) trước khi lưu chính thức vào Firestore.
+            <p className="text-[11px] sm:text-xs text-slate-500 leading-relaxed">
+              Kiểm tra &amp; loại trùng tự động (Fuzzy Matching) trước khi lưu chính thức.
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto shrink-0">
             {draftItems.length > 0 && (
               <button
                 onClick={() => setDraftItems([])}
-                className="px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-xl transition"
+                className="flex-1 sm:flex-none px-3 py-2 text-[11px] font-bold text-rose-600 hover:bg-rose-50 rounded-xl transition"
               >
-                Xóa hết bảng chờ
+                Xóa hết
               </button>
             )}
 
             <button
               onClick={handleSaveAllDrafts}
               disabled={draftItems.length === 0 || isSaving}
-              className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-40"
+              className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl shadow-xs transition disabled:opacity-40"
             >
-              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-              <span>Xác Nhận Lưu Vào Kho ({draftItems.length})</span>
+              {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+              <span>Lưu Vào Kho ({draftItems.length})</span>
             </button>
           </div>
         </div>
 
         {/* Table Draft Items */}
         {draftItems.length > 0 ? (
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
+          <div className="mt-4 overflow-x-auto border border-slate-100 rounded-2xl">
+            <table className="w-full text-left border-collapse text-[11px] sm:text-xs">
               <thead>
-                <tr className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200 uppercase">
-                  <th className="py-2.5 px-3">#</th>
-                  <th className="py-2.5 px-3">Tên Sách</th>
-                  <th className="py-2.5 px-3">Tác Giả</th>
-                  <th className="py-2.5 px-3">Thể Loại</th>
-                  <th className="py-2.5 px-3">NXB</th>
-                  <th className="py-2.5 px-3">Trạng Thái Trùng</th>
-                  <th className="py-2.5 px-3 text-right">Thao Tác</th>
+                <tr className="bg-slate-50 text-slate-500 font-extrabold border-b border-slate-100 uppercase tracking-wider">
+                  <th className="py-2 px-2 text-center w-8">#</th>
+                  <th className="py-2 px-3">Tên Sách</th>
+                  <th className="py-2 px-3">Tác Giả</th>
+                  <th className="py-2 px-3">Thể Loại</th>
+                  <th className="py-2 px-3">NXB</th>
+                  <th className="py-2 px-3">Kiểm Trùng</th>
+                  <th className="py-2 px-2 text-right w-16">Thao Tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {draftItems.map((draft, idx) => (
                   <tr
                     key={draft.tempId}
-                    className={`hover:bg-slate-50/80 transition ${
-                      draft.isDuplicate ? 'bg-amber-50/50' : ''
+                    className={`hover:bg-slate-50/50 transition ${
+                      draft.isDuplicate ? 'bg-amber-50/30' : ''
                     }`}
                   >
-                    <td className="py-2 px-3 font-mono text-slate-400 font-bold">{idx + 1}</td>
+                    <td className="py-1.5 px-2 text-center font-mono text-slate-400 font-bold">{idx + 1}</td>
                     
                     {/* Title */}
-                    <td className="py-2 px-3 min-w-[200px]">
+                    <td className="py-1.5 px-3 min-w-[180px]">
                       <input
                         type="text"
                         value={draft.title}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { title: e.target.value })}
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded font-semibold text-slate-900 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                        className="w-full px-2 py-1.5 bg-slate-50 hover:bg-white focus:bg-white border border-slate-100 hover:border-slate-300 focus:border-emerald-500 rounded-xl font-bold text-slate-900 focus:outline-none transition text-xs"
                       />
                     </td>
 
                     {/* Author */}
-                    <td className="py-2 px-3 min-w-[150px]">
+                    <td className="py-1.5 px-3 min-w-[140px]">
                       <input
                         type="text"
                         value={draft.author}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { author: e.target.value })}
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-slate-800 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                        className="w-full px-2 py-1.5 bg-slate-50 hover:bg-white focus:bg-white border border-slate-100 hover:border-slate-300 focus:border-emerald-500 rounded-xl text-slate-800 focus:outline-none transition text-xs"
                       />
                     </td>
 
                     {/* Category */}
-                    <td className="py-2 px-3 min-w-[120px]">
+                    <td className="py-1.5 px-3 min-w-[110px]">
                       <input
                         type="text"
                         list="categories-list"
                         value={draft.category || 'Chung'}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { category: e.target.value })}
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-slate-800 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                        className="w-full px-2 py-1.5 bg-slate-50 hover:bg-white focus:bg-white border border-slate-100 hover:border-slate-300 focus:border-emerald-500 rounded-xl text-slate-800 focus:outline-none transition text-xs"
                       />
                     </td>
 
                     {/* Publisher */}
-                    <td className="py-2 px-3 min-w-[120px]">
+                    <td className="py-1.5 px-3 min-w-[110px]">
                       <input
                         type="text"
                         value={draft.publisher || ''}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { publisher: e.target.value })}
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-slate-800 focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                        className="w-full px-2 py-1.5 bg-slate-50 hover:bg-white focus:bg-white border border-slate-100 hover:border-slate-300 focus:border-emerald-500 rounded-xl text-slate-800 focus:outline-none transition text-xs"
                         placeholder="NXB..."
                       />
                     </td>
 
                     {/* Duplicate Status */}
-                    <td className="py-2 px-3">
+                    <td className="py-1.5 px-3 whitespace-nowrap">
                       {draft.isDuplicate ? (
-                        <div className="flex items-center gap-1 text-amber-700 bg-amber-100 px-2 py-0.5 rounded text-[11px] font-bold">
-                          <AlertTriangle className="w-3 h-3 text-amber-600" />
+                        <div className="inline-flex items-center gap-1 text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md text-[10px] font-extrabold border border-amber-100 max-w-[180px] truncate">
+                          <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
                           <span>Trùng: &quot;{draft.duplicateMatchTitle}&quot;</span>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-1 text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded text-[11px] font-semibold">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        <div className="inline-flex items-center gap-1 text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md text-[10px] font-extrabold border border-emerald-100">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
                           <span>Hợp lệ</span>
                         </div>
                       )}
                     </td>
 
                     {/* Actions */}
-                    <td className="py-2 px-3 text-right">
+                    <td className="py-1.5 px-2 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => handleEnrichDraft(draft.tempId)}
                           disabled={enrichingId === draft.tempId}
-                          title="Làm giàu dữ liệu với AI"
-                          className="p-1.5 text-purple-600 hover:bg-purple-50 rounded transition disabled:opacity-40"
+                          title="Làm giàu dữ liệu"
+                          className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-xl transition disabled:opacity-40 h-8 w-8 flex items-center justify-center"
                         >
                           {enrichingId === draft.tempId ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -494,8 +473,8 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         </button>
                         <button
                           onClick={() => handleRemoveDraft(draft.tempId)}
-                          title="Xóa cuốn này khỏi bảng chờ"
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition"
+                          title="Xóa dòng"
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition h-8 w-8 flex items-center justify-center"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -507,11 +486,11 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             </table>
           </div>
         ) : (
-          <div className="mt-4 p-8 text-center bg-slate-50/50 border border-slate-200 rounded-2xl">
-            <Layers className="w-8 h-8 mx-auto text-slate-300 mb-2" />
-            <p className="text-sm font-semibold text-slate-600">Bảng chờ duyệt đang trống</p>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Sau khi chụp và chạy &quot;Lọc Sách (AI Parsing)&quot;, kết quả bóc tách sẽ xuất hiện tại đây.
+          <div className="mt-4 p-6 text-center bg-slate-50/40 border border-slate-150 rounded-2xl">
+            <Layers className="w-8 h-8 mx-auto text-slate-300 mb-1.5" />
+            <p className="text-xs font-bold text-slate-600">Bảng chờ duyệt đang trống</p>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              Kết quả quét bóc tách từ camera hoặc ảnh tải lên sẽ hiện tại đây.
             </p>
           </div>
         )}
