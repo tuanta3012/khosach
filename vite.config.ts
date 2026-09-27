@@ -7,8 +7,8 @@ import fs from 'fs';
 import { exec } from 'child_process';
 
 export default defineConfig(() => {
-  // Build-time obfuscation of GEMINI_API_KEY to package inside standalone client APK
-  const plainKey = process.env.GEMINI_API_KEY || 'AQ.Ab8RN6L9FYLan3H46BD2LwEv6eVyuVy_xWSyEGRB-QOOR8o_Dg';
+  // Build-time obfuscation of GEMINI_API_KEY from environment variables
+  const plainKey = process.env.GEMINI_API_KEY || '';
   const OBFUSCATION_SALT = "kho-sach-secure-salt-2026";
   let obfuscatedKey = '';
 

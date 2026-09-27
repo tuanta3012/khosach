@@ -86,7 +86,15 @@ export default function App() {
     const scriptUrl = getStoredOrConfiguredScriptUrl();
 
     if (!sheetUrl && !scriptUrl) {
-      console.log('[Sync] Không cấu hình Google Sheet/Script URL, bỏ qua đồng bộ.');
+      return currentLocalBooks;
+    }
+
+    const isPlaceholderScript = !scriptUrl || scriptUrl.includes('AKfyczt126a5BfMe-0o8');
+    const isPlaceholderSheet = !sheetUrl || sheetUrl.includes('1WmvnebrW2NwMAc5r');
+
+    // Nếu người dùng chưa cấu hình URL thật của mình, không kích hoạt đồng bộ nền tự động
+    if (isPlaceholderScript && isPlaceholderSheet) {
+      console.log('[Sync] Đang dùng liên kết mẫu, bỏ qua đồng bộ mạng. Ứng dụng hoạt động trên bộ nhớ máy.');
       return currentLocalBooks;
     }
 
@@ -95,10 +103,7 @@ export default function App() {
       if (actionType === 'STARTUP') {
         console.log('[Sync] Bắt đầu đồng bộ 2 chiều tự động lúc khởi chạy...');
         // 1. Kéo dữ liệu từ Sheet về qua proxy
-        const res = await pullDataFromDriveWebApp(scriptUrl, sheetUrl).catch((err) => {
-          console.warn('[Sync] Không kéo được dữ liệu từ Sheet:', err.message);
-          return { success: false, books: [] as BookRecord[] };
-        });
+        const res = await pullDataFromDriveWebApp(scriptUrl, sheetUrl);
 
         if (res.success && res.books && res.books.length > 0) {
           // 2. Trộn dữ liệu 2 chiều (Local Cache + Sheet) dựa trên ID và updated_at
@@ -132,18 +137,20 @@ export default function App() {
             setBooks(finalBooks);
           }
 
-          // 4. Đẩy lại danh sách đã trộn đầy đủ & sạch sẽ lên Google Sheet
-          console.log('[Sync] Đang đồng nhất dữ liệu sạch lên Google Sheet...');
-          await pushCleanDataToDriveWebApp(scriptUrl, finalBooks, sheetUrl).catch((err) => {
-            console.warn('[Sync] Không đẩy được dữ liệu lên Sheet:', err.message);
-          });
+          // 4. Đẩy lại danh sách đã trộn đầy đủ & sạch sẽ lên Google Sheet nếu có Apps Script
+          if (scriptUrl && !isPlaceholderScript) {
+            console.log('[Sync] Đang đồng nhất dữ liệu sạch lên Google Sheet...');
+            await pushCleanDataToDriveWebApp(scriptUrl, finalBooks, sheetUrl).catch((err) => {
+              console.warn('[Sync] Không đẩy được dữ liệu lên Sheet:', err.message);
+            });
+          }
 
           setLastDriveSyncTimestamp();
           showToast(`🚀 Đồng bộ 2 chiều thành công! Kho sách có ${finalBooks.length} cuốn.`, 'success');
           return finalBooks;
-        } else {
-          // Nếu kéo rỗng hoặc thất bại, nhưng trên local đang có dữ liệu, khởi tạo dữ liệu lên Google Sheet
-          if (currentLocalBooks.length > 0) {
+        } else if (res.success && res.books && res.books.length === 0 && currentLocalBooks.length > 0) {
+          // Sheet trống hoàn toàn, khởi tạo dữ liệu của máy lên Google Sheet
+          if (scriptUrl && !isPlaceholderScript) {
             console.log('[Sync] Sheet trống, đang tự động khởi tạo dữ liệu của máy lên Google Sheet...');
             await pushCleanDataToDriveWebApp(scriptUrl, currentLocalBooks, sheetUrl).catch((err) => {
               console.warn('[Sync] Khởi tạo dữ liệu lên Sheet thất bại:', err.message);
@@ -152,15 +159,17 @@ export default function App() {
           }
         }
       } else if (actionType === 'MUTATION') {
-        // Với MUTATION (thêm, sửa, xóa, chuẩn hóa), ta đẩy luôn danh sách sách hiện tại lên Google Sheet
-        console.log('[Sync] Tự động đồng nhất thay đổi lên Google Sheet...');
-        await pushCleanDataToDriveWebApp(scriptUrl, currentLocalBooks, sheetUrl).catch((err) => {
-          console.warn('[Sync] Lỗi tự động đồng nhất lên Google Sheet:', err.message);
-        });
-        setLastDriveSyncTimestamp();
+        // Với MUTATION (thêm, sửa, xóa, chuẩn hóa), đẩy lên Google Sheet nếu có cấu hình Apps Script thật
+        if (scriptUrl && !isPlaceholderScript) {
+          console.log('[Sync] Tự động đồng nhất thay đổi lên Google Sheet...');
+          await pushCleanDataToDriveWebApp(scriptUrl, currentLocalBooks, sheetUrl).catch((err) => {
+            console.warn('[Sync] Lỗi tự động đồng nhất lên Google Sheet:', err.message);
+          });
+          setLastDriveSyncTimestamp();
+        }
       }
     } catch (err: any) {
-      console.error('[Sync] Lỗi trong quá trình đồng bộ tự động:', err);
+      console.warn('[Sync] Thông tin quá trình đồng bộ tự động:', err.message || err);
     } finally {
       setIsSyncingDrive(false);
     }

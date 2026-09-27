@@ -4,6 +4,7 @@
 // 2. Android APK (Capacitor): Falls back to direct Google Gemini REST API requests using the obfuscated/compiled key.
 
 import { BookRecord } from '../types';
+import { getStoredOrConfiguredApiKey } from '../config/syncConfig';
 
 // Simple yet effective XOR encryption key to prevent casual signature scanning of the APK bundle.
 const OBFUSCATION_SALT = "kho-sach-secure-salt-2026";
@@ -45,23 +46,96 @@ export function deobfuscateKey(cipherText: string): string {
 /**
  * Resolves the decrypted API key from various environments
  */
-export function getGeminiApiKey(): string {
-  // 1. Check for manual developer override in local storage
-  const localOverride = localStorage.getItem('custom_gemini_api_key');
-  if (localOverride) return localOverride;
+export function saveCustomGeminiApiKey(key: string): void {
+  const cleanKey = key.trim();
+  if (cleanKey) {
+    localStorage.setItem('custom_gemini_api_key', cleanKey);
+  } else {
+    localStorage.removeItem('custom_gemini_api_key');
+  }
+}
 
-  // 2. Check for build-time injected obfuscated key
-  if (typeof __OBFUSCATED_GEMINI_KEY__ !== 'undefined' && __OBFUSCATED_GEMINI_KEY__) {
-    const decrypted = deobfuscateKey(__OBFUSCATED_GEMINI_KEY__);
-    if (decrypted) return decrypted;
+export function getCustomGeminiApiKey(): string {
+  return localStorage.getItem('custom_gemini_api_key') || '';
+}
+
+export function clearCustomGeminiApiKey(): void {
+  localStorage.removeItem('custom_gemini_api_key');
+}
+
+/**
+ * Kiểm tra tính hợp lệ của Gemini API Key
+ */
+export async function testGeminiApiKey(candidateKey: string): Promise<{ success: boolean; message: string }> {
+  const cleanKey = candidateKey.trim();
+  if (!cleanKey) {
+    return { success: false, message: 'Vui lòng nhập API Key để kiểm tra!' };
   }
 
-  // 3. Encrypted backup user key
-  const backupObfuscated = "KjlBbBFZMSYbP1wlLD4EQ0ApWEJvdgJ+QS4eWUglGBY+VCwdNCYLIGohI0ElYn1iClk0LAg=";
-  const backupDecrypted = deobfuscateKey(backupObfuscated);
-  if (backupDecrypted) return backupDecrypted;
+  // Thử qua endpoint server proxy trước
+  try {
+    const isWebPreview = window.location.port === '3000' || window.location.hostname.includes('run.app');
+    if (isWebPreview) {
+      const resp = await fetch('/api/ai/test-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: cleanKey }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.success) {
+        return { success: true, message: data.message || 'API Key Google Gemini hoạt động hoàn hảo!' };
+      }
+      if (data.message) {
+        return { success: false, message: data.message };
+      }
+    }
+  } catch (err: any) {
+    console.warn('[GeminiService] Server test-key proxy check failed, testing direct REST API...');
+  }
 
-  // 4. Fallback to standard environment variable
+  // Thử gọi trực tiếp Google Gemini REST API (hỗ trợ cả Mobile / Android APK)
+  try {
+    const testModel = 'gemini-3.5-flash-lite';
+    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+    const directResp = await fetch(testUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: 'Ping test' }] }],
+      }),
+    });
+
+    if (directResp.ok) {
+      return { success: true, message: 'API Key Google Gemini kết nối thành công!' };
+    }
+
+    const errJson = await directResp.json().catch(() => ({}));
+    const rawError = errJson?.error?.message || `HTTP ${directResp.status}`;
+    return {
+      success: false,
+      message: `Google API từ chối key: ${rawError}`,
+    };
+  } catch (directErr: any) {
+    return {
+      success: false,
+      message: `Không thể kết nối đến Google Gemini: ${directErr.message || String(directErr)}`,
+    };
+  }
+}
+
+/**
+ * Resolves the decrypted API key from various environments
+ */
+export function getGeminiApiKey(): string {
+  // 1. Kiểm tra cấu hình ghi đè trong LocalStorage (nếu người dùng đổi key trên máy)
+  const localOverride = localStorage.getItem('custom_gemini_api_key');
+  if (localOverride && localOverride.trim()) return localOverride.trim();
+
+  // 2. Tự động giải mã Key mặc định từ Vault (hoạt động tức thì trên mọi máy cài APK)
+  const vaultKey = getStoredOrConfiguredApiKey();
+  if (vaultKey && vaultKey.trim()) return vaultKey.trim();
+
+  // 3. Fallback biến môi trường
   const envKey = (import.meta as any).env?.VITE_GEMINI_API_KEY;
   if (envKey) return envKey;
 
@@ -146,10 +220,14 @@ async function executeTask<T>(
   
   if (isWebPreview) {
     try {
-      console.log(`[GeminiService] Attempting server proxy: ${endpoint}`);
+      const apiKey = getGeminiApiKey();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (apiKey) {
+        headers["x-gemini-api-key"] = apiKey;
+      }
       const res = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(serverPayload),
       });
       if (res.ok) {
