@@ -39,6 +39,7 @@ export interface LibrarySettings {
   autoEnrichEnabled: boolean;
   driveBackupFolder?: string;
   driveSyncUrl?: string; // Google Apps Script Web App URL cho đồng bộ 2 chiều
+  driveTargetFileUrl?: string; // Link file Google Sheet đồng bộ chung
   autoSyncDrive?: boolean; // Tự động đẩy dữ liệu sạch lên Drive khi có thay đổi
   lastBackupTime?: string;
   categoriesList: string[];

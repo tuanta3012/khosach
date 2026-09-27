@@ -69,6 +69,8 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState<boolean>(false);
 
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
@@ -182,23 +184,9 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
     }
   };
 
-  const handleResetData = async () => {
+  const handleResetData = () => {
     if (!onResetMasterData) return;
-    if (
-      window.confirm(
-        'Bạn có chắc chắn muốn nạp lại 100% dữ liệu gốc (591 cuốn sách) vào Firestore?'
-      )
-    ) {
-      try {
-        setIsResetting(true);
-        await onResetMasterData();
-        showToast('Đã nạp 591 cuốn sách gốc thành công!', 'success');
-      } catch {
-        showToast('Lỗi khi nạp dữ liệu gốc', 'error');
-      } finally {
-        setIsResetting(false);
-      }
-    }
+    setConfirmReset(true);
   };
 
   const columns = useMemo<ColumnDef<BookRecord>[]>(
@@ -382,6 +370,31 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
               </div>
             );
           }
+          const isDeleting = confirmDeleteId === row.original.id;
+          if (isDeleting) {
+            return (
+              <div className="flex items-center justify-end gap-1 animate-in fade-in duration-100">
+                <button
+                  onClick={() => {
+                    onDeleteBook(row.original.id);
+                    setConfirmDeleteId(null);
+                  }}
+                  className="px-1.5 py-0.5 bg-rose-600 text-white rounded text-[10px] font-bold hover:bg-rose-700 transition"
+                  title="Xác nhận xóa"
+                >
+                  Xóa
+                </button>
+                <button
+                  onClick={() => setConfirmDeleteId(null)}
+                  className="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded text-[10px] font-bold hover:bg-slate-300 transition"
+                  title="Hủy"
+                >
+                  Hủy
+                </button>
+              </div>
+            );
+          }
+
           return (
             <div className="flex items-center justify-end gap-1">
               <button
@@ -392,15 +405,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                 <Edit2 className="w-3.5 h-3.5" />
               </button>
               <button
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      `Xóa cuốn "${row.original.title}" khỏi kho?`
-                    )
-                  ) {
-                    onDeleteBook(row.original.id);
-                  }
-                }}
+                onClick={() => setConfirmDeleteId(row.original.id)}
                 className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition"
                 title="Xóa"
               >
@@ -413,7 +418,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
         enableSorting: false,
       },
     ],
-    [editingRowId, editingValues]
+    [editingRowId, editingValues, confirmDeleteId]
   );
 
   const table = useReactTable({
@@ -762,28 +767,43 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                       <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 rounded text-[10px] font-bold border border-emerald-200">
                         {book.category || 'Chung'}
                       </span>
-                      <button
-                        onClick={() => handleStartEdit(book)}
-                        className="p-1 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
-                        title="Sửa nhanh"
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Xóa cuốn "${book.title}" khỏi kho?`
-                            )
-                          ) {
-                            onDeleteBook(book.id);
-                          }
-                        }}
-                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                        title="Xóa"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {confirmDeleteId === book.id ? (
+                        <div className="flex items-center gap-1 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded-lg animate-in fade-in slide-in-from-right-1 duration-150">
+                          <span className="text-[10px] font-bold text-rose-700 shrink-0">Xóa?</span>
+                          <button
+                            onClick={() => {
+                              onDeleteBook(book.id);
+                              setConfirmDeleteId(null);
+                            }}
+                            className="px-1.5 py-0.5 bg-rose-600 text-white rounded text-[10px] font-bold hover:bg-rose-700 transition"
+                          >
+                            Có
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded text-[10px] font-bold hover:bg-slate-300 transition"
+                          >
+                            Không
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => handleStartEdit(book)}
+                            className="p-1 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
+                            title="Sửa nhanh"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteId(book.id)}
+                            className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                            title="Xóa"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -910,6 +930,50 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Custom Master Data Reset Confirmation Modal Overlay */}
+      {confirmReset && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 text-center space-y-4">
+            <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center mx-auto">
+              <RefreshCw className="w-6 h-6 animate-spin" />
+            </div>
+            <div className="space-y-1.5">
+              <h4 className="text-sm font-bold text-slate-900">Xác Nhận Nạp Lại Dữ Liệu Gốc?</h4>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Hành động này sẽ xóa toàn bộ danh mục sách hiện tại trong Firestore và khôi phục lại {books.length > 500 ? books.length : 591} cuốn sách mẫu ban đầu.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirmReset(false)}
+                className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+              >
+                Hủy Bỏ
+              </button>
+              <button
+                onClick={async () => {
+                  setConfirmReset(false);
+                  if (onResetMasterData) {
+                    try {
+                      setIsResetting(true);
+                      await onResetMasterData();
+                      showToast('Đã khôi phục thành công danh mục sách gốc!', 'success');
+                    } catch {
+                      showToast('Lỗi khi nạp dữ liệu gốc', 'error');
+                    } finally {
+                      setIsResetting(false);
+                    }
+                  }
+                }}
+                className="flex-1 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-xs"
+              >
+                Khôi Phục Ngay
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

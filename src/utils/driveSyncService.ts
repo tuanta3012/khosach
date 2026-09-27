@@ -185,6 +185,15 @@ export function sanitizeAppsScriptUrl(url: string): string {
 }
 
 /**
+ * Chuẩn hóa Document ID hợp lệ cho Firestore
+ */
+export function sanitizeDocId(id: string): string {
+  if (!id) return '';
+  // Chỉ giữ lại chữ cái, chữ số, gạch nối, gạch dưới. Loại bỏ khoảng trắng và mọi ký tự đặc biệt bao gồm cả dấu '/'
+  return id.replace(/[^a-zA-Z0-9_\-]/g, '').trim();
+}
+
+/**
  * Parse CSV text từ Google Sheet gviz/tq?tqx=out:csv
  */
 export function parseGoogleSheetCsvText(csvText: string): BookRecord[] {
@@ -255,8 +264,11 @@ export function parseGoogleSheetCsvText(csvText: string): BookRecord[] {
     const title = titleIdx !== -1 && titleIdx < row.length ? row[titleIdx] : '';
     if (!title || title.toLowerCase() === 'tên sách' || title.toLowerCase() === 'title') continue;
 
+    const rawId = (idIdx !== -1 && idIdx < row.length && row[idIdx]) ? row[idIdx] : '';
+    const bookId = sanitizeDocId(rawId) || `sheet_import_${Date.now()}_${i}`;
+
     const book: BookRecord = {
-      id: (idIdx !== -1 && idIdx < row.length && row[idIdx]) ? row[idIdx] : `sheet_import_${Date.now()}_${i}`,
+      id: bookId,
       title: title,
       author: (authorIdx !== -1 && authorIdx < row.length && row[authorIdx]) ? row[authorIdx] : 'Chưa rõ',
       category: (categoryIdx !== -1 && categoryIdx < row.length && row[categoryIdx]) ? row[categoryIdx] : 'Chung',
@@ -268,6 +280,22 @@ export function parseGoogleSheetCsvText(csvText: string): BookRecord[] {
   }
 
   return books;
+}
+
+/**
+ * Helper để lấy URL Proxy tránh lỗi CORS tuyệt đối
+ */
+export function getProxyUrl(targetUrl: string): string {
+  const path = `/api/drive/proxy?url=${encodeURIComponent(targetUrl)}`;
+  if (typeof window !== 'undefined') {
+    const origin = window.location.origin;
+    if (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.startsWith('file:')) {
+      // Dành cho môi trường di động local/Capacitor hoặc localhost dev, gọi qua máy chủ AI Studio preview
+      return `https://ais-pre-6xd4hn5ourvlmjugqheam6-546075383474.asia-southeast1.run.app${path}`;
+    }
+    return `${origin}${path}`;
+  }
+  return path;
 }
 
 /**
@@ -291,31 +319,73 @@ export async function pushCleanDataToDriveWebApp(
     books: books,
   };
 
-  // Lần 1: Thử POST tiêu chuẩn
+  const proxyUrl = getProxyUrl(cleanUrl);
+  console.log(`[pushCleanDataToDriveWebApp] Posting via proxy: ${proxyUrl}`);
+
+  // Thử POST qua Server Proxy trước (Tránh lỗi CORS 100% và nhận được kết quả chính xác)
   try {
-    const response = await fetch(cleanUrl, {
+    const response = await fetch(proxyUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'text/plain;charset=utf-8',
+        'Content-Type': 'application/json;charset=utf-8',
       },
       body: JSON.stringify(payload),
-      redirect: 'follow',
     });
 
-    const data = await response.json();
-    if (data.status === 'success') {
-      return {
-        success: true,
-        message: data.message || `Đã đẩy thành công ${books.length} cuốn sách lên Google Drive / Google Sheet!`,
-        count: data.count || books.length,
-      };
+    if (response.ok) {
+      const data = await response.json();
+      if (data.status === 'success') {
+        addSyncLog({
+          type: 'PUSH',
+          url: proxyUrl,
+          payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
+          status: response.status,
+          success: true,
+          responseBody: data,
+        });
+        return {
+          success: true,
+          message: data.message || `Đã đồng bộ thành công ${books.length} cuốn sách lên Google Sheet/Drive!`,
+          count: data.count || books.length,
+        };
+      } else {
+        addSyncLog({
+          type: 'PUSH',
+          url: proxyUrl,
+          payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
+          status: response.status,
+          success: false,
+          responseBody: data,
+          error: data.message || 'Lỗi trả về từ Apps Script',
+        });
+        throw new Error(data.message || 'Lỗi trả về từ Apps Script');
+      }
     } else {
-      throw new Error(data.message || 'Lỗi không xác định từ Apps Script');
+      const errorText = await response.text().catch(() => `HTTP ${response.status}`);
+      let parsedError = errorText;
+      let parsedJson: any = null;
+      try {
+        parsedJson = JSON.parse(errorText);
+        if (parsedJson && parsedJson.error) {
+          parsedError = parsedJson.error;
+        }
+      } catch {}
+      addSyncLog({
+        type: 'PUSH',
+        url: proxyUrl,
+        payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
+        status: response.status,
+        success: false,
+        responseBody: parsedJson || errorText,
+        error: `Proxy trả về lỗi: ${parsedError}`,
+      });
+      throw new Error(`Proxy trả về lỗi: ${parsedError}`);
     }
   } catch (err: any) {
-    console.warn('Standard POST failed, retrying with fallback mode...', err);
+    console.warn('[pushCleanDataToDriveWebApp] Proxy POST failed:', err);
     
-    // Lần 2: Thử POST khẩn cấp qua no-cors (Tránh tuyệt đối lỗi CORS Browser)
+    // Fallback: Thử POST trực tiếp bằng no-cors đề phòng trường hợp Proxy gặp sự cố kết nối,
+    // nhưng thông báo rõ cho người dùng đây là lệnh mù (unconfirmed) để tránh nhầm lẫn dữ liệu.
     try {
       await fetch(cleanUrl, {
         method: 'POST',
@@ -326,15 +396,35 @@ export async function pushCleanDataToDriveWebApp(
         body: JSON.stringify(payload),
       });
 
+      addSyncLog({
+        type: 'PUSH',
+        url: cleanUrl,
+        payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
+        status: 0,
+        success: true,
+        fallbackUsed: true,
+        responseBody: { message: 'Opaque response (no-cors mode: response body is protected by browsers)' },
+      });
+
       return {
         success: true,
-        message: `Đã phát lệnh đẩy ${books.length} cuốn sách lên Google Sheet/Drive thành công (chế độ bảo mật no-cors)!`,
+        message: `⚠️ Đã gửi lệnh cập nhật (${books.length} cuốn) lên Google Sheet qua no-cors. (Chú ý: Chưa thể xác nhận ghi file thành công, vui lòng kiểm tra lại cấu hình Web App nếu file Sheet chưa đổi).`,
         count: books.length,
       };
     } catch (fallbackErr: any) {
+      addSyncLog({
+        type: 'PUSH',
+        url: cleanUrl,
+        payload: { totalCount: books.length, booksSample: books.slice(0, 3) },
+        status: 0,
+        success: false,
+        fallbackUsed: true,
+        error: fallbackErr.message || String(fallbackErr),
+      });
       throw new Error(
         'Không thể đẩy dữ liệu lên Google Drive.\n\n' +
-        '👉 Bạn vui lòng kiểm tra lại URL Google Apps Script đã có dạng https://script.google.com/macros/s/.../exec chưa.'
+        `Chi tiết lỗi: ${err.message || String(err)}\n\n` +
+        '👉 MẸO: Hãy kiểm tra xem bạn đã chạy hàm setupPermissions và Triển khai lại Apps Script dưới dạng Web App (Execute as: Tôi, Who has access: Bất kỳ ai) chưa!'
       );
     }
   }
@@ -347,20 +437,29 @@ export async function pullDataFromDriveWebApp(
   webAppUrl: string,
   targetFileUrl?: string
 ): Promise<{ success: boolean; books: BookRecord[]; message?: string }> {
-  // 1. Thử Đọc Trực Tiếp Từ Google Sheet CSV (NẾU người dùng có dán link Google Sheet)
+  // 1. Thử Đọc Trực Tiếp Từ Google Sheet CSV qua CORS-Free Server Proxy
   if (targetFileUrl && targetFileUrl.trim()) {
     const sheetMatch = targetFileUrl.trim().match(/\/d\/([a-zA-Z0-9-_]+)/);
     if (sheetMatch && sheetMatch[1]) {
       const spreadsheetId = sheetMatch[1];
       const directCsvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv`;
+      const proxyCsvUrl = getProxyUrl(directCsvUrl);
       
       try {
-        const directResp = await fetch(directCsvUrl);
+        console.log(`[pullDataFromDriveWebApp] Fetching direct sheet CSV via proxy: ${proxyCsvUrl}`);
+        const directResp = await fetch(proxyCsvUrl);
         if (directResp.ok) {
           const csvText = await directResp.text();
           if (csvText && !csvText.includes('<!DOCTYPE html>') && !csvText.includes('<html>')) {
             const parsed = parseGoogleSheetCsvText(csvText);
             if (parsed.length > 0) {
+              addSyncLog({
+                type: 'PULL',
+                url: proxyCsvUrl,
+                success: true,
+                status: directResp.status,
+                responseBody: { message: `Đọc CSV trực tiếp thành công. Tìm thấy ${parsed.length} cuốn sách.` },
+              });
               return {
                 success: true,
                 books: parsed,
@@ -369,13 +468,13 @@ export async function pullDataFromDriveWebApp(
             }
           }
         }
-      } catch (directErr) {
-        console.warn('Direct Google Sheet CSV fetch failed, falling back to Apps Script Web App...', directErr);
+      } catch (directErr: any) {
+        console.warn('[pullDataFromDriveWebApp] Direct proxy CSV fetch failed, falling back to Apps Script Web App...', directErr);
       }
     }
   }
 
-  // 2. Thử Đọc Qua Apps Script Web App Endpoint
+  // 2. Thử Đọc Qua Apps Script Web App Endpoint bằng Server Proxy
   const cleanUrl = sanitizeAppsScriptUrl(webAppUrl);
   if (!cleanUrl || !cleanUrl.startsWith('http')) {
     throw new Error('URL Google Apps Script không hợp lệ. Vui lòng cấu hình URL dạng https://script.google.com/macros/s/.../exec');
@@ -388,20 +487,35 @@ export async function pullDataFromDriveWebApp(
       reqUrl += `${sep}fileUrl=${encodeURIComponent(targetFileUrl.trim())}`;
     }
 
-    const response = await fetch(reqUrl, { method: 'GET', redirect: 'follow' });
+    const proxyAppScriptUrl = getProxyUrl(reqUrl);
+    console.log(`[pullDataFromDriveWebApp] Fetching Apps Script via proxy: ${proxyAppScriptUrl}`);
+
+    const response = await fetch(proxyAppScriptUrl);
     const data = await response.json();
 
     if (data.status === 'success' || Array.isArray(data.books)) {
       const rawBooks = data.books || [];
-      const parsedBooks: BookRecord[] = rawBooks.map((item: any, idx: number) => ({
-        id: item.id || `drive_import_${Date.now()}_${idx}`,
-        title: String(item.title || item.name || '').trim(),
-        author: String(item.author || item.writer || 'Chưa rõ').trim(),
-        category: String(item.category || item.genre || 'Chung').trim(),
-        publisher: String(item.publisher || item.nxb || '').trim(),
-        updated_at: item.updated_at || Date.now(),
-        created_at: item.created_at || Date.now(),
-      })).filter((b: BookRecord) => b.title.length > 0);
+      const parsedBooks: BookRecord[] = rawBooks.map((item: any, idx: number) => {
+        const rawId = String(item.id || '');
+        const bookId = sanitizeDocId(rawId) || `drive_import_${Date.now()}_${idx}`;
+        return {
+          id: bookId,
+          title: String(item.title || item.name || '').trim(),
+          author: String(item.author || item.writer || 'Chưa rõ').trim(),
+          category: String(item.category || item.genre || 'Chung').trim(),
+          publisher: String(item.publisher || item.nxb || '').trim(),
+          updated_at: item.updated_at || Date.now(),
+          created_at: item.created_at || Date.now(),
+        };
+      }).filter((b: BookRecord) => b.title.length > 0);
+
+      addSyncLog({
+        type: 'PULL',
+        url: proxyAppScriptUrl,
+        success: true,
+        status: response.status,
+        responseBody: data,
+      });
 
       return {
         success: true,
@@ -409,13 +523,63 @@ export async function pullDataFromDriveWebApp(
         message: `Đã kéo thành công ${parsedBooks.length} cuốn sách từ Google Drive!`,
       };
     } else {
+      addSyncLog({
+        type: 'PULL',
+        url: proxyAppScriptUrl,
+        success: false,
+        status: response.status,
+        responseBody: data,
+        error: data.message || 'Lỗi đọc file từ Apps Script',
+      });
       throw new Error(data.message || 'Lỗi đọc file từ Apps Script');
     }
   } catch (err: any) {
-    console.error('Pull from Drive error:', err);
+    console.error('[pullDataFromDriveWebApp] Pull from Drive via proxy error:', err);
+    addSyncLog({
+      type: 'PULL',
+      url: cleanUrl,
+      success: false,
+      error: err.message || String(err),
+    });
     throw new Error(
-      `Không thể kéo dữ liệu từ Google Drive: ${err.message || 'Lỗi kết nối'}\n\n` +
+      `Không thể kéo dữ liệu từ Google Drive: ${err.message || 'Lỗi kết nối proxy'}\n\n` +
       '👉 MẸO DỄ NHẤT: Trong ô "Link File Google Sheet", đảm bảo file Google Sheet của bạn được đặt quyền "Bất kỳ ai có liên kết đều có thể xem" (Anyone with the link can view).'
     );
   }
 }
+
+/**
+ * HỆ THỐNG GHI LOG ĐỒNG BỘ ĐỂ DEBUG
+ */
+export interface SyncLogEntry {
+  timestamp: number;
+  type: 'PUSH' | 'PULL' | 'TEST';
+  url: string;
+  payload?: any;
+  status?: number;
+  success: boolean;
+  responseBody?: any;
+  error?: string;
+  fallbackUsed?: boolean;
+}
+
+let syncLogs: SyncLogEntry[] = [];
+
+export function addSyncLog(entry: Omit<SyncLogEntry, 'timestamp'>) {
+  syncLogs.unshift({
+    ...entry,
+    timestamp: Date.now(),
+  });
+  if (syncLogs.length > 50) {
+    syncLogs.pop();
+  }
+}
+
+export function getSyncLogs(): SyncLogEntry[] {
+  return syncLogs;
+}
+
+export function clearSyncLogs() {
+  syncLogs = [];
+}
+

@@ -149,6 +149,99 @@ Trả về thông tin chuẩn nhất:
   }
 });
 
+// API: Proxy for Google Drive / Google Sheets & Apps Script to bypass browser CORS completely!
+app.all('/api/drive/proxy', async (req, res) => {
+  const targetUrl = req.query.url as string;
+  if (!targetUrl) {
+    return res.status(400).json({ success: false, error: 'Thiếu tham số url để proxy.' });
+  }
+
+  console.log(`[Proxy Drive] Method ${req.method} to target: ${targetUrl}`);
+
+  try {
+    let currentUrl = targetUrl;
+    let currentMethod = req.method;
+    const headers: any = {
+      'User-Agent': 'aistudio-khosach-proxy',
+    };
+
+    // Chuẩn bị body ban đầu
+    let bodyPayload: any = undefined;
+    if (currentMethod === 'POST' || currentMethod === 'PUT') {
+      bodyPayload = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      headers['Content-Type'] = req.headers['content-type'] || 'application/json';
+    }
+
+    let response;
+    let redirectCount = 0;
+    const maxRedirects = 10;
+
+    while (redirectCount < maxRedirects) {
+      const fetchOptions: any = {
+        method: currentMethod,
+        headers: headers,
+        redirect: 'manual', // Tự tay xử lý chuyển hướng để tránh lỗi giữ nguyên body/Content-Type khi đổi từ POST thành GET
+      };
+
+      if (bodyPayload !== undefined) {
+        fetchOptions.body = bodyPayload;
+      }
+
+      response = await fetch(currentUrl, {
+        ...fetchOptions,
+        signal: AbortSignal.timeout(20000), // Timeout 20 giây
+      });
+
+      const status = response.status;
+      console.log(`[Proxy Drive] Request to ${currentUrl} returned status ${status}`);
+
+      // Xử lý chuyển hướng (301, 302, 303, 307, 308)
+      if (status >= 300 && status < 400) {
+        const location = response.headers.get('location');
+        if (!location) {
+          break;
+        }
+
+        // Tạo URL tuyệt đối từ Location header
+        currentUrl = new URL(location, currentUrl).toString();
+        redirectCount++;
+        console.log(`[Proxy Drive] Redirecting to: ${currentUrl} (Count: ${redirectCount})`);
+
+        // Quy tắc chuẩn HTTP: Đối với 301, 302, 303: Chuyển sang GET và xóa bỏ Body + Content-Type
+        if (status === 301 || status === 302 || status === 303) {
+          currentMethod = 'GET';
+          bodyPayload = undefined;
+          delete headers['Content-Type'];
+        }
+        continue;
+      }
+
+      break;
+    }
+
+    if (!response) {
+      throw new Error('Không nhận được phản hồi từ máy chủ đích.');
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    
+    if (contentType.includes('application/json')) {
+      const data = await response.json();
+      return res.json(data);
+    } else {
+      const text = await response.text();
+      res.setHeader('Content-Type', contentType || 'text/plain; charset=utf-8');
+      return res.send(text);
+    }
+  } catch (err: any) {
+    console.error('[Proxy Drive] Lỗi khi chuyển tiếp yêu cầu:', err.message || err);
+    return res.status(502).json({
+      success: false,
+      error: `CORS Proxy thất bại: ${err.message || String(err)}`
+    });
+  }
+});
+
 // API: Proxy Check App Update to bypass browser CORS / localized ISP blocks
 app.get('/api/app-update/check', async (req, res) => {
   const TARGET_URL = 'https://raw.githubusercontent.com/tuanta3012/khosach/refs/heads/main/version.json';

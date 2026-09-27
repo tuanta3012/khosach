@@ -16,6 +16,10 @@ import {
   pullDataFromDriveWebApp,
   sanitizeAppsScriptUrl,
   parseGoogleSheetCsvText,
+  getProxyUrl,
+  getSyncLogs,
+  clearSyncLogs,
+  SyncLogEntry,
 } from '../utils/driveSyncService';
 import {
   getStoredOrConfiguredSheetUrl,
@@ -32,7 +36,8 @@ interface DataSyncModalProps {
   ) => Promise<{ addedCount: number; skippedCount: number }>;
   userEmail?: string;
   driveSyncUrl?: string;
-  onSaveDriveSyncUrl?: (url: string) => void;
+  driveTargetFileUrl?: string;
+  onSaveConfig?: (sheetUrl: string, scriptUrl: string) => void;
 }
 
 export const DataSyncModal: React.FC<DataSyncModalProps> = ({
@@ -42,7 +47,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   onImportBooks,
   userEmail,
   driveSyncUrl = '',
-  onSaveDriveSyncUrl,
+  driveTargetFileUrl = '',
+  onSaveConfig,
 }) => {
   const { showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -54,23 +60,46 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   const [scriptUrlInput, setScriptUrlInput] = useState(() => getStoredOrConfiguredScriptUrl());
   const [targetFileUrl, setTargetFileUrl] = useState(() => getStoredOrConfiguredSheetUrl());
   const [isSyncingDrive, setIsSyncingDrive] = useState(false);
-  const [showAdvancedScript, setShowAdvancedScript] = useState(false);
+  const [showAdvancedScript, setShowAdvancedScript] = useState(() => {
+    const url = getStoredOrConfiguredScriptUrl();
+    return url.includes('AKfyczt126a5BfMe-0o8') || !url.trim();
+  });
+
+  const isUsingDummyScript = scriptUrlInput.includes('AKfyczt126a5BfMe-0o8') || !scriptUrlInput.trim();
+
+  const [logs, setLogs] = useState<SyncLogEntry[]>([]);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setLogs(getSyncLogs());
+      const interval = setInterval(() => {
+        setLogs(getSyncLogs());
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [isOpen]);
 
   // Sync scriptUrlInput & targetFileUrl with localStorage / config / props
   React.useEffect(() => {
     setScriptUrlInput(driveSyncUrl || getStoredOrConfiguredScriptUrl());
-    setTargetFileUrl(getStoredOrConfiguredSheetUrl());
-  }, [driveSyncUrl, isOpen]);
+    setTargetFileUrl(driveTargetFileUrl || getStoredOrConfiguredSheetUrl());
+  }, [driveSyncUrl, driveTargetFileUrl, isOpen]);
 
   if (!isOpen) return null;
 
   const handleSaveConfig = () => {
     const sanitized = sanitizeAppsScriptUrl(scriptUrlInput);
     setScriptUrlInput(sanitized);
+    const trimmedSheet = targetFileUrl.trim();
+    setTargetFileUrl(trimmedSheet);
+
     localStorage.setItem('drive_sync_url_v1', sanitized);
-    localStorage.setItem('drive_target_file_url_v1', targetFileUrl.trim());
-    if (onSaveDriveSyncUrl) onSaveDriveSyncUrl(sanitized);
-    showToast('Đã lưu link Google Sheet thành công!', 'success');
+    localStorage.setItem('drive_target_file_url_v1', trimmedSheet);
+
+    if (onSaveConfig) {
+      onSaveConfig(trimmedSheet, sanitized);
+    }
+    showToast('Đã đồng bộ cấu hình thành công lên đám mây Firestore!', 'success');
   };
 
   const handleTestConnection = async () => {
@@ -88,7 +117,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       const match = targetFileUrl.trim().match(/\/d\/([a-zA-Z0-9-_]+)/);
       if (match && match[1]) {
         try {
-          const csvResp = await fetch(`https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv`);
+          const proxyUrl = getProxyUrl(`https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv`);
+          const csvResp = await fetch(proxyUrl);
           if (csvResp.ok) {
             const text = await csvResp.text();
             if (text && !text.includes('<!DOCTYPE html>') && !text.includes('<html>')) {
@@ -105,17 +135,32 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
     if (scriptUrlInput.trim()) {
       const cleanUrl = sanitizeAppsScriptUrl(scriptUrlInput);
       setScriptUrlInput(cleanUrl);
-      try {
-        let testUrl = cleanUrl;
-        if (targetFileUrl.trim()) {
-          testUrl += (testUrl.includes('?') ? '&' : '?') + `fileUrl=${encodeURIComponent(targetFileUrl.trim())}`;
+      
+      if (cleanUrl.includes('docs.google.com/spreadsheets')) {
+        successMessages.push(`❌ Lỗi Apps Script: Bạn đang dán NHẦM Link Google Sheet vào ô URL Apps Script!`);
+      } else if (!cleanUrl.includes('script.google.com/macros/')) {
+        successMessages.push(`❌ Lỗi Apps Script: Link không đúng định dạng Web App (thiếu script.google.com)`);
+      } else {
+        try {
+          let testUrl = cleanUrl;
+          if (targetFileUrl.trim()) {
+            testUrl += (testUrl.includes('?') ? '&' : '?') + `fileUrl=${encodeURIComponent(targetFileUrl.trim())}`;
+          }
+          const proxyAppScriptUrl = getProxyUrl(testUrl);
+          const res = await fetch(proxyAppScriptUrl);
+          if (!res.ok) {
+            throw new Error(`Server proxy trả về HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          if (data.status === 'success') {
+            successMessages.push(`✅ Apps Script 2 chiều OK (${data.count || 0} cuốn)`);
+          } else {
+            successMessages.push(`❌ Lỗi từ Apps Script: ${data.message || 'Không xác định'}`);
+          }
+        } catch (err: any) {
+          successMessages.push(`❌ Lỗi kết nối Apps Script: ${err.message || String(err)}`);
         }
-        const res = await fetch(testUrl, { method: 'GET', redirect: 'follow' });
-        const data = await res.json();
-        if (data.status === 'success') {
-          successMessages.push(`✅ Apps Script 2 chiều OK (${data.count || 0} cuốn)`);
-        }
-      } catch (err) {}
+      }
     }
 
     if (successMessages.length > 0) {
@@ -447,6 +492,21 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                 </div>
               </div>
 
+              {isUsingDummyScript && (
+                <div className="p-4 bg-amber-50 rounded-2xl border border-amber-200 text-xs text-amber-900 space-y-2 animate-pulse">
+                  <div className="font-bold flex items-center gap-1.5 text-amber-950 text-sm">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    Chưa cấu hình Apps Script cá nhân!
+                  </div>
+                  <p className="text-[11px] text-amber-800 leading-relaxed">
+                    Bạn đang dùng <strong>URL Apps Script mẫu (mặc định)</strong>. Ở chế độ này, ứng dụng <strong>chỉ có thể đọc sách về</strong> chứ <strong>KHÔNG thể đồng bộ tự động 2 chiều (Thêm, Sửa, Xóa từ App ghi đè lên Sheet)</strong>.
+                  </p>
+                  <p className="text-[11px] text-amber-800 leading-relaxed font-semibold bg-white/60 p-2.5 rounded-xl border border-amber-100">
+                    👉 <strong>Cách khắc phục:</strong> Bấm nút <strong>"⚙️ Tùy chọn nâng cao"</strong> bên dưới &rarr; copy mã Apps Script &rarr; dán vào <a href="https://script.google.com" target="_blank" rel="noopener noreferrer" className="underline text-indigo-700 hover:text-indigo-900">script.google.com</a> &rarr; <strong>Triển khai ứng dụng Web (Execute as: Tôi, Access: Bất kỳ ai)</strong> &rarr; dán link Web App thu được vào ô cấu hình!
+                  </p>
+                </div>
+              )}
+
               {/* Ô nhập Link File Google Sheet */}
               <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
                 <div>
@@ -559,6 +619,97 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                         Sao chép Mã Apps Script
                       </button>
                     </div>
+                  </div>
+                )}
+              </div>
+
+              {/* PANEL DEBUG TẠM THỜI (TEMPORARY SYNC LOGS MONITOR) */}
+              <div className="mt-4 border-t border-slate-200 pt-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-500 animate-ping shrink-0" />
+                    Bảng Giám Sát Đồng Bộ (Debug Logs Realtime)
+                  </span>
+                  {logs.length > 0 && (
+                    <button
+                      onClick={() => {
+                        clearSyncLogs();
+                        setLogs([]);
+                      }}
+                      className="text-[10px] text-slate-400 hover:text-slate-600 underline font-medium"
+                    >
+                      Xóa toàn bộ logs
+                    </button>
+                  )}
+                </div>
+
+                {logs.length === 0 ? (
+                  <div className="p-3 bg-slate-50 border border-slate-100 rounded-xl text-center text-[11px] text-slate-400">
+                    Chưa có logs yêu cầu đồng bộ nào được tạo ra. Hãy thử Thêm/Sửa/Xóa hoặc bấm Đồng bộ/Kiểm tra kết nối để xem log.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {logs.map((log, index) => {
+                      const dateStr = new Date(log.timestamp).toLocaleTimeString('vi-VN');
+                      return (
+                        <div key={index} className={`p-3 rounded-xl border text-xs ${log.success ? 'bg-slate-50/50 border-slate-200' : 'bg-rose-50/30 border-rose-100'}`}>
+                          <div className="flex items-center justify-between font-mono font-bold text-[10px] mb-1.5">
+                            <span className="flex items-center gap-1.5">
+                              <span className={`px-1.5 py-0.5 rounded-md ${
+                                log.type === 'PUSH' ? 'bg-emerald-100 text-emerald-800' : 
+                                log.type === 'PULL' ? 'bg-sky-100 text-sky-800' : 'bg-indigo-100 text-indigo-800'
+                              }`}>
+                                {log.type}
+                              </span>
+                              <span className="text-slate-400">{dateStr}</span>
+                            </span>
+                            <span className={`px-1.5 py-0.5 rounded-md ${log.success ? 'bg-green-100 text-green-800' : 'bg-rose-100 text-rose-800'}`}>
+                              {log.status !== undefined ? `HTTP ${log.status}` : 'No Status'} {log.fallbackUsed ? '(no-cors)' : ''}
+                            </span>
+                          </div>
+
+                          <div className="space-y-1 font-mono text-[10px] text-slate-600 break-all">
+                            <div><span className="font-bold text-slate-800">URL:</span> {log.url}</div>
+                            {log.error && (
+                              <div className="text-rose-600 font-bold bg-rose-50 p-1.5 rounded-md border border-rose-100 mt-1">
+                                <span className="underline">Error:</span> {log.error}
+                              </div>
+                            )}
+
+                            {/* Request Payload */}
+                            {log.payload && (
+                              <div className="mt-1">
+                                <details className="cursor-pointer">
+                                  <summary className="text-indigo-600 hover:text-indigo-800 font-bold underline select-none">
+                                    Xem Request Payload
+                                  </summary>
+                                  <pre className="mt-1 p-2 bg-slate-900 text-slate-200 text-[9px] rounded-lg overflow-x-auto max-h-28">
+                                    {JSON.stringify(log.payload, null, 2)}
+                                  </pre>
+                                </details>
+                              </div>
+                            )}
+
+                            {/* Response Body */}
+                            {log.responseBody && (
+                              <div className="mt-1">
+                                <details className="cursor-pointer" open>
+                                  <summary className="text-emerald-600 hover:text-emerald-800 font-bold underline select-none">
+                                    Xem Response Body (Kết Quả Trả Về Từ Google)
+                                  </summary>
+                                  <pre className="mt-1 p-2 bg-slate-900 text-emerald-400 text-[9px] rounded-lg overflow-x-auto max-h-40 font-mono">
+                                    {typeof log.responseBody === 'object' 
+                                      ? JSON.stringify(log.responseBody, null, 2) 
+                                      : String(log.responseBody)
+                                    }
+                                  </pre>
+                                </details>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
