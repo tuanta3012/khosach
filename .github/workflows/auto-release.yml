@@ -40,8 +40,8 @@ jobs:
           echo "NAME=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
           echo "Auto Generated versionCode: $BUILD_NUMBER, versionName: $PACKAGE_VERSION"
 
-      # 3. Tạo init.gradle cấp hệ thống giải quyết triệt để lỗi BouncyCastle (bcprov)
-      - name: Create Gradle Init Script for BouncyCastle
+      # 3. Tạo init.gradle cấp hệ thống giải quyết triệt để lỗi BouncyCastle (bcprov) và androidx.browser
+      - name: Create Gradle Init Script for BouncyCastle and AndroidX
         run: |
           mkdir -p ~/.gradle
           cat << 'EOF' > ~/.gradle/init.gradle
@@ -52,6 +52,7 @@ jobs:
                           force 'org.bouncycastle:bcprov-jdk15to18:1.70'
                           force 'org.bouncycastle:bcpkix-jdk15to18:1.70'
                           force 'org.bouncycastle:bcutil-jdk15to18:1.70'
+                          force 'androidx.browser:browser:1.8.0'
                           eachDependency { details ->
                               if (details.requested.group == 'org.bouncycastle') {
                                   if (details.requested.name.startsWith('bcprov')) {
@@ -62,6 +63,9 @@ jobs:
                                       details.useTarget 'org.bouncycastle:bcutil-jdk15to18:1.70'
                                   }
                               }
+                              if (details.requested.group == 'androidx.browser' && details.requested.name == 'browser') {
+                                  details.useVersion '1.8.0'
+                              }
                           }
                       }
                   }
@@ -71,6 +75,7 @@ jobs:
                       force 'org.bouncycastle:bcprov-jdk15to18:1.70'
                       force 'org.bouncycastle:bcpkix-jdk15to18:1.70'
                       force 'org.bouncycastle:bcutil-jdk15to18:1.70'
+                      force 'androidx.browser:browser:1.8.0'
                       eachDependency { details ->
                           if (details.requested.group == 'org.bouncycastle') {
                               if (details.requested.name.startsWith('bcprov')) {
@@ -80,6 +85,9 @@ jobs:
                               } else if (details.requested.name.startsWith('bcutil')) {
                                   details.useTarget 'org.bouncycastle:bcutil-jdk15to18:1.70'
                               }
+                          }
+                          if (details.requested.group == 'androidx.browser' && details.requested.name == 'browser') {
+                              details.useVersion '1.8.0'
                           }
                       }
                   }
@@ -91,7 +99,6 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install --legacy-peer-deps
-          npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
 
       - name: Build Web Assets
         run: |
@@ -127,8 +134,8 @@ jobs:
 
           if [ -f "android/variables.gradle" ]; then
             sed -i "s/minSdkVersion = .*/minSdkVersion = 23/g" android/variables.gradle
-            sed -i "s/compileSdkVersion = .*/compileSdkVersion = 35/g" android/variables.gradle
-            sed -i "s/targetSdkVersion = .*/targetSdkVersion = 35/g" android/variables.gradle
+            sed -i "s/compileSdkVersion = .*/compileSdkVersion = 34/g" android/variables.gradle
+            sed -i "s/targetSdkVersion = .*/targetSdkVersion = 34/g" android/variables.gradle
           fi
           if [ -f "android/app/build.gradle" ]; then
             sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/g" android/app/build.gradle
