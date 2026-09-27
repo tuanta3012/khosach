@@ -17,6 +17,18 @@ export function compareVersions(v1: string, v2: string): number {
   return 0;
 }
 
+const getApiUrl = (path: string): string => {
+  if (typeof window !== 'undefined') {
+    const origin = window.location.origin;
+    if (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.startsWith('file:')) {
+      // Dành cho môi trường di động local/Capacitor hoặc localhost dev
+      return `https://ais-pre-6xd4hn5ourvlmjugqheam6-546075383474.asia-southeast1.run.app${path}`;
+    }
+    return `${origin}${path}`;
+  }
+  return path;
+};
+
 export function useAutoUpdate() {
   const [isChecking, setIsChecking] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -42,6 +54,11 @@ export function useAutoUpdate() {
     const timestamp = Date.now();
     const sources = [
       {
+        type: 'proxy',
+        name: 'Server API Proxy (CORS-Free & Anti-Block)',
+        url: `${getApiUrl('/api/app-update/check')}?t=${timestamp}`,
+      },
+      {
         type: 'raw',
         name: 'GitHub Raw version.json',
         url: `https://raw.githubusercontent.com/tuanta3012/khosach/main/version.json?t=${timestamp}`,
@@ -57,13 +74,14 @@ export function useAutoUpdate() {
 
     for (const src of sources) {
       try {
-        const res = await fetch(src.url, {
-          headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' }
-        });
+        console.log(`[useAutoUpdate] Checking update via source: ${src.name}`);
+        
+        // SỬ DỤNG FETCH ĐƠN GIẢN KHÔNG CÓ CUSTOM HEADERS ĐỂ TRÁNH CƠ CHẾ CORS PREFLIGHT (OPTIONS) TRÊN TRÌNH DUYỆT WEB
+        const res = await fetch(src.url);
 
         if (res.ok) {
           const data = await res.json();
-          if (src.type === 'raw' && data && data.version) {
+          if (src.type === 'proxy' && data && data.success && data.version) {
             latestInfo = {
               version: data.version.trim(),
               apkUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
@@ -71,6 +89,17 @@ export function useAutoUpdate() {
               changelog: data.notes ? [data.notes] : ['Bản cập nhật tối ưu hóa hiệu năng và sửa lỗi.'],
               notes: data.notes,
             };
+            console.log(`[useAutoUpdate] Succeeded via proxy source! Latest version is v${latestInfo.version}`);
+            break;
+          } else if (src.type === 'raw' && data && data.version) {
+            latestInfo = {
+              version: data.version.trim(),
+              apkUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
+              downloadUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
+              changelog: data.notes ? [data.notes] : ['Bản cập nhật tối ưu hóa hiệu năng và sửa lỗi.'],
+              notes: data.notes,
+            };
+            console.log(`[useAutoUpdate] Succeeded via raw source! Latest version is v${latestInfo.version}`);
             break;
           } else if (src.type === 'release-api' && data && data.tag_name) {
             const cleanVer = data.tag_name.replace(/^v/, '').trim();
@@ -84,6 +113,7 @@ export function useAutoUpdate() {
               changelog: data.body ? data.body.split('\n').filter((s: string) => s.trim().length > 0) : ['Bản cập nhật v' + cleanVer],
               notes: data.body || data.name,
             };
+            console.log(`[useAutoUpdate] Succeeded via release-api source! Latest version is v${latestInfo.version}`);
             break;
           }
         }
