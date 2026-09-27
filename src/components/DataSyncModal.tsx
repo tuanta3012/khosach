@@ -57,15 +57,18 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   const [jsonText, setJsonText] = useState('');
   const [activeTab, setActiveTab] = useState<'export' | 'import' | 'drive'>('export');
 
-  const [scriptUrlInput, setScriptUrlInput] = useState(() => getStoredOrConfiguredScriptUrl());
-  const [targetFileUrl, setTargetFileUrl] = useState(() => getStoredOrConfiguredSheetUrl());
+  const [storedScriptUrl, setStoredScriptUrl] = useState(() => driveSyncUrl || getStoredOrConfiguredScriptUrl());
+  const [storedSheetUrl, setStoredSheetUrl] = useState(() => driveTargetFileUrl || getStoredOrConfiguredSheetUrl());
+
+  const [scriptUrlInput, setScriptUrlInput] = useState('');
+  const [targetFileUrl, setTargetFileUrl] = useState('');
   const [isSyncingDrive, setIsSyncingDrive] = useState(false);
   const [showAdvancedScript, setShowAdvancedScript] = useState(() => {
-    const url = getStoredOrConfiguredScriptUrl();
+    const url = driveSyncUrl || getStoredOrConfiguredScriptUrl();
     return url.includes('AKfyczt126a5BfMe-0o8') || !url.trim();
   });
 
-  const isUsingDummyScript = scriptUrlInput.includes('AKfyczt126a5BfMe-0o8') || !scriptUrlInput.trim();
+  const isUsingDummyScript = (scriptUrlInput.trim() || storedScriptUrl).includes('AKfyczt126a5BfMe-0o8') || !(scriptUrlInput.trim() || storedScriptUrl).trim();
 
   const [showSheetUrl, setShowSheetUrl] = useState(false);
   const [showScriptUrl, setShowScriptUrl] = useState(false);
@@ -82,42 +85,51 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
     }
   }, [isOpen]);
 
-  // Sync scriptUrlInput & targetFileUrl with localStorage / config / props
+  // Sync stored URLs with configuration/props, keeping inputs blank
   React.useEffect(() => {
-    setScriptUrlInput(driveSyncUrl || getStoredOrConfiguredScriptUrl());
-    setTargetFileUrl(driveTargetFileUrl || getStoredOrConfiguredSheetUrl());
+    const sheet = driveTargetFileUrl || getStoredOrConfiguredSheetUrl();
+    const script = driveSyncUrl || getStoredOrConfiguredScriptUrl();
+    setStoredSheetUrl(sheet);
+    setStoredScriptUrl(script);
+    setTargetFileUrl('');
+    setScriptUrlInput('');
   }, [driveSyncUrl, driveTargetFileUrl, isOpen]);
 
   if (!isOpen) return null;
 
   const handleSaveConfig = () => {
-    const sanitized = sanitizeAppsScriptUrl(scriptUrlInput);
-    setScriptUrlInput(sanitized);
-    const trimmedSheet = targetFileUrl.trim();
-    setTargetFileUrl(trimmedSheet);
+    const finalSheet = targetFileUrl.trim() ? targetFileUrl.trim() : storedSheetUrl;
+    const finalScript = scriptUrlInput.trim() ? sanitizeAppsScriptUrl(scriptUrlInput) : storedScriptUrl;
 
-    localStorage.setItem('drive_sync_url_v1', sanitized);
-    localStorage.setItem('drive_target_file_url_v1', trimmedSheet);
+    setStoredSheetUrl(finalSheet);
+    setStoredScriptUrl(finalScript);
+    setTargetFileUrl('');
+    setScriptUrlInput('');
+
+    localStorage.setItem('drive_sync_url_v1', finalScript);
+    localStorage.setItem('drive_target_file_url_v1', finalSheet);
 
     if (onSaveConfig) {
-      onSaveConfig(trimmedSheet, sanitized);
+      onSaveConfig(finalSheet, finalScript);
     }
     showToast('Đã đồng bộ cấu hình thành công lên đám mây Firestore!', 'success');
   };
 
   const handleTestConnection = async () => {
-    if (!targetFileUrl.trim() && !scriptUrlInput.trim()) {
+    const effectiveSheet = targetFileUrl.trim() || storedSheetUrl;
+    const effectiveScript = scriptUrlInput.trim() || storedScriptUrl;
+
+    if (!effectiveSheet.trim() && !effectiveScript.trim()) {
       showToast('Vui lòng dán link file Google Sheet trước!', 'warning');
       return;
     }
 
     setIsSyncingDrive(true);
     let successMessages: string[] = [];
-    let detectedBookCount = 0;
     
     // 1. Kiểm tra đọc trực tiếp Google Sheet Link
-    if (targetFileUrl.trim()) {
-      const match = targetFileUrl.trim().match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if (effectiveSheet.trim()) {
+      const match = effectiveSheet.trim().match(/\/d\/([a-zA-Z0-9-_]+)/);
       if (match && match[1]) {
         try {
           const proxyUrl = getProxyUrl(`https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv`);
@@ -126,7 +138,6 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
             const text = await csvResp.text();
             if (text && !text.includes('<!DOCTYPE html>') && !text.includes('<html>')) {
               const parsed = parseGoogleSheetCsvText(text);
-              detectedBookCount = parsed.length;
               successMessages.push(`✅ Đọc Google Sheet thành công (${parsed.length} cuốn sách)`);
             }
           }
@@ -135,9 +146,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
     }
 
     // 2. Kiểm tra Google Apps Script Endpoint (nếu có cấu hình)
-    if (scriptUrlInput.trim()) {
-      const cleanUrl = sanitizeAppsScriptUrl(scriptUrlInput);
-      setScriptUrlInput(cleanUrl);
+    if (effectiveScript.trim()) {
+      const cleanUrl = sanitizeAppsScriptUrl(effectiveScript);
       
       if (cleanUrl.includes('docs.google.com/spreadsheets')) {
         successMessages.push(`❌ Lỗi Apps Script: Bạn đang dán NHẦM Link Google Sheet vào ô URL Apps Script!`);
@@ -146,8 +156,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       } else {
         try {
           let testUrl = cleanUrl;
-          if (targetFileUrl.trim()) {
-            testUrl += (testUrl.includes('?') ? '&' : '?') + `fileUrl=${encodeURIComponent(targetFileUrl.trim())}`;
+          if (effectiveSheet.trim()) {
+            testUrl += (testUrl.includes('?') ? '&' : '?') + `fileUrl=${encodeURIComponent(effectiveSheet.trim())}`;
           }
           const proxyAppScriptUrl = getProxyUrl(testUrl);
           const res = await fetch(proxyAppScriptUrl);
@@ -183,7 +193,10 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   };
 
   const handlePushToDrive = async () => {
-    if (!scriptUrlInput.trim()) {
+    const effectiveSheet = targetFileUrl.trim() || storedSheetUrl;
+    const effectiveScript = scriptUrlInput.trim() || storedScriptUrl;
+
+    if (!effectiveScript.trim()) {
       showToast('Để đẩy ngược dữ liệu lên Sheet, vui lòng cấu hình thêm URL Apps Script ở phần Tùy chọn nâng cao.', 'warning');
       setShowAdvancedScript(true);
       return;
@@ -191,9 +204,9 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
     setIsSyncingDrive(true);
     try {
       const res = await pushCleanDataToDriveWebApp(
-        scriptUrlInput.trim(),
+        effectiveScript.trim(),
         books,
-        targetFileUrl.trim()
+        effectiveSheet.trim()
       );
       showToast(res.message, 'success');
     } catch (err: any) {
@@ -204,15 +217,18 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   };
 
   const handlePullFromDrive = async () => {
-    if (!targetFileUrl.trim() && !scriptUrlInput.trim()) {
+    const effectiveSheet = targetFileUrl.trim() || storedSheetUrl;
+    const effectiveScript = scriptUrlInput.trim() || storedScriptUrl;
+
+    if (!effectiveSheet.trim() && !effectiveScript.trim()) {
       showToast('Vui lòng dán Link Google Sheet vào ô nhập!', 'warning');
       return;
     }
     setIsSyncingDrive(true);
     try {
       const res = await pullDataFromDriveWebApp(
-        scriptUrlInput.trim(),
-        targetFileUrl.trim()
+        effectiveScript.trim(),
+        effectiveSheet.trim()
       );
       if (res.books.length === 0) {
         showToast('Không tìm thấy sách nào trong Google Sheet!', 'info');
@@ -513,28 +529,40 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
               {/* Ô nhập Link File Google Sheet */}
               <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
                 <div>
-                  <label className="flex items-center justify-between text-xs font-bold text-slate-800 mb-1.5">
+                  <label className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-slate-800 mb-1.5">
                     <span className="flex items-center gap-1.5">
                       <Link2 className="w-4 h-4 text-emerald-600" />
                       Link File Google Sheet (Editor Link):
                     </span>
+                    {storedSheetUrl && storedSheetUrl.trim().length > 0 && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-extrabold animate-fade-in">
+                        <CheckCircle className="w-3 h-3 text-emerald-600 shrink-0" />
+                        Đã có link nhập (Lưu an toàn trên Cloud)
+                      </span>
+                    )}
                   </label>
                   <div className="relative flex items-center">
                     <input
                       type={showSheetUrl ? "text" : "password"}
                       value={targetFileUrl}
                       onChange={(e) => setTargetFileUrl(e.target.value)}
-                      placeholder="https://docs.google.com/spreadsheets/d/1WmvnebrW2NwMAc5r.../edit"
-                      className="w-full pl-3.5 pr-10 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-xs"
+                      placeholder={
+                        storedSheetUrl && storedSheetUrl.trim().length > 0
+                          ? "🔒 Đã có link nhập bảo mật trên Cloud. Nhập link mới nếu muốn thay thế..."
+                          : "https://docs.google.com/spreadsheets/d/1WmvnebrW2NwMAc5r.../edit"
+                      }
+                      className="w-full pl-3.5 pr-10 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-xs placeholder:text-slate-400 placeholder:font-sans"
                     />
-                    <button
-                      type="button"
-                      onClick={() => setShowSheetUrl(!showSheetUrl)}
-                      className="absolute right-3 text-slate-400 hover:text-slate-600 focus:outline-none p-1"
-                      title={showSheetUrl ? "Ẩn đường dẫn" : "Hiện đường dẫn"}
-                    >
-                      {showSheetUrl ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
+                    {targetFileUrl.trim().length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowSheetUrl(!showSheetUrl)}
+                        className="absolute right-3 text-slate-400 hover:text-slate-600 focus:outline-none p-1"
+                        title={showSheetUrl ? "Ẩn đường dẫn" : "Hiện đường dẫn"}
+                      >
+                        {showSheetUrl ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    )}
                   </div>
                   <div className="mt-2 text-[11px] text-slate-500 bg-white/60 p-2 rounded-lg border border-slate-100 flex items-center gap-1.5">
                     <span className="text-emerald-600 font-bold">💡 Lưu ý:</span>
@@ -545,13 +573,14 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                 <div className="flex gap-2 pt-1">
                   <button
                     onClick={handleSaveConfig}
-                    className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition shadow-xs"
+                    disabled={!targetFileUrl.trim()}
+                    className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition shadow-xs disabled:opacity-40"
                   >
                     Lưu Link File
                   </button>
                   <button
                     onClick={handleTestConnection}
-                    disabled={isSyncingDrive || !targetFileUrl.trim()}
+                    disabled={isSyncingDrive || (!targetFileUrl.trim() && !storedSheetUrl.trim())}
                     className="px-4 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-40"
                   >
                     {isSyncingDrive ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />}
@@ -564,7 +593,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <button
                   onClick={handlePullFromDrive}
-                  disabled={isSyncingDrive || (!targetFileUrl.trim() && !scriptUrlInput.trim())}
+                  disabled={isSyncingDrive || (!(targetFileUrl.trim() || storedSheetUrl).trim() && !(scriptUrlInput.trim() || storedScriptUrl).trim())}
                   className="p-4 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-2xl text-xs font-bold text-sky-900 transition flex items-center gap-3 disabled:opacity-40 text-left shadow-xs"
                 >
                   {isSyncingDrive ? (
@@ -580,7 +609,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
 
                 <button
                   onClick={handlePushToDrive}
-                  disabled={isSyncingDrive}
+                  disabled={isSyncingDrive || !(scriptUrlInput.trim() || storedScriptUrl).trim()}
                   className="p-4 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-2xl text-xs font-bold text-emerald-900 transition flex items-center gap-3 disabled:opacity-40 text-left shadow-xs"
                 >
                   {isSyncingDrive ? (
@@ -608,30 +637,43 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
 
                 {showAdvancedScript && (
                   <div className="mt-2 p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5 animate-in fade-in duration-150">
-                    <label className="block text-[11px] font-bold text-slate-700">
-                      URL Google Apps Script Web App (API Endpoint):
+                    <label className="flex flex-wrap items-center justify-between gap-1 text-[11px] font-bold text-slate-700">
+                      <span>URL Google Apps Script Web App (API Endpoint):</span>
+                      {storedScriptUrl && storedScriptUrl.trim().length > 0 && !storedScriptUrl.includes('AKfyczt126a5BfMe-0o8') && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-indigo-100 text-indigo-800 border border-indigo-200 text-[9px] font-extrabold">
+                          <CheckCircle className="w-2.5 h-2.5 text-indigo-600 shrink-0" />
+                          Đã có endpoint nhập (Lưu an toàn trên Cloud)
+                        </span>
+                      )}
                     </label>
                     <div className="relative flex items-center">
                       <input
                         type={showScriptUrl ? "text" : "password"}
                         value={scriptUrlInput}
                         onChange={(e) => setScriptUrlInput(e.target.value)}
-                        placeholder="https://script.google.com/macros/s/.../exec"
-                        className="w-full pl-3 pr-10 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        placeholder={
+                          storedScriptUrl && storedScriptUrl.trim().length > 0 && !storedScriptUrl.includes('AKfyczt126a5BfMe-0o8')
+                            ? "🔒 Đã có endpoint bảo mật trên Cloud. Nhập API mới nếu muốn thay thế..."
+                            : "https://script.google.com/macros/s/.../exec"
+                        }
+                        className="w-full pl-3 pr-10 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder:text-slate-400 placeholder:font-sans"
                       />
-                      <button
-                        type="button"
-                        onClick={() => setShowScriptUrl(!showScriptUrl)}
-                        className="absolute right-3 text-slate-400 hover:text-slate-600 focus:outline-none p-1"
-                        title={showScriptUrl ? "Ẩn đường dẫn" : "Hiện đường dẫn"}
-                      >
-                        {showScriptUrl ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
+                      {scriptUrlInput.trim().length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowScriptUrl(!showScriptUrl)}
+                          className="absolute right-3 text-slate-400 hover:text-slate-600 focus:outline-none p-1"
+                          title={showScriptUrl ? "Ẩn đường dẫn" : "Hiện đường dẫn"}
+                        >
+                          {showScriptUrl ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <button
                         onClick={handleSaveConfig}
-                        className="flex-1 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition"
+                        disabled={!scriptUrlInput.trim()}
+                        className="flex-1 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition disabled:opacity-40"
                       >
                         Lưu Endpoint
                       </button>
