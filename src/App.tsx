@@ -4,17 +4,18 @@ import { StatusBar, Style } from '@capacitor/status-bar';
 import { BookRecord, LibrarySettings, AuthUser } from './types';
 import { USER_MASTER_BOOKS } from './data/sampleBooks';
 import {
-  fetchAllBooksFromFirestore,
-  subscribeToBooksRealtime,
-  saveBookToFirestore,
-  batchSaveBooksToFirestore,
-  deleteBookFromFirestore,
-  clearAllBooksInFirestore,
-  seedMasterBooksToFirestore,
-  getLibrarySettingsFromFirestore,
-  saveLibrarySettingsToFirestore,
-  testFirestoreConnection,
-} from './utils/firebaseFirestoreService';
+  loadLocalBooks,
+  saveAllLocalBooks,
+  upsertLocalBook,
+  deleteLocalBook,
+  batchUpsertLocalBooks,
+  resetLocalToMasterBooks,
+  loadLocalSettings,
+  saveLocalSettings,
+  setLastDriveSyncTimestamp,
+  DEFAULT_CATEGORIES,
+  DEFAULT_SETTINGS,
+} from './utils/localBooksStorage';
 import { Navbar, NavTabType } from './components/Navbar';
 import { BookTableView } from './components/BookTableView';
 import { BatchScanner } from './components/BatchScanner';
@@ -34,37 +35,31 @@ import {
   getStoredOrConfiguredSheetUrl,
   getStoredOrConfiguredScriptUrl,
 } from './config/syncConfig';
-
-// Unique categories list extracted from user master books
-const DEFAULT_CATEGORIES = Array.from(
-  new Set(USER_MASTER_BOOKS.map((b) => b.category || 'Chung').filter(Boolean))
-);
-
-const DEFAULT_SETTINGS: LibrarySettings = {
-  autoEnrichEnabled: true,
-  categoriesList: DEFAULT_CATEGORIES,
-};
+import { batchNormalize } from './utils/geminiService';
 
 export default function App() {
   const { showToast } = useToast();
   const [currentTab, setCurrentTab] = useState<NavTabType>('table');
-  const [books, setBooks] = useState<BookRecord[]>(USER_MASTER_BOOKS);
+  const [books, setBooks] = useState<BookRecord[]>(() => loadLocalBooks());
   const [isLoading, setIsLoading] = useState(true);
-  const [settings, setSettings] = useState<LibrarySettings>(() => {
-    try {
-      const saved = localStorage.getItem('library_settings_v2');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return DEFAULT_SETTINGS;
-  });
+  const [isSyncingDrive, setIsSyncingDrive] = useState(false);
+  const [settings, setSettings] = useState<LibrarySettings>(() => loadLocalSettings());
+
+  // Lưu cache sách vào localStorage khi books thay đổi
+  useEffect(() => {
+    if (books && books.length > 0) {
+      saveAllLocalBooks(books);
+    }
+  }, [books]);
 
   // Modals state
   const [isAddEditModalOpen, setIsAddEditModalOpen] = useState(false);
   const [editingBook, setEditingBook] = useState<BookRecord | null>(null);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isAutoNormalizing, setIsAutoNormalizing] = useState(false);
   
-  // App Auto Update (Sổ Tiết Kiệm Architecture)
+  // App Auto Update
   const {
     updateInfo,
     isModalOpen: isUpdateModalOpen,
@@ -85,16 +80,17 @@ export default function App() {
     };
   });
 
-  // Đồng bộ hai chiều tự động khi mở App hoặc khi thực hiện thay đổi
+  // Đồng bộ hai chiều với Google Drive qua Google Apps Script
   const syncWithDrive = async (currentLocalBooks: BookRecord[], actionType: 'STARTUP' | 'MUTATION') => {
     const sheetUrl = getStoredOrConfiguredSheetUrl();
     const scriptUrl = getStoredOrConfiguredScriptUrl();
 
     if (!sheetUrl && !scriptUrl) {
-      console.log('[Sync] Không cấu hình Google Sheet/Script URL, bỏ qua đồng bộ tự động.');
+      console.log('[Sync] Không cấu hình Google Sheet/Script URL, bỏ qua đồng bộ.');
       return currentLocalBooks;
     }
 
+    setIsSyncingDrive(true);
     try {
       if (actionType === 'STARTUP') {
         console.log('[Sync] Bắt đầu đồng bộ 2 chiều tự động lúc khởi chạy...');
@@ -105,10 +101,10 @@ export default function App() {
         });
 
         if (res.success && res.books && res.books.length > 0) {
-          // 2. Trộn dữ liệu 2 chiều (Firestore + Sheet) dựa trên ID và updated_at
+          // 2. Trộn dữ liệu 2 chiều (Local Cache + Sheet) dựa trên ID và updated_at
           const mergedMap = new Map<string, BookRecord>();
           
-          // Nạp dữ liệu Firestore trước
+          // Nạp dữ liệu local máy trước
           currentLocalBooks.forEach((b) => mergedMap.set(b.id, b));
           
           // Trộn dữ liệu từ Sheet
@@ -129,41 +125,44 @@ export default function App() {
 
           const finalBooks = Array.from(mergedMap.values());
 
-          // 3. Nếu có dữ liệu mới/cập nhật từ Sheet, lưu hàng loạt vào Firestore
+          // 3. Nếu có dữ liệu mới/cập nhật từ Sheet, cập nhật vào bộ nhớ máy
           if (hasNewOrUpdatedFromSheet) {
-            console.log('[Sync] Phát hiện sách mới hoặc mới hơn từ Google Sheet, cập nhật vào Firestore...');
-            await batchSaveBooksToFirestore(finalBooks);
+            console.log('[Sync] Phát hiện sách mới hoặc mới hơn từ Google Sheet, cập nhật vào bộ nhớ máy...');
+            saveAllLocalBooks(finalBooks);
+            setBooks(finalBooks);
           }
 
           // 4. Đẩy lại danh sách đã trộn đầy đủ & sạch sẽ lên Google Sheet
           console.log('[Sync] Đang đồng nhất dữ liệu sạch lên Google Sheet...');
           await pushCleanDataToDriveWebApp(scriptUrl, finalBooks, sheetUrl).catch((err) => {
             console.warn('[Sync] Không đẩy được dữ liệu lên Sheet:', err.message);
-            showToast(`⚠️ Lỗi cập nhật Sheet khi khởi động: ${err.message || String(err)}`, 'warning');
           });
 
-          showToast(`🚀 Đồng bộ tự động 2 chiều thành công! Kho sách có ${finalBooks.length} cuốn.`, 'success');
+          setLastDriveSyncTimestamp();
+          showToast(`🚀 Đồng bộ 2 chiều thành công! Kho sách có ${finalBooks.length} cuốn.`, 'success');
           return finalBooks;
         } else {
-          // Nếu kéo rỗng hoặc thất bại, nhưng trên local/Firestore đang có dữ liệu, hãy đẩy dữ liệu Firestore lên Sheet
+          // Nếu kéo rỗng hoặc thất bại, nhưng trên local đang có dữ liệu, khởi tạo dữ liệu lên Google Sheet
           if (currentLocalBooks.length > 0) {
-            console.log('[Sync] Sheet trống, đang tự động khởi tạo dữ liệu của Firestore lên Google Sheet...');
+            console.log('[Sync] Sheet trống, đang tự động khởi tạo dữ liệu của máy lên Google Sheet...');
             await pushCleanDataToDriveWebApp(scriptUrl, currentLocalBooks, sheetUrl).catch((err) => {
               console.warn('[Sync] Khởi tạo dữ liệu lên Sheet thất bại:', err.message);
-              showToast(`⚠️ Không thể khởi tạo dữ liệu gốc lên Sheet: ${err.message || String(err)}`, 'warning');
             });
+            setLastDriveSyncTimestamp();
           }
         }
       } else if (actionType === 'MUTATION') {
-        // Với MUTATION (thêm, sửa, xóa), ta đẩy luôn danh sách sách hiện tại lên Google Sheet
+        // Với MUTATION (thêm, sửa, xóa, chuẩn hóa), ta đẩy luôn danh sách sách hiện tại lên Google Sheet
         console.log('[Sync] Tự động đồng nhất thay đổi lên Google Sheet...');
         await pushCleanDataToDriveWebApp(scriptUrl, currentLocalBooks, sheetUrl).catch((err) => {
           console.warn('[Sync] Lỗi tự động đồng nhất lên Google Sheet:', err.message);
-          showToast(`⚠️ Không thể đồng bộ thay đổi lên Google Sheet: ${err.message || String(err)}`, 'warning');
         });
+        setLastDriveSyncTimestamp();
       }
     } catch (err: any) {
       console.error('[Sync] Lỗi trong quá trình đồng bộ tự động:', err);
+    } finally {
+      setIsSyncingDrive(false);
     }
     return currentLocalBooks;
   };
@@ -182,52 +181,24 @@ export default function App() {
     initStatusBar();
   }, []);
 
-  // 2. Nạp dữ liệu ban đầu từ Firestore & kết nối realtime listener
+  // 2. Nạp dữ liệu ban đầu từ bộ nhớ máy & chạy đồng bộ 2 chiều tự động với Google Drive
   useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
-
     const initData = async () => {
       setIsLoading(true);
       try {
-        await testFirestoreConnection();
-        const firestoreBooks = await fetchAllBooksFromFirestore();
-        let baseBooks = firestoreBooks;
+        const localBooks = loadLocalBooks();
+        setBooks(localBooks);
 
-        if (firestoreBooks.length > 0) {
-          setBooks(firestoreBooks);
-        } else {
-          // Nếu Firestore trống, nạp toàn bộ 591 cuốn sách gốc của người dùng
-          setBooks(USER_MASTER_BOOKS);
-          await seedMasterBooksToFirestore(false).catch(() => {});
-          baseBooks = USER_MASTER_BOOKS;
-        }
+        const localSettings = loadLocalSettings();
+        setSettings(localSettings);
 
-        const firestoreSettings = await getLibrarySettingsFromFirestore();
-        if (firestoreSettings) {
-          setSettings(firestoreSettings);
-          localStorage.setItem('library_settings_v2', JSON.stringify(firestoreSettings));
-          if (firestoreSettings.driveSyncUrl) {
-            localStorage.setItem('drive_sync_url_v1', firestoreSettings.driveSyncUrl);
-          }
-          if (firestoreSettings.driveTargetFileUrl) {
-            localStorage.setItem('drive_target_file_url_v1', firestoreSettings.driveTargetFileUrl);
-          }
-        }
-
-        // Chạy đồng bộ 2 chiều tự động với Google Sheet lúc khởi chạy app!
-        const syncedBooks = await syncWithDrive(baseBooks, 'STARTUP').catch((err) => {
+        // Chạy đồng bộ 2 chiều tự động với Google Sheet lúc khởi chạy app
+        const syncedBooks = await syncWithDrive(localBooks, 'STARTUP').catch((err) => {
           console.warn('[Sync] Khởi chạy đồng bộ 2 chiều tự động thất bại, tiếp tục với dữ liệu local:', err);
-          return baseBooks;
+          return localBooks;
         });
         setBooks(syncedBooks);
-
-        // Lắng nghe thay đổi thời gian thực từ Firestore
-        unsubscribe = subscribeToBooksRealtime((realtimeBooks) => {
-          if (realtimeBooks && realtimeBooks.length > 0) {
-            setBooks(realtimeBooks);
-          }
-        });
-      } catch (err) {
+      } catch (err: any) {
         console.warn('Fallback to local master books cache:', err);
         setBooks(USER_MASTER_BOOKS);
       } finally {
@@ -236,13 +207,9 @@ export default function App() {
     };
 
     initData();
-
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
   }, []);
 
-  // 3. Tự động kiểm tra bản cập nhật mới (bằng useAutoUpdate hook)
+  // 3. Tự động kiểm tra bản cập nhật mới
   useEffect(() => {
     const timer = setTimeout(() => {
       checkForUpdate().catch((err) => {
@@ -252,6 +219,51 @@ export default function App() {
 
     return () => clearTimeout(timer);
   }, [checkForUpdate]);
+
+  // 4. Tự động chuẩn hóa dữ liệu ngầm khi bật công tắc gạt và có sách chưa chuẩn hóa
+  useEffect(() => {
+    if (!settings.autoNormalizeEnabled || isAutoNormalizing || isLoading) return;
+
+    const pending = books.filter((b) => !b.is_ai_normalized);
+    if (pending.length === 0) return;
+
+    const runAutoNormalize = async () => {
+      setIsAutoNormalizing(true);
+      const batch = pending.slice(0, 5);
+      console.log(`[AutoNormalize] Bắt đầu chuẩn hóa ngầm ${batch.length} cuốn sách chưa chuẩn hóa...`);
+
+      try {
+        const data = await batchNormalize(batch);
+
+        if (data.success && Array.isArray(data.normalized)) {
+          const updatedList: BookRecord[] = data.normalized.map((normItem: any) => {
+            const orig = batch.find((b) => b.id === normItem.id);
+            return {
+              ...orig,
+              title: normItem.title,
+              author: normItem.author,
+              publisher: normItem.publisher,
+              category: normItem.category,
+              is_ai_normalized: true,
+              updated_at: Date.now(),
+            } as BookRecord;
+          });
+
+          await handleBatchUpdateBooks(updatedList);
+          console.log(`[AutoNormalize] Đã tự động chuẩn hóa thành công ${updatedList.length} cuốn sách ngầm!`);
+        }
+      } catch (err) {
+        console.error('[AutoNormalize] Lỗi chuẩn hóa tự động ngầm:', err);
+      } finally {
+        setTimeout(() => {
+          setIsAutoNormalizing(false);
+        }, 3000);
+      }
+    };
+
+    const timer = setTimeout(runAutoNormalize, 3000);
+    return () => clearTimeout(timer);
+  }, [books, settings.autoNormalizeEnabled, isAutoNormalizing, isLoading]);
 
   // Kiểm tra cập nhật thủ công khi người dùng bấm nút
   const handleManualCheckUpdates = async () => {
@@ -265,83 +277,43 @@ export default function App() {
     }
   };
 
-  // Lưu 1 cuốn sách
+  // Lưu 1 cuốn sách (Lưu ngay vào bộ nhớ máy và đồng bộ lên Google Drive)
   const handleSaveBook = async (book: BookRecord) => {
-    let updatedBooks: BookRecord[] = [];
-    setBooks((prev) => {
-      const exists = prev.some((b) => b.id === book.id);
-      updatedBooks = exists
-        ? prev.map((b) => (b.id === book.id ? book : b))
-        : [book, ...prev];
-      return updatedBooks;
-    });
-
-    try {
-      await saveBookToFirestore(book);
-      // Đồng bộ tức thì lên Google Sheet
-      await syncWithDrive(updatedBooks, 'MUTATION');
-    } catch (err) {
-      console.error('Error saving book to Firestore:', err);
-    }
+    const updatedBooks = upsertLocalBook(book);
+    setBooks(updatedBooks);
+    showToast('Đã lưu sách vào bộ nhớ máy thành công!', 'success');
+    syncWithDrive(updatedBooks, 'MUTATION').catch(() => {});
   };
 
   // Lưu hàng loạt sách (từ Bảng chờ AI Vision Scanner)
   const handleSaveBatchBooks = async (newBooks: BookRecord[]) => {
-    let updatedBooks: BookRecord[] = [];
-    setBooks((prev) => {
-      updatedBooks = [...newBooks, ...prev];
-      return updatedBooks;
-    });
-    try {
-      await batchSaveBooksToFirestore(newBooks);
-      // Đồng bộ tức thì lên Google Sheet
-      await syncWithDrive(updatedBooks, 'MUTATION');
-    } catch (err) {
-      console.error('Error batch saving books:', err);
-    }
+    const updatedBooks = batchUpsertLocalBooks(newBooks);
+    setBooks(updatedBooks);
+    showToast(`Đã thêm ${newBooks.length} cuốn sách vào kho!`, 'success');
+    syncWithDrive(updatedBooks, 'MUTATION').catch(() => {});
+  };
+
+  // Cập nhật và chuẩn hóa hàng loạt sách bằng AI
+  const handleBatchUpdateBooks = async (updatedBooksList: BookRecord[]) => {
+    const updatedBooks = batchUpsertLocalBooks(updatedBooksList);
+    setBooks(updatedBooks);
+    syncWithDrive(updatedBooks, 'MUTATION').catch(() => {});
   };
 
   // Xóa 1 cuốn sách
   const handleDeleteBook = async (id: string) => {
-    const originalBooks = [...books];
-    let updatedBooks: BookRecord[] = [];
-    setBooks((prev) => {
-      updatedBooks = prev.filter((b) => b.id !== id);
-      return updatedBooks;
-    });
-    try {
-      await deleteBookFromFirestore(id);
-      showToast('Đã xóa cuốn sách khỏi kho!', 'info');
-      // Đồng bộ tức thì lên Google Sheet
-      await syncWithDrive(updatedBooks, 'MUTATION');
-    } catch (err: any) {
-      console.error('Error deleting book from Firestore:', err);
-      let errorMsg = 'Lỗi kết nối hoặc không đủ quyền xóa sách.';
-      try {
-        const parsed = JSON.parse(err.message);
-        if (parsed && parsed.error) {
-          errorMsg = `Lỗi: ${parsed.error}`;
-        }
-      } catch {
-        if (err.message) {
-          errorMsg = err.message;
-        }
-      }
-      showToast(errorMsg, 'error');
-      setBooks(originalBooks);
-    }
+    const updatedBooks = deleteLocalBook(id);
+    setBooks(updatedBooks);
+    showToast('Đã xóa cuốn sách khỏi kho!', 'info');
+    syncWithDrive(updatedBooks, 'MUTATION').catch(() => {});
   };
 
   // Nạp lại dữ liệu gốc (591 cuốn)
   const handleResetMasterData = async () => {
-    try {
-      await seedMasterBooksToFirestore(true);
-      setBooks(USER_MASTER_BOOKS);
-      // Đồng bộ tức thì lên Google Sheet
-      await syncWithDrive(USER_MASTER_BOOKS, 'MUTATION');
-    } catch (err) {
-      console.error('Error resetting master data:', err);
-    }
+    const resetBooks = resetLocalToMasterBooks();
+    setBooks(resetBooks);
+    showToast('Đã khôi phục 591 cuốn sách gốc!', 'success');
+    syncWithDrive(resetBooks, 'MUTATION').catch(() => {});
   };
 
   // Nhập kho từ file JSON/Excel/CSV
@@ -350,11 +322,9 @@ export default function App() {
     replace: boolean
   ): Promise<{ addedCount: number; skippedCount: number }> => {
     if (replace) {
-      await clearAllBooksInFirestore();
+      saveAllLocalBooks(imported);
       setBooks(imported);
-      await batchSaveBooksToFirestore(imported);
-      // Đồng bộ tức thì lên Google Sheet
-      await syncWithDrive(imported, 'MUTATION');
+      syncWithDrive(imported, 'MUTATION').catch(() => {});
       return { addedCount: imported.length, skippedCount: 0 };
     } else {
       // Chế độ Gộp: Tự động lọc trùng lặp với kho sách hiện tại
@@ -374,14 +344,9 @@ export default function App() {
       }
 
       if (uniqueToImport.length > 0) {
-        let updatedBooks: BookRecord[] = [];
-        setBooks((prev) => {
-          updatedBooks = [...uniqueToImport, ...prev];
-          return updatedBooks;
-        });
-        await batchSaveBooksToFirestore(uniqueToImport);
-        // Đồng bộ tức thì lên Google Sheet
-        await syncWithDrive(updatedBooks, 'MUTATION');
+        const updatedBooks = batchUpsertLocalBooks(uniqueToImport);
+        setBooks(updatedBooks);
+        syncWithDrive(updatedBooks, 'MUTATION').catch(() => {});
       }
       return { addedCount: uniqueToImport.length, skippedCount };
     }
@@ -390,8 +355,7 @@ export default function App() {
   // Lưu cài đặt
   const handleSaveSettings = async (newSettings: LibrarySettings) => {
     setSettings(newSettings);
-    localStorage.setItem('library_settings_v2', JSON.stringify(newSettings));
-    await saveLibrarySettingsToFirestore(newSettings).catch(() => {});
+    saveLocalSettings(newSettings);
   };
 
   // Danh mục thể loại tổng hợp
@@ -417,9 +381,10 @@ export default function App() {
           setIsAddEditModalOpen(true);
         }}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
+        isSyncingDrive={isSyncingDrive}
       />
 
-      {/* Main Content Area optimized for mobile viewports & safe area insets */}
+      {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3.5 sm:px-6 py-3 pb-24 md:pb-8 app-content-container">
         {currentTab === 'table' && (
           <BookTableView
@@ -477,6 +442,9 @@ export default function App() {
         onSaveSettings={handleSaveSettings}
         onResetMasterData={handleResetMasterData}
         onCheckUpdates={handleManualCheckUpdates}
+        books={books}
+        onBatchUpdateBooks={handleBatchUpdateBooks}
+        isAutoNormalizing={isAutoNormalizing}
       />
 
       <AppUpdateModal

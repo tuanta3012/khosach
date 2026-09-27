@@ -104,10 +104,6 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
       showToast('Vui lòng nhập Tên sách!', 'warning');
       return;
     }
-    if (!author.trim()) {
-      showToast('Vui lòng nhập Tác giả!', 'warning');
-      return;
-    }
 
     setIsSaving(true);
     try {
@@ -115,7 +111,7 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
       const bookToSave: BookRecord = {
         id: initialBook?.id || `book_${now}_${Math.random().toString(36).substring(2, 8)}`,
         title: title.trim(),
-        author: author.trim(),
+        author: author.trim() || 'Khuyết danh',
         category: category.trim() || 'Chung',
         publisher: publisher.trim(),
         created_at: initialBook?.created_at || now,
@@ -142,10 +138,9 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
               <Book className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-slate-900">
-                {initialBook ? 'Chỉnh Sửa Cuốn Sách' : 'Thêm Sách Mới Vào Kho'}
+              <h3 className="text-base font-black text-slate-900 leading-tight">
+                {initialBook ? 'Chỉnh sửa sách' : 'Nhập sách'}
               </h3>
-              <p className="text-xs text-slate-500">Tên sách • Tác giả • Thể loại • NXB</p>
             </div>
           </div>
           <button
@@ -199,15 +194,14 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
 
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
-              Tác Giả <span className="text-rose-500">*</span>
+              Tác Giả
             </label>
             <input
               type="text"
-              required
               value={author}
               onChange={(e) => setAuthor(e.target.value)}
-              placeholder="Tên tác giả (ví dụ: Lev Tolstoy, Nguyễn Nhật Ánh...)"
-              className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none transition"
+              placeholder="Tên tác giả (ví dụ: Nguyễn Nhật Ánh, Lev Tolstoy...)"
+              className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-1 focus:ring-emerald-500 focus:outline-none transition"
             />
           </div>
 

@@ -185,7 +185,7 @@ export function sanitizeAppsScriptUrl(url: string): string {
 }
 
 /**
- * Chuẩn hóa Document ID hợp lệ cho Firestore
+ * Chuẩn hóa Book ID hợp lệ
  */
 export function sanitizeDocId(id: string): string {
   if (!id) return '';
@@ -299,7 +299,7 @@ export function getProxyUrl(targetUrl: string): string {
 }
 
 /**
- * Đẩy dữ liệu sạch từ App/Firestore lên Google Drive qua Web App Apps Script
+ * Đẩy dữ liệu sạch từ App/Bộ nhớ máy lên Google Drive qua Web App Apps Script
  */
 export async function pushCleanDataToDriveWebApp(
   webAppUrl: string,

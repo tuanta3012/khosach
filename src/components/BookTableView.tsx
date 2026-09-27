@@ -89,6 +89,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
     const queryWords = normQuery.split(/\s+/).filter(Boolean);
 
     const scored: { book: BookRecord; score: number }[] = [];
+    const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     for (const book of result) {
       const normTitle = removeVietnameseTones(book.title || '');
@@ -96,50 +97,102 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
       const normPublisher = removeVietnameseTones(book.publisher || '');
       const normCat = removeVietnameseTones(book.category || '');
 
+      const titleWords = normTitle.split(/\s+/).filter(Boolean);
+      const authorWords = normAuthor.split(/\s+/).filter(Boolean);
+
       let score = 0;
 
-      // Khớp chính xác hoàn toàn hoặc bắt đầu bằng từ khóa
+      // 1. Khớp chính xác hoàn toàn tiêu đề (Độ ưu tiên cao nhất)
       if (normTitle === normQuery) {
-        score += 100;
-      } else if (normTitle.startsWith(normQuery)) {
-        score += 85;
-      } else if (normTitle.includes(normQuery)) {
-        score += 70;
-      } else {
-        // Kiểm tra khớp từng từ
-        const allWordsInTitle = queryWords.every((w) => normTitle.includes(w));
-        if (allWordsInTitle) {
-          score += 60;
+        score += 500;
+      } 
+      // 2. Tiêu đề bắt đầu bằng cụm từ tìm kiếm
+      else if (normTitle.startsWith(normQuery)) {
+        score += 300;
+      } 
+      // 3. Khớp cụm từ tìm kiếm đầy đủ theo ranh giới từ (Tránh "giai" khớp "gia")
+      else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normTitle)) {
+        score += 200;
+      } 
+      // 4. Khớp cụm từ tìm kiếm đầy đủ dạng substring tiền tố
+      else if (normTitle.includes(normQuery)) {
+        // Chỉ cho điểm nếu khớp ranh giới từ hoặc là tiền tố của từ
+        const hasWordBoundaryMatch = titleWords.some(w => w.startsWith(queryWords[0]));
+        if (hasWordBoundaryMatch) {
+          score += 150;
         } else {
-          let matchedCount = 0;
-          for (const w of queryWords) {
-            if (normTitle.includes(w) || normAuthor.includes(w)) {
-              matchedCount++;
-            }
-          }
-          if (matchedCount > 0) {
-            score += Math.round((matchedCount / queryWords.length) * 45);
-          } else {
-            // Fuzzy similarity fallback (cho từ gõ sai/gần đúng)
-            const titleSim = stringSimilarity(normQuery, normTitle);
-            if (titleSim >= 0.45) {
-              score += Math.round(titleSim * 35);
-            }
-          }
+          score += 30; // Điểm cực thấp cho khớp substring rác giữa từ
         }
       }
 
-      // Khớp Tác Giả, Thể loại, NXB
-      if (normAuthor.includes(normQuery)) score += 40;
-      if (normCat.includes(normQuery)) score += 20;
-      if (normPublisher.includes(normQuery)) score += 15;
+      // 5. Khớp từng từ đơn lẻ (Sử dụng ranh giới từ để tính điểm chính xác)
+      let titleMatchedWords = 0;
+      let authorMatchedWords = 0;
 
-      if (score > 0) {
+      for (const qw of queryWords) {
+        // Kiểm tra xem từ qw có khớp chính xác hoặc là tiền tố của bất kỳ từ nào trong tiêu đề không
+        const isWordMatchTitle = titleWords.some(tw => tw === qw);
+        // Chỉ cho phép khớp tiền tố nếu từ tìm kiếm có độ dài từ 4 ký tự trở lên (tránh khớp nhầm "gia" -> "giao", "giai")
+        const isPrefixMatchTitle = qw.length >= 4 && titleWords.some(tw => tw.startsWith(qw));
+
+        if (isWordMatchTitle) {
+          titleMatchedWords += 1.0;
+        } else if (isPrefixMatchTitle) {
+          titleMatchedWords += 0.6;
+        }
+
+        const isWordMatchAuthor = authorWords.some(aw => aw === qw);
+        // Chỉ cho phép khớp tiền tố tác giả nếu từ tìm kiếm có độ dài từ 4 ký tự trở lên
+        const isPrefixMatchAuthor = qw.length >= 4 && authorWords.some(aw => aw.startsWith(qw));
+        if (isWordMatchAuthor) {
+          authorMatchedWords += 1.0;
+        } else if (isPrefixMatchAuthor) {
+          authorMatchedWords += 0.5;
+        }
+      }
+
+      // Cộng điểm dựa trên tỷ lệ từ khớp
+      if (queryWords.length > 0) {
+        const titleMatchRatio = titleMatchedWords / queryWords.length;
+        if (titleMatchRatio === 1) {
+          score += 120; // Khớp toàn bộ các từ trong tiêu đề
+        } else if (titleMatchRatio >= 0.5) {
+          score += Math.round(titleMatchRatio * 80);
+        } else if (titleMatchRatio > 0) {
+          score += Math.round(titleMatchRatio * 20);
+        }
+
+        const authorMatchRatio = authorMatchedWords / queryWords.length;
+        if (authorMatchRatio === 1) {
+          score += 80;
+        } else if (authorMatchRatio >= 0.5) {
+          score += Math.round(authorMatchRatio * 50);
+        }
+      }
+
+      // 6. Khớp tác giả, thể loại, NXB đầy đủ
+      if (normAuthor === normQuery) score += 150;
+      else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normAuthor)) {
+        score += 80;
+      }
+
+      if (normCat === normQuery) score += 40;
+      if (normPublisher === normQuery) score += 35;
+
+      // 7. Fuzzy similarity fallback (cho từ gõ sai/gần đúng)
+      const titleSim = stringSimilarity(normQuery, normTitle);
+      if (titleSim >= 0.75) {
+        score += Math.round(titleSim * 60);
+      }
+
+      // 8. Chỉ giữ lại những kết quả có độ liên quan thực sự cao (Threshold)
+      // Loại bỏ các khớp rác ngẫu nhiên quá thấp (ví dụ: chỉ khớp 1 chữ cái con nằm giữa từ)
+      if (score >= 45) {
         scored.push({ book, score });
       }
     }
 
-    // Sắp xếp theo độ khớp giảm dần
+    // Sắp xếp theo điểm giảm dần
     scored.sort((a, b) => b.score - a.score);
 
     return scored.map((item) => item.book);
@@ -941,7 +994,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
             <div className="space-y-1.5">
               <h4 className="text-sm font-bold text-slate-900">Xác Nhận Nạp Lại Dữ Liệu Gốc?</h4>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Hành động này sẽ xóa toàn bộ danh mục sách hiện tại trong Firestore và khôi phục lại {books.length > 500 ? books.length : 591} cuốn sách mẫu ban đầu.
+                Hành động này sẽ xóa toàn bộ danh mục sách hiện tại trong bộ nhớ máy và khôi phục lại {books.length > 500 ? books.length : 591} cuốn sách mẫu ban đầu.
               </p>
             </div>
             <div className="flex gap-2">

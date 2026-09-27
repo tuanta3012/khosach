@@ -20,6 +20,7 @@ interface NavbarProps {
   onOpenSyncModal: () => void;
   onOpenAddModal: () => void;
   onOpenSettingsModal: () => void;
+  isSyncingDrive?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -29,6 +30,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenSyncModal,
   onOpenAddModal,
   onOpenSettingsModal,
+  isSyncingDrive = false,
 }) => {
   return (
     <>
@@ -51,8 +53,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </span>
                 </div>
                 <p className="text-[10px] sm:text-xs text-slate-400 flex items-center gap-1 font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span>Firestore Sync</span>
+                  <span className={`w-1.5 h-1.5 rounded-full ${isSyncingDrive ? 'bg-amber-400 animate-ping' : 'bg-emerald-400 animate-pulse'}`}></span>
+                  <span>{isSyncingDrive ? 'Đang đồng bộ Drive...' : 'Bộ nhớ máy + Drive'}</span>
                 </p>
               </div>
             </div>

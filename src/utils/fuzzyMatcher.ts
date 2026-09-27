@@ -46,8 +46,8 @@ export function levenshteinDistance(s1: string, s2: string): number {
  * Tính độ tương đồng giữa 2 chuỗi (0.0 đến 1.0)
  */
 export function stringSimilarity(str1: string, str2: string): number {
-  const s1 = removeVietnameseTones(str1 || '').replace(/[^a-z0-9]/g, '');
-  const s2 = removeVietnameseTones(str2 || '').replace(/[^a-z0-9]/g, '');
+  const s1 = removeVietnameseTones(str1 || '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  const s2 = removeVietnameseTones(str2 || '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
   if (!s1 && !s2) return 1.0;
   if (!s1 || !s2) return 0.0;

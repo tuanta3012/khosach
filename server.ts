@@ -31,6 +31,25 @@ const ai = new GoogleGenAI({
   },
 });
 
+async function generateContentWithFallback(params: { contents: any; config?: any }) {
+  const primaryModel = 'gemini-3.5-flash-lite';
+  const fallbackModel = 'gemini-3.1-flash-lite';
+
+  try {
+    console.log(`[Server AI] Attempting primary model: ${primaryModel}`);
+    return await ai.models.generateContent({
+      model: primaryModel,
+      ...params,
+    });
+  } catch (err: any) {
+    console.warn(`[Server AI] Primary model ${primaryModel} failed. Falling back to ${fallbackModel}. Error:`, err.message || err);
+    return await ai.models.generateContent({
+      model: fallbackModel,
+      ...params,
+    });
+  }
+}
+
 // API: Batch OCR & Book Extraction from images (Gemini 2.5 Flash / Flash Latest)
 app.post('/api/books/scan-images', async (req, res) => {
   try {
@@ -63,8 +82,7 @@ Hãy đọc kỹ tất cả văn bản trong các ảnh này (chứa gáy sách,
 Trả về mảng JSON chứa các sách bóc tách được.`,
     });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+    const response = await generateContentWithFallback({
       contents: { parts },
       config: {
         responseMimeType: 'application/json',
@@ -118,8 +136,7 @@ Trả về thông tin chuẩn nhất:
 - category: Thể loại chuẩn (Văn học, Kinh tế, Lịch sử, Tâm lý, Khoa học...)
 - summary: Tóm tắt 1-2 câu nội dung cuốn sách`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+    const response = await generateContentWithFallback({
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
@@ -144,6 +161,58 @@ Trả về thông tin chuẩn nhất:
     console.error('Error enriching book info:', err);
     return res.status(500).json({
       error: 'Lỗi tra cứu làm giàu thông tin sách.',
+      message: err?.message || String(err),
+    });
+  }
+});
+
+// API: Batch Normalize book metadata using Gemini 2.5 Flash Lite
+app.post('/api/books/batch-normalize', async (req, res) => {
+  try {
+    const { books } = req.body;
+    if (!books || !Array.isArray(books) || books.length === 0) {
+      return res.status(400).json({ error: 'Không có danh sách sách để chuẩn hóa.' });
+    }
+
+    const prompt = `Bạn là biên tập viên thư viện sách chuyên nghiệp. 
+Hãy sửa lỗi chính tả, sửa tiếng Việt không dấu thành có dấu chuẩn xác, viết hoa chữ cái đầu đúng quy tắc tiếng Việt/quốc tế cho danh sách các cuốn sách sau đây. 
+Nếu thông tin tác giả chưa đúng hoặc thiếu dấu, hãy tự động sửa lại chính xác (ví dụ: "nguyen nhat anh" -> "Nguyễn Nhật Ánh"). 
+Nếu nhà xuất bản viết tắt hoặc thiếu dấu, hãy điền đầy đủ (ví dụ: "nxb tre" -> "NXB Trẻ", "nha nam" -> "Nhã Nam", "nxb kim dong" -> "NXB Kim Đồng").
+Nếu thể loại chưa chuẩn, hãy phân loại và đưa về các thể loại chuẩn tiếng Việt phù hợp (như: Văn học, Kinh tế, Lịch sử, Tâm lý học, Khoa học, Thiếu nhi, Kỹ năng sống, Triết học, Mỹ thuật...).
+
+Dưới đây là danh sách sách dạng JSON cần chuẩn hóa:
+${JSON.stringify(books)}
+
+Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ nguyên trường "id" của từng cuốn sách, và bổ sung thuộc tính "is_ai_normalized": true cho tất cả sách đã chuẩn hóa thành công.`;
+
+    const response = await generateContentWithFallback({
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING, description: 'ID giữ nguyên không đổi' },
+              title: { type: Type.STRING, description: 'Tên sách chuẩn' },
+              author: { type: Type.STRING, description: 'Tác giả chuẩn' },
+              publisher: { type: Type.STRING, description: 'Nhà xuất bản chuẩn' },
+              category: { type: Type.STRING, description: 'Thể loại chuẩn' },
+              is_ai_normalized: { type: Type.BOOLEAN, description: 'Bắt buộc là true' }
+            },
+            required: ['id', 'title', 'author', 'publisher', 'category', 'is_ai_normalized']
+          }
+        }
+      }
+    });
+
+    const output = JSON.parse(response.text || '[]');
+    return res.json({ success: true, normalized: output });
+  } catch (err: any) {
+    console.error('Error in batch normalization API:', err);
+    return res.status(500).json({
+      error: 'Không thể chuẩn hóa hàng loạt dữ liệu sách.',
       message: err?.message || String(err),
     });
   }

@@ -87,6 +87,7 @@ export async function fetchAllBooksFromFirestore(): Promise<BookRecord[]> {
         publisher: data.publisher || '',
         created_at: data.created_at || Date.now(),
         updated_at: data.updated_at || Date.now(),
+        is_ai_normalized: !!data.is_ai_normalized,
       });
     });
     return books;
@@ -119,12 +120,13 @@ export function subscribeToBooksRealtime(
           publisher: data.publisher || '',
           created_at: data.created_at || Date.now(),
           updated_at: data.updated_at || Date.now(),
+          is_ai_normalized: !!data.is_ai_normalized,
         });
       });
       callback(books);
     },
     (error) => {
-      handleFirestoreError(error, OperationType.GET, path);
+      console.warn('[Firestore Realtime] Error encountered:', error);
       if (onError) onError(error);
     }
   );
@@ -145,6 +147,7 @@ export async function saveBookToFirestore(book: BookRecord): Promise<void> {
       publisher: String(book.publisher || '').trim(),
       created_at: book.created_at || Date.now(),
       updated_at: Date.now(),
+      is_ai_normalized: !!book.is_ai_normalized,
     };
     await setDoc(docRef, cleanPayload, { merge: true });
   } catch (error) {
@@ -172,6 +175,7 @@ export async function batchSaveBooksToFirestore(books: BookRecord[]): Promise<vo
           publisher: String(book.publisher || '').trim(),
           created_at: book.created_at || Date.now(),
           updated_at: Date.now(),
+          is_ai_normalized: !!book.is_ai_normalized,
         };
         batch.set(docRef, cleanPayload, { merge: true });
       }
