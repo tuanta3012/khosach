@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { X, Upload, FileText, FileSpreadsheet, HardDrive, Download, AlertCircle, CheckCircle, Loader2, ChevronDown, ChevronUp, Link2 } from 'lucide-react';
+import { X, Upload, FileText, FileSpreadsheet, HardDrive, Download, AlertCircle, CheckCircle, Loader2, ChevronDown, ChevronUp, Link2, Eye, EyeOff } from 'lucide-react';
 import { BookRecord } from '../types';
 import {
   exportBooksToJson,
@@ -66,6 +66,9 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   });
 
   const isUsingDummyScript = scriptUrlInput.includes('AKfyczt126a5BfMe-0o8') || !scriptUrlInput.trim();
+
+  const [showSheetUrl, setShowSheetUrl] = useState(false);
+  const [showScriptUrl, setShowScriptUrl] = useState(false);
 
   const [logs, setLogs] = useState<SyncLogEntry[]>([]);
 
@@ -516,13 +519,23 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                       Link File Google Sheet (Editor Link):
                     </span>
                   </label>
-                  <input
-                    type="text"
-                    value={targetFileUrl}
-                    onChange={(e) => setTargetFileUrl(e.target.value)}
-                    placeholder="https://docs.google.com/spreadsheets/d/1WmvnebrW2NwMAc5r.../edit"
-                    className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-xs"
-                  />
+                  <div className="relative flex items-center">
+                    <input
+                      type={showSheetUrl ? "text" : "password"}
+                      value={targetFileUrl}
+                      onChange={(e) => setTargetFileUrl(e.target.value)}
+                      placeholder="https://docs.google.com/spreadsheets/d/1WmvnebrW2NwMAc5r.../edit"
+                      className="w-full pl-3.5 pr-10 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSheetUrl(!showSheetUrl)}
+                      className="absolute right-3 text-slate-400 hover:text-slate-600 focus:outline-none p-1"
+                      title={showSheetUrl ? "Ẩn đường dẫn" : "Hiện đường dẫn"}
+                    >
+                      {showSheetUrl ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                   <div className="mt-2 text-[11px] text-slate-500 bg-white/60 p-2 rounded-lg border border-slate-100 flex items-center gap-1.5">
                     <span className="text-emerald-600 font-bold">💡 Lưu ý:</span>
                     <span>Trên Google Sheet, bấm <strong>Chia sẻ</strong> &rarr; Chọn <strong>"Bất kỳ ai có đường liên kết đều có thể xem"</strong>.</span>
@@ -598,13 +611,23 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     <label className="block text-[11px] font-bold text-slate-700">
                       URL Google Apps Script Web App (API Endpoint):
                     </label>
-                    <input
-                      type="text"
-                      value={scriptUrlInput}
-                      onChange={(e) => setScriptUrlInput(e.target.value)}
-                      placeholder="https://script.google.com/macros/s/.../exec"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
+                    <div className="relative flex items-center">
+                      <input
+                        type={showScriptUrl ? "text" : "password"}
+                        value={scriptUrlInput}
+                        onChange={(e) => setScriptUrlInput(e.target.value)}
+                        placeholder="https://script.google.com/macros/s/.../exec"
+                        className="w-full pl-3 pr-10 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowScriptUrl(!showScriptUrl)}
+                        className="absolute right-3 text-slate-400 hover:text-slate-600 focus:outline-none p-1"
+                        title={showScriptUrl ? "Ẩn đường dẫn" : "Hiện đường dẫn"}
+                      >
+                        {showScriptUrl ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                     <div className="flex gap-2">
                       <button
                         onClick={handleSaveConfig}
