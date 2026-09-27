@@ -50,9 +50,17 @@ jobs:
                   configurations.all {
                       resolutionStrategy {
                           force 'org.bouncycastle:bcprov-jdk15to18:1.70'
+                          force 'org.bouncycastle:bcpkix-jdk15to18:1.70'
+                          force 'org.bouncycastle:bcutil-jdk15to18:1.70'
                           eachDependency { details ->
                               if (details.requested.group == 'org.bouncycastle') {
-                                  details.useTarget 'org.bouncycastle:bcprov-jdk15to18:1.70'
+                                  if (details.requested.name.startsWith('bcprov')) {
+                                      details.useTarget 'org.bouncycastle:bcprov-jdk15to18:1.70'
+                                  } else if (details.requested.name.startsWith('bcpkix')) {
+                                      details.useTarget 'org.bouncycastle:bcpkix-jdk15to18:1.70'
+                                  } else if (details.requested.name.startsWith('bcutil')) {
+                                      details.useTarget 'org.bouncycastle:bcutil-jdk15to18:1.70'
+                                  }
                               }
                           }
                       }
@@ -61,9 +69,17 @@ jobs:
               configurations.all {
                   resolutionStrategy {
                       force 'org.bouncycastle:bcprov-jdk15to18:1.70'
+                      force 'org.bouncycastle:bcpkix-jdk15to18:1.70'
+                      force 'org.bouncycastle:bcutil-jdk15to18:1.70'
                       eachDependency { details ->
                           if (details.requested.group == 'org.bouncycastle') {
-                              details.useTarget 'org.bouncycastle:bcprov-jdk15to18:1.70'
+                              if (details.requested.name.startsWith('bcprov')) {
+                                  details.useTarget 'org.bouncycastle:bcprov-jdk15to18:1.70'
+                              } else if (details.requested.name.startsWith('bcpkix')) {
+                                  details.useTarget 'org.bouncycastle:bcpkix-jdk15to18:1.70'
+                              } else if (details.requested.name.startsWith('bcutil')) {
+                                  details.useTarget 'org.bouncycastle:bcutil-jdk15to18:1.70'
+                              }
                           }
                       }
                   }

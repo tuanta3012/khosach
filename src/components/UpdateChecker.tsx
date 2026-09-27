@@ -32,9 +32,9 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({
       <div className="bg-white rounded-2xl max-w-sm w-full shadow-xl border border-slate-100 overflow-hidden flex flex-col animate-in scale-in duration-200">
         
         {/* Compact Header */}
-        <div className="p-4 bg-gradient-to-r from-indigo-600 via-violet-600 to-indigo-700 text-white relative flex items-center justify-between">
+        <div className="p-4 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white relative flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ArrowUpCircle className="w-5 h-5 text-indigo-200 animate-pulse shrink-0" />
+            <ArrowUpCircle className="w-5 h-5 text-emerald-200 animate-pulse shrink-0" />
             <h3 className="text-sm font-bold text-white tracking-wide">
               Đã Có Bản Cập Nhật Mới!
             </h3>
@@ -58,7 +58,7 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({
             <div className="flex justify-between items-center bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-100 mb-2">
               <span>Bản hiện tại: <strong className="text-slate-800 font-bold">v{updateInfo.currentVersion}</strong></span>
               <span className="text-slate-300">|</span>
-              <span>Bản mới nhất: <strong className="text-indigo-600 font-bold">v{updateInfo.latestVersion}</strong></span>
+              <span>Bản mới nhất: <strong className="text-emerald-600 font-bold">v{updateInfo.latestVersion}</strong></span>
             </div>
             <p className="text-slate-500 text-[11px] line-clamp-2 italic text-center mt-1">
               "{updateInfo.notes || 'Nâng cấp hiệu năng & tối ưu hóa hệ thống.'}"
@@ -76,7 +76,7 @@ export const UpdateChecker: React.FC<UpdateCheckerProps> = ({
             <button
               onClick={handleDownloadClick}
               disabled={isDownloading}
-              className="flex-[2] flex items-center justify-center gap-1.5 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-98 text-white text-xs font-black rounded-xl shadow-sm transition-all disabled:opacity-60"
+              className="flex-[2] flex items-center justify-center gap-1.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs font-black rounded-xl shadow-sm transition-all disabled:opacity-60"
             >
               {isDownloading ? (
                 <>
