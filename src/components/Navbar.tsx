@@ -81,7 +81,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 }`}
               >
                 <Camera className="w-4 h-4" />
-                <span>Quét Gáy AI</span>
+                <span>Nhập Sách Nhanh</span>
               </button>
             </div>
 
@@ -118,7 +118,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* 2. Quét AI */}
           <button
             onClick={() => onTabChange('scanner')}
-            title="Quét Gáy AI"
+            title="Nhập Sách Nhanh"
             className={`p-1.5 rounded-lg transition-all duration-150 active:scale-95 ${
               currentTab === 'scanner'
                 ? 'text-emerald-400 bg-emerald-500/10 font-bold border border-emerald-500/20'

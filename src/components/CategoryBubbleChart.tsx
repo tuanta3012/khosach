@@ -16,27 +16,89 @@ interface ShelfBookItem {
   textColor: string;
   height: number;
   width: number;
+  displayName: string;
+  fontSize: string;
 }
 
-// Bảng màu Gáy Sách Đa Sắc Tươi Sáng & Sang Trọng (Tối ưu cho nền sáng)
+// Bảng màu Gáy Sách Cổ Điển & Sang Trọng (Màu trầm, ấm, dịu mắt)
 const LIGHT_SHELF_BOOK_PALETTES: { bg: string; accent: string; text: string }[] = [
-  { bg: '#059669', accent: '#a7f3d0', text: '#ffffff' }, // Emerald Green
-  { bg: '#2563eb', accent: '#bfdbfe', text: '#ffffff' }, // Royal Blue
-  { bg: '#dc2626', accent: '#fecaca', text: '#ffffff' }, // Crimson Red
-  { bg: '#d97706', accent: '#fde68a', text: '#ffffff' }, // Amber Ochre
-  { bg: '#7c3aed', accent: '#ddd6fe', text: '#ffffff' }, // Amethyst Purple
-  { bg: '#0891b2', accent: '#cffaff', text: '#ffffff' }, // Ocean Cyan
-  { bg: '#ea580c', accent: '#ffedd5', text: '#ffffff' }, // Terracotta Orange
-  { bg: '#0d9488', accent: '#ccfbf1', text: '#ffffff' }, // Dark Teal
-  { bg: '#4f46e5', accent: '#c7d2fe', text: '#ffffff' }, // Indigo Velvet
-  { bg: '#db2777', accent: '#fbcfe8', text: '#ffffff' }, // Rose Pink
-  { bg: '#65a30d', accent: '#ecfccb', text: '#ffffff' }, // Olive Lime
-  { bg: '#c026d3', accent: '#fae8ff', text: '#ffffff' }, // Fuchsia Magenta
-  { bg: '#16a34a', accent: '#bbf7d0', text: '#ffffff' }, // Forest Green
-  { bg: '#0284c7', accent: '#bae6fd', text: '#ffffff' }, // Sapphire
-  { bg: '#ca8a04', accent: '#fef08a', text: '#ffffff' }, // Warm Yellow
-  { bg: '#9333ea', accent: '#f3e8ff', text: '#ffffff' }, // Violet
+  { bg: '#1e5338', accent: '#a7f3d0', text: '#ffffff' }, // Forest Emerald
+  { bg: '#1e3a8a', accent: '#bfdbfe', text: '#ffffff' }, // Royal Navy Blue
+  { bg: '#881337', accent: '#fecaca', text: '#ffffff' }, // Vintage Burgundy
+  { bg: '#92400e', accent: '#fde68a', text: '#ffffff' }, // Muted Amber Ochre
+  { bg: '#581c87', accent: '#e9d5ff', text: '#ffffff' }, // Deep Plum Velvet
+  { bg: '#155e75', accent: '#cffaff', text: '#ffffff' }, // Deep Ocean Teal
+  { bg: '#9a3412', accent: '#ffedd5', text: '#ffffff' }, // Terracotta Mahogany
+  { bg: '#115e59', accent: '#ccfbf1', text: '#ffffff' }, // Dark Pine Teal
+  { bg: '#312e81', accent: '#c7d2fe', text: '#ffffff' }, // Indigo Charcoal
+  { bg: '#831843', accent: '#fbcfe8', text: '#ffffff' }, // Deep Wine Rose
+  { bg: '#3f6212', accent: '#ecfccb', text: '#ffffff' }, // Deep Olive Green
+  { bg: '#701a75', accent: '#fae8ff', text: '#ffffff' }, // Dark Plum Magenta
+  { bg: '#14532d', accent: '#bbf7d0', text: '#ffffff' }, // Dark Moss Green
+  { bg: '#075985', accent: '#bae6fd', text: '#ffffff' }, // Deep Sapphire Blue
+  { bg: '#78350f', accent: '#fef08a', text: '#ffffff' }, // Warm Espresso Bronze
+  { bg: '#7f1d1d', accent: '#fee2e2', text: '#ffffff' }, // Crimson Mahogany
 ];
+
+/**
+ * Viết tắt thông minh & Tính cỡ chữ tùy biến cho từng thể loại sách
+ * Đảm bảo hiển thị đầy đủ, đẹp mắt trên gáy sách quay dọc
+ */
+function formatCategorySpineText(rawCategory: string): { displayName: string; fontSize: string } {
+  const cat = (rawCategory || 'Chung').trim();
+
+  // Từ điển quy đổi & viết tắt thông minh cho các thể loại dài/phức hợp
+  const smartAbbreviations: Record<string, string> = {
+    'Văn học Việt Nam': 'VH Việt Nam',
+    'Văn học nước ngoài': 'VH Nước Ngoài',
+    'Văn học thiếu nhi': 'VH Thiếu Nhi',
+    'Văn học kinh điển': 'VH Kinh Điển',
+    'Tâm lý / Phát triển bản thân': 'Tâm Lý - Phát Triển',
+    'Tâm lý - Phát triển bản thân': 'Tâm Lý - Phát Triển',
+    'Tâm lý / Phát triển': 'Tâm Lý - Phát Triển',
+    'Kỹ năng sống & Phát triển': 'Kỹ Năng Sống',
+    'Kinh tế / Quản trị': 'Kinh Tế - Quản Trị',
+    'Kinh tế - Đầu tư': 'Kinh Tế - Đầu Tư',
+    'Trinh thám / Ly kỳ': 'Trinh Thám - Ly Kỳ',
+    'Giả tưởng / Kỳ ảo': 'Giả Tưởng - Kỳ Ảo',
+    'Tản văn / Tùy bút': 'Tản Văn - Tùy Bút',
+    'Hồi ký / Tự truyện': 'Hồi Ký - Tự Truyện',
+    'Triết học & Tâm linh': 'Triết Học - Tâm Linh',
+    'Truyện tranh / Manga / Comic': 'Truyện Tranh - Manga',
+  };
+
+  let formatted = smartAbbreviations[cat] || cat;
+
+  // Nếu tên thể loại vẫn dài > 18 ký tự, tự động rút gọn từ thừa
+  if (formatted.length > 18) {
+    formatted = formatted
+      .replace(/Văn [Hh]ọc/g, 'VH')
+      .replace(/Kỹ [Nn]ăng/g, 'KN')
+      .replace(/Phát [Tt]riển/g, 'PT')
+      .replace(/\s*\/\s*/g, ' - ');
+  }
+
+  // Chuyển hoa viết đẹp
+  formatted = formatted.toUpperCase();
+
+  // Tính Font Size tùy biến chính xác theo độ dài ký tự
+  const len = formatted.length;
+  let fontSize = '10.5px';
+
+  if (len <= 7) {
+    fontSize = '11.5px'; // Ngắn (VĂN HỌC, LỊCH SỬ, TÂM LÝ) -> Chữ to, nổi bật
+  } else if (len <= 12) {
+    fontSize = '10px';
+  } else if (len <= 16) {
+    fontSize = '9px';
+  } else if (len <= 22) {
+    fontSize = '8px';
+  } else {
+    fontSize = '7.5px';
+  }
+
+  return { displayName: formatted, fontSize };
+}
 
 export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = ({
   books,
@@ -56,14 +118,16 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = ({
       .map(([category, count], idx) => {
         const palette = LIGHT_SHELF_BOOK_PALETTES[idx % LIGHT_SHELF_BOOK_PALETTES.length];
 
-        // Độ rộng gáy sách tỉ lệ với số lượng (từ 34px đến 76px)
-        const minW = 34;
-        const maxW = 76;
+        // Độ rộng gáy sách tỉ lệ với số lượng (từ 38px đến 62px)
+        const minW = 38;
+        const maxW = 62;
         const normalizedW = Math.min(1, Math.max(0, (count - 1) / 75));
         const width = Math.round(minW + normalizedW * (maxW - minW));
 
-        // Chiều cao biến thiên tự nhiên (120px - 150px)
-        const height = 120 + (idx % 4) * 8 + (count > 25 ? 6 : 0);
+        // Chiều cao gáy sách biến thiên vừa vặn (135px - 165px)
+        const height = 135 + (idx % 4) * 8 + (count > 25 ? 6 : 0);
+
+        const { displayName, fontSize } = formatCategorySpineText(category);
 
         return {
           id: `book_spine_${idx}_${encodeURIComponent(category)}`,
@@ -74,11 +138,13 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = ({
           textColor: palette.text,
           height,
           width,
+          displayName,
+          fontSize,
         };
       })
       .sort((a, b) => b.count - a.count);
 
-    // Chia thành các tầng kệ sách đều đặn (mỗi tầng chứa 1/3 số thể loại)
+    // Chia thành các tầng kệ sách đều đặn
     const shelf1: ShelfBookItem[] = [];
     const shelf2: ShelfBookItem[] = [];
     const shelf3: ShelfBookItem[] = [];
@@ -123,76 +189,86 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = ({
           </div>
         </div>
 
-        {/* Nút 3: Mũi tên + số sách thể loại nhiều nhất */}
-        <div className="bg-amber-600 text-white rounded-xl py-2 px-2.5 shadow-xs flex items-center justify-between transition active:scale-95">
+        {/* Nút 3: Mũi tên + thể loại + số cuốn (ví dụ: ↗ Hồi ký 17) */}
+        <div
+          onClick={() => topCategory && onSelectCategory(topCategory.category)}
+          title={topCategory ? `Lọc thể loại ${topCategory.category}` : ''}
+          className="bg-amber-600 hover:bg-amber-700 text-white rounded-xl py-2 px-2.5 shadow-xs flex items-center justify-between transition active:scale-95 cursor-pointer"
+        >
           <div className="flex items-center gap-1 min-w-0">
             <ArrowUpRight className="w-4 h-4 shrink-0 font-extrabold" />
-            <span className="text-xs font-bold tracking-tight whitespace-nowrap">
-              {topCategory ? `${topCategory.count} cuốn` : '0 cuốn'}
+            <span className="text-xs font-bold tracking-tight truncate">
+              {topCategory ? `${topCategory.category} ${topCategory.count}` : '0 cuốn'}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Container Kệ Sách Nền Sáng (Chạm vào gáy sách để chuyển ngay tới thể loại đó) */}
+      {/* Container Kệ Sách Nền Sáng */}
       <div className="bg-amber-50/40 rounded-2xl p-3 sm:p-4 border border-amber-200/80 shadow-xs relative overflow-hidden space-y-4">
         {shelves.map((shelf, shelfIdx) => (
           <div key={`shelf_${shelfIdx}`} className="relative pt-1">
             {/* Các Tập Sách xếp dọc trên Kệ */}
-            <div className="flex items-end justify-center gap-1.5 px-1 min-h-[155px] overflow-x-auto no-scrollbar scroll-smooth">
-              {shelf.map((book) => (
-                <div
-                  key={book.id}
-                  onClick={() => onSelectCategory(book.category)}
-                  style={{
-                    width: `${book.width}px`,
-                    height: `${book.height}px`,
-                    backgroundColor: book.spineColor,
-                  }}
-                  className="relative shrink-0 rounded-t-md cursor-pointer transition-all duration-200 flex flex-col items-center justify-between py-2 px-1 shadow-sm border-t border-l border-r border-white/30 select-none group hover:-translate-y-3 hover:shadow-xl hover:ring-2 hover:ring-amber-500 hover:z-30 hover:scale-105 active:scale-95 opacity-95 hover:opacity-100"
-                >
-                  {/* Băng Dán Trang (Bookmark Ribbon) */}
+            <div className="flex items-end justify-center gap-1.5 px-1 min-h-[170px] overflow-x-auto no-scrollbar scroll-smooth">
+              {shelf.map((book) => {
+                const maxTextLength = book.height - 44;
+
+                return (
                   <div
-                    className="absolute -top-2 right-1.5 w-1.5 h-3 rounded-b-xs shadow-xs z-20"
-                    style={{ backgroundColor: book.accentColor }}
-                  />
-
-                  {/* Đường Gân Gáy Sách Phía Trên */}
-                  <div className="w-full space-y-1 opacity-35">
-                    <div className="w-full h-0.5 bg-white" />
-                    <div className="w-full h-0.5 bg-black/20" />
-                  </div>
-
-                  {/* Tên Thể Loại Viết Dọc */}
-                  <div className="flex-1 flex items-center justify-center my-1 overflow-hidden w-full">
-                    <span
-                      className="text-[11px] font-bold tracking-wide truncate max-h-[95px] text-center"
-                      style={{
-                        writingMode: 'vertical-rl',
-                        textTransform: 'uppercase',
-                        color: book.textColor,
-                        letterSpacing: '0.03em',
-                        textShadow: '0px 1px 2px rgba(0,0,0,0.3)',
-                      }}
-                    >
-                      {book.category}
-                    </span>
-                  </div>
-
-                  {/* Con số số lượng trên gáy sách */}
-                  <div
-                    className="w-full py-0.5 rounded-xs text-[10px] font-black text-center text-slate-900 shadow-2xs"
-                    style={{ backgroundColor: book.accentColor }}
+                    key={book.id}
+                    onClick={() => onSelectCategory(book.category)}
+                    style={{
+                      width: `${book.width}px`,
+                      height: `${book.height}px`,
+                      backgroundColor: book.spineColor,
+                    }}
+                    className="relative shrink-0 rounded-t-md cursor-pointer transition-all duration-200 flex flex-col items-center justify-between py-2 px-1 shadow-sm border-t border-l border-r border-white/30 select-none group hover:-translate-y-3 hover:shadow-xl hover:ring-2 hover:ring-amber-500 hover:z-30 hover:scale-105 active:scale-95 opacity-95 hover:opacity-100"
                   >
-                    {book.count}
-                  </div>
+                    {/* Băng Dán Trang (Bookmark Ribbon) */}
+                    <div
+                      className="absolute -top-2 right-1.5 w-1.5 h-3 rounded-b-xs shadow-xs z-20"
+                      style={{ backgroundColor: book.accentColor }}
+                    />
 
-                  {/* Đường Gân Gáy Sách Phía Dưới */}
-                  <div className="w-full mt-1 opacity-35">
-                    <div className="w-full h-0.5 bg-white" />
+                    {/* Đường Gân Gáy Sách Phía Trên */}
+                    <div className="w-full space-y-1 opacity-35">
+                      <div className="w-full h-0.5 bg-white" />
+                      <div className="w-full h-0.5 bg-black/20" />
+                    </div>
+
+                    {/* Tên Thể Loại Quay Dọc - Tự động rút gọn & Chỉnh cỡ chữ tùy biến */}
+                    <div className="flex-1 flex items-center justify-center relative my-1 overflow-hidden w-full">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span
+                          className="font-black tracking-wider whitespace-nowrap text-center transition-transform pointer-events-none"
+                          style={{
+                            transform: 'rotate(-90deg)',
+                            color: book.textColor,
+                            maxWidth: `${maxTextLength}px`,
+                            fontSize: book.fontSize,
+                            textShadow: '0px 1px 2px rgba(0,0,0,0.5)',
+                          }}
+                        >
+                          {book.displayName}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Con số số lượng trên gáy sách */}
+                    <div
+                      className="w-full py-0.5 rounded-xs text-[10px] font-black text-center text-slate-900 shadow-2xs z-10"
+                      style={{ backgroundColor: book.accentColor }}
+                    >
+                      {book.count}
+                    </div>
+
+                    {/* Đường Gân Gáy Sách Phía Dưới */}
+                    <div className="w-full mt-1 opacity-35">
+                      <div className="w-full h-0.5 bg-white" />
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Tấm Kệ Sách Gỗ Sáng Màu (Oak Wood Shelf Board) */}
