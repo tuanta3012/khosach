@@ -98,13 +98,24 @@ export async function testGeminiApiKey(candidateKey: string): Promise<{ success:
   try {
     const testModel = 'gemini-3.5-flash-lite';
     const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-    const directResp = await fetch(testUrl, {
+    let directResp = await fetch(testUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: 'Ping test' }] }],
       }),
     });
+
+    if (!directResp.ok) {
+      // Fallback test model gemini-2.5-flash
+      const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const fbResp = await fetch(fallbackUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: 'Ping test' }] }] }),
+      });
+      if (fbResp.ok) directResp = fbResp;
+    }
 
     if (directResp.ok) {
       return { success: true, message: 'API Key Google Gemini kết nối thành công!' };
@@ -163,8 +174,12 @@ async function callGeminiDirect(payload: any): Promise<any> {
   }
   lastCallTimestamp = Date.now();
 
-  const primaryModel = "gemini-3.5-flash-lite";
-  const fallbackModel = "gemini-3.1-flash-lite";
+  const modelsToTry = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash"
+  ];
 
   const executeWithModel = async (modelName: string, retries = 2): Promise<any> => {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
@@ -205,12 +220,17 @@ async function callGeminiDirect(payload: any): Promise<any> {
     }
   };
 
-  try {
-    return await executeWithModel(primaryModel);
-  } catch (err: any) {
-    console.warn(`[GeminiService] Primary model ${primaryModel} failed (${err.message}). Falling back to ${fallbackModel}...`);
-    return await executeWithModel(fallbackModel);
+  let lastErr: any = null;
+  for (const modelName of modelsToTry) {
+    try {
+      return await executeWithModel(modelName);
+    } catch (err: any) {
+      console.warn(`[GeminiService] Model ${modelName} failed (${err.message}). Trying next fallback...`);
+      lastErr = err;
+    }
   }
+
+  throw lastErr || new Error("Không thể thực thi lệnh gọi Gemini.");
 }
 
 /**

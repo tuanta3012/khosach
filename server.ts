@@ -52,25 +52,30 @@ function sanitizeSingleCategory(rawCategory: string): string {
 }
 
 async function generateContentWithFallback(params: { contents: any; config?: any; apiKey?: string }) {
-  const primaryModel = 'gemini-3.5-flash-lite';
-  const fallbackModel = 'gemini-3.1-flash-lite';
+  const modelsToTry = [
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash'
+  ];
   const aiClient = getAiClient(params.apiKey);
+  let lastError: any = null;
 
-  try {
-    console.log(`[Server AI] Attempting primary model: ${primaryModel}`);
-    return await aiClient.models.generateContent({
-      model: primaryModel,
-      contents: params.contents,
-      config: params.config,
-    });
-  } catch (err: any) {
-    console.warn(`[Server AI] Primary model ${primaryModel} failed. Falling back to ${fallbackModel}. Error:`, err.message || err);
-    return await aiClient.models.generateContent({
-      model: fallbackModel,
-      contents: params.contents,
-      config: params.config,
-    });
+  for (const modelName of modelsToTry) {
+    try {
+      console.log(`[Server AI] Attempting model: ${modelName}`);
+      return await aiClient.models.generateContent({
+        model: modelName,
+        contents: params.contents,
+        config: params.config,
+      });
+    } catch (err: any) {
+      console.warn(`[Server AI] Model ${modelName} failed. Trying next model if available. Error:`, err.message || err);
+      lastError = err;
+    }
   }
+
+  throw lastError || new Error("Tất cả các model Gemini đều không phản hồi.");
 }
 
 // API: Kiểm tra tính hợp lệ của Gemini API Key
@@ -82,7 +87,7 @@ app.post('/api/ai/test-key', async (req, res) => {
     }
     const testAi = getAiClient(customKey.trim());
     const result = await testAi.models.generateContent({
-      model: 'gemini-3.5-flash-lite',
+      model: 'gemini-2.5-flash',
       contents: 'Ping',
     });
     if (result && result.text) {
