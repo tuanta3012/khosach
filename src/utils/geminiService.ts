@@ -175,8 +175,8 @@ async function callGeminiDirect(payload: any, preferredModel?: string): Promise<
   let modelsToTry = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash"
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash"
   ];
 
   if (preferredModel) {
@@ -187,8 +187,8 @@ async function callGeminiDirect(payload: any, preferredModel?: string): Promise<
     modelsToTry = [
       "gemini-3.1-flash-lite",
       "gemini-3.5-flash-lite",
-      "gemini-2.5-flash",
-      "gemini-2.0-flash"
+      "gemini-2.5-flash-lite",
+      "gemini-2.5-flash"
     ];
   }
 
