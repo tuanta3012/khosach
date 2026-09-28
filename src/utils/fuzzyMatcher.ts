@@ -20,6 +20,16 @@ export function removeVietnameseTones(str: string): string {
 }
 
 /**
+ * Chuẩn hóa chuỗi giữ nguyên ký tự Unicode (Tiếng Trung, Nhật, Hàn, Anh...)
+ */
+export function normalizeForComparison(raw: string): string {
+  if (!raw) return '';
+  const noDau = removeVietnameseTones(raw);
+  // Giữ nguyên các ký tự chữ cái Unicode (\p{L}), số (\p{N}) và khoảng trắng
+  return noDau.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Tính khoảng cách Levenshtein giữa 2 chuỗi
  */
 export function levenshteinDistance(s1: string, s2: string): number {
@@ -43,15 +53,24 @@ export function levenshteinDistance(s1: string, s2: string): number {
 }
 
 /**
- * Tính độ tương đồng giữa 2 chuỗi (0.0 đến 1.0)
+ * Tính độ tương đồng giữa 2 chuỗi (0.0 đến 1.0) - Hỗ trợ đa ngôn ngữ
  */
 export function stringSimilarity(str1: string, str2: string): number {
-  const s1 = removeVietnameseTones(str1 || '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-  const s2 = removeVietnameseTones(str2 || '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  const s1 = normalizeForComparison(str1);
+  const s2 = normalizeForComparison(str2);
 
   if (!s1 && !s2) return 1.0;
   if (!s1 || !s2) return 0.0;
   if (s1 === s2) return 1.0;
+
+  // Kiểm tra nếu 1 chuỗi chứa chuỗi còn lại (ví dụ tên dịch kèm ngoặc)
+  if (s1.includes(s2) || s2.includes(s1)) {
+    const minLen = Math.min(s1.length, s2.length);
+    const maxLen = Math.max(s1.length, s2.length);
+    if (minLen >= 2 && minLen / maxLen >= 0.35) {
+      return 0.88;
+    }
+  }
 
   const maxLen = Math.max(s1.length, s2.length);
   if (maxLen === 0) return 1.0;
@@ -62,30 +81,57 @@ export function stringSimilarity(str1: string, str2: string): number {
 
 /**
  * Kiểm tra xem 1 bản ghi sách mới có bị trùng với kho sách hiện tại hay không
- * Sử dụng Fuzzy Matching trên Tên sách (title) và Tác giả (author)
+ * Sử dụng Fuzzy Matching thông minh trên Tên sách (title) và Tác giả (author)
  */
 export function checkDuplicateBook(
   item: { title: string; author?: string },
   existingBooks: BookRecord[],
-  threshold = 0.8
+  threshold = 0.75
 ): { isDuplicate: boolean; matchedBook?: BookRecord; score: number } {
   if (!item.title) return { isDuplicate: false, score: 0 };
 
-  const normTitle = removeVietnameseTones(item.title);
-  const normAuthor = removeVietnameseTones(item.author || '');
+  const normTitle = normalizeForComparison(item.title);
+  const normTitleClean = normalizeForComparison(item.title.replace(/\(.*?\)/g, ''));
+  const normAuthor = normalizeForComparison(item.author || '');
 
   let bestMatch: BookRecord | undefined = undefined;
   let highestScore = 0;
 
   for (const book of existingBooks) {
-    const bookTitleNorm = removeVietnameseTones(book.title);
-    const titleScore = stringSimilarity(normTitle, bookTitleNorm);
+    const bookTitleNorm = normalizeForComparison(book.title);
+    const bookTitleClean = normalizeForComparison(book.title.replace(/\(.*?\)/g, ''));
+
+    // So sánh full title lẫn title đã lọc bỏ ngoặc
+    const titleScore1 = stringSimilarity(normTitle, bookTitleNorm);
+    const titleScore2 = stringSimilarity(normTitleClean, bookTitleClean);
+    const titleScore3 = stringSimilarity(normTitle, bookTitleClean);
+    const titleScore4 = stringSimilarity(normTitleClean, bookTitleNorm);
+
+    // Bổ sung so sánh phần tiếng Việt trong ngoặc đơn nếu có
+    const matchInParen1 = item.title.match(/\((.*?)\)/);
+    const matchInParen2 = book.title.match(/\((.*?)\)/);
+    let parenScore = 0;
+    if (matchInParen1 && matchInParen2) {
+      parenScore = stringSimilarity(matchInParen1[1], matchInParen2[1]);
+    } else if (matchInParen1) {
+      parenScore = stringSimilarity(matchInParen1[1], book.title);
+    } else if (matchInParen2) {
+      parenScore = stringSimilarity(item.title, matchInParen2[1]);
+    }
+
+    const titleScore = Math.max(titleScore1, titleScore2, titleScore3, titleScore4, parenScore);
 
     let totalScore = titleScore;
+
     if (normAuthor && book.author) {
-      const bookAuthorNorm = removeVietnameseTones(book.author);
+      const bookAuthorNorm = normalizeForComparison(book.author);
       const authorScore = stringSimilarity(normAuthor, bookAuthorNorm);
-      totalScore = titleScore * 0.7 + authorScore * 0.3;
+      // Nếu tác giả khớp cao, ưu tiên đánh giá trùng
+      if (authorScore >= 0.8) {
+        totalScore = titleScore * 0.6 + authorScore * 0.4;
+      } else {
+        totalScore = titleScore * 0.8 + authorScore * 0.2;
+      }
     }
 
     if (totalScore > highestScore) {
@@ -120,4 +166,45 @@ export function flagDuplicateDrafts(
       confidence: score,
     };
   });
+}
+
+/**
+ * Tự động tìm và gộp tất cả các sách bị trùng lặp trong toàn bộ kho sách
+ */
+export function deduplicateBookList(books: BookRecord[]): { cleanBooks: BookRecord[]; mergedCount: number } {
+  const result: BookRecord[] = [];
+  let mergedCount = 0;
+
+  for (const book of books) {
+    if (!book.title) continue;
+
+    const matchIndex = result.findIndex((existing) => {
+      const { isDuplicate } = checkDuplicateBook({ title: book.title, author: book.author }, [existing], 0.75);
+      return isDuplicate;
+    });
+
+    if (matchIndex === -1) {
+      result.push({ ...book });
+    } else {
+      mergedCount++;
+      const existing = result[matchIndex];
+      // Ưu tiên chọn tên sách đầy đủ hơn (có chữ tượng hình / tên trong ngoặc đơn / dài hơn)
+      const prefersNewTitle =
+        (book.title.includes('(') && !existing.title.includes('(')) ||
+        (/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(book.title) && !/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(existing.title)) ||
+        book.title.length > existing.title.length;
+
+      result[matchIndex] = {
+        ...existing,
+        title: prefersNewTitle ? book.title : existing.title,
+        author: (book.author && book.author !== 'Khuyết danh') ? book.author : existing.author,
+        publisher: book.publisher || existing.publisher,
+        category: (book.category && book.category !== 'Chung') ? book.category : existing.category,
+        is_ai_normalized: existing.is_ai_normalized || book.is_ai_normalized,
+        updated_at: Date.now(),
+      };
+    }
+  }
+
+  return { cleanBooks: result, mergedCount };
 }

@@ -335,8 +335,8 @@ export async function scanImages(images: string[]): Promise<{ success: boolean; 
         text: `Bạn là chuyên gia phân loại thư viện sách tiếng Việt và quốc tế.
 Hãy đọc kỹ tất cả văn bản trong các ảnh này (chứa gáy sách, bìa sách hoặc trang xi-nhê phụ) và bóc tách danh sách các cuốn sách riêng biệt xuất hiện trong ảnh.
 Đối với mỗi cuốn sách, trích xuất chuẩn xác các trường:
-- title: Tên sách (BẮT BUỘC: Đối với sách tiếng Việt thì ghi tên tiếng Việt chuẩn có dấu. Đối với sách ngoại văn không phải tiếng Việt như tiếng Anh, Trung, Nhật, Pháp..., BẮT BUỘC giữ nguyên tên gốc tiếng nước ngoài kèm theo tên tiếng Việt dịch/phổ biến trong ngoặc đơn, ví dụ: "To Live (Phải Sống)", "Norwegian Wood (Rừng Na Uy)", "Atomic Habits (Thay Đổi Tí Hon Bất Phá Bản Thân)").
-- author: Tác giả (bắt buộc, nếu không rõ ghi "Nhiều tác giả" hoặc "Khuyết danh")
+- title: Tên sách (BẮT BUỘC: Đối với sách tiếng Việt thì ghi tên tiếng Việt chuẩn có dấu. Đối với sách NGOẠI VĂN như tiếng Trung, Nhật, Hàn, Anh, Pháp...: BẮT BUỘC GIỮ NGUYÊN TÊN CHỮ TƯỢNG HÌNH/CHỮ GỐC IN TRÊN BÌA SÁCH kèm theo tên dịch tiếng Việt trong ngoặc đơn, ví dụ: "活着 (Phải Sống)", "Norwegian Wood (Rừng Na Uy)", "Atomic Habits (Thay Đổi Tí Hon Bất Phá Bản Thân)". TUYỆT ĐỐI KHÔNG dùng phiên âm Alphabet/Pinyin như KHÔNG viết "Huozhe (Phải Sống)").
+- author: Tác giả (BẮT BUỘC: Dịch hoặc dùng tên Hán-Việt/phiên dịch tiếng Việt chuẩn nếu có, ví dụ: "Dư Hoa" thay vì "余华" hay "Yu Hua", "Khổng Tử", "Haruki Murakami", "Plato". Nếu không rõ ghi "Khuyết danh")
 - publisher: Nhà xuất bản / Công ty phát hành (ví dụ: NXB Trẻ, Nhã Nam, Kim Đồng, NXB Phụ Nữ, NXB Văn Học...)
 - publish_year: Năm xuất bản (số nguyên 4 chữ số nếu thấy, hoặc ước lượng phù hợp nếu rõ ràng, nếu không để null)
 - category: Thể loại sách chuyên sâu theo quy tắc bên dưới
@@ -395,8 +395,8 @@ NXB hiện tại: "${publisher || ''}"
 ${CATEGORY_GUIDELINES}
 
 Trả về thông tin chuẩn nhất:
-- title: Tên sách chuẩn có dấu đầy đủ (Nếu là sách ngoại văn không phải tiếng Việt, BẮT BUỘC giữ tên gốc tiếng nước ngoài kèm tên dịch tiếng Việt trong ngoặc đơn, ví dụ: "To Live (Phải Sống)", "Norwegian Wood (Rừng Na Uy)")
-- author: Tác giả chuẩn
+- title: Tên sách chuẩn (Đối với sách NGOẠI VĂN: BẮT BUỘC giữ nguyên TÊN CHỮ TƯỢNG HÌNH/CHỮ GỐC IN TRÊN BÌA SÁCH kèm tên dịch tiếng Việt trong ngoặc đơn như "活着 (Phải Sống)", "Norwegian Wood (Rừng Na Uy)". TUYỆT ĐỐI KHÔNG dùng phiên âm Alphabet/Pinyin như KHÔNG viết "Huozhe (Phải Sống)").
+- author: Tác giả chuẩn (Dịch hoặc dùng tên Hán-Việt/phiên dịch tiếng Việt chuẩn nếu có như "Dư Hoa", "Khổng Tử", "Haruki Murakami")
 - publisher: Nhà xuất bản uy tín
 - publish_year: Năm phát hành bản in phổ biến
 - category: Thể loại chuyên sâu theo hướng dẫn trên

@@ -1,9 +1,10 @@
 import React, { useState, useRef } from 'react';
-import { X, Settings as SettingsIcon, Check, RefreshCw, ArrowUpCircle, Sparkles, Pause, Loader2 } from 'lucide-react';
+import { X, Settings as SettingsIcon, Check, RefreshCw, ArrowUpCircle, Sparkles, Pause, Loader2, CopyCheck } from 'lucide-react';
 import { LibrarySettings, BookRecord } from '../types';
 import { useToast } from '../context/ToastContext';
 import { CURRENT_APP_VERSION } from '../version';
 import { batchNormalize } from '../utils/geminiService';
+import { deduplicateBookList } from '../utils/fuzzyMatcher';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -31,6 +32,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const { showToast } = useToast();
   const [isSaving, setIsSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isDeduplicating, setIsDeduplicating] = useState(false);
 
   // States cho chuẩn hóa bằng AI
   const [isNormalizing, setIsNormalizing] = useState(false);
@@ -113,6 +115,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách! AI sẽ bắt đầu phân loại lại chi tiết.`, 'success');
   };
 
+  const handleManualDeduplicate = async () => {
+    if (!books || books.length === 0) return;
+    setIsDeduplicating(true);
+    try {
+      const { cleanBooks, mergedCount } = deduplicateBookList(books);
+      if (mergedCount > 0 && onBatchUpdateBooks) {
+        await onBatchUpdateBooks(cleanBooks);
+        showToast(`Đã tự động gộp & dọn dẹp thành công ${mergedCount} cuốn sách trùng lặp! Kho sách sạch sẽ hoàn toàn.`, 'success');
+      } else {
+        showToast('Kho sách hoàn toàn sạch sẽ, không tìm thấy cuốn nào bị trùng!', 'success');
+      }
+    } catch (err: any) {
+      showToast(`Lỗi khi dọn dẹp sách trùng: ${err.message}`, 'error');
+    } finally {
+      setIsDeduplicating(false);
+    }
+  };
+
   const handleSaveAll = async () => {
     setIsSaving(true);
     try {
@@ -175,7 +195,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Content */}
         <div className="p-4 space-y-3.5 overflow-y-auto flex-1">
-          {/* 1. AI Chuẩn Hóa */}
+          {/* 1. Tự động dọn dẹp sách trùng lặp */}
+          {onBatchUpdateBooks && (
+            <div className="p-3 bg-emerald-50/70 rounded-2xl border border-emerald-100 flex items-center justify-between gap-3">
+              <div>
+                <span className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                  <CopyCheck className="w-4 h-4 text-emerald-600" />
+                  Dọn dẹp sách trùng lặp
+                </span>
+                <span className="text-[10px] text-emerald-800 block mt-0.5">
+                  Quét toàn bộ {totalBooks} cuốn &amp; tự động gộp sách trùng
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleManualDeduplicate}
+                disabled={isDeduplicating}
+                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition shadow-xs disabled:opacity-50 whitespace-nowrap active:scale-95"
+              >
+                <RefreshCw className={`w-3 h-3 ${isDeduplicating ? 'animate-spin' : ''}`} />
+                <span>Lọc trùng ngay</span>
+              </button>
+            </div>
+          )}
+
+          {/* 2. AI Chuẩn Hóa */}
           {onBatchUpdateBooks && (
             <div className="p-3 bg-purple-50/60 rounded-2xl border border-purple-100 space-y-2.5">
               <div className="flex items-center justify-between">
@@ -285,7 +329,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
 
-          {/* 2. Quản lý cập nhật phiên bản */}
+          {/* 3. Quản lý cập nhật phiên bản */}
           <div className="pt-2 border-t border-slate-100">
             <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between gap-3">
               <div>
@@ -310,7 +354,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* 3. Nạp lại dữ liệu gốc */}
+          {/* 4. Nạp lại dữ liệu gốc */}
           {onResetMasterData && (
             <div className="pt-2 border-t border-slate-100">
               <div className="p-3 bg-amber-50/60 rounded-2xl border border-amber-100 flex items-center justify-between gap-3">

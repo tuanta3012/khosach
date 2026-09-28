@@ -10,7 +10,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { BookRecord, DraftBookItem } from '../types';
-import { flagDuplicateDrafts } from '../utils/fuzzyMatcher';
+import { flagDuplicateDrafts, checkDuplicateBook } from '../utils/fuzzyMatcher';
 import { scanImages, enrichBook } from '../utils/geminiService';
 
 interface BatchScannerProps {
@@ -179,24 +179,46 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     setDraftItems((prev) => prev.filter((d) => d.tempId !== draftId));
   };
 
-  // Bấm Lưu sách mới -> Tự động lưu các cuốn không trùng vào kho (Không bật thông báo)
+  // Bấm Lưu sách -> Tự động lưu sách mới & tự gộp sách trùng vào kho (Không hỏi)
   const handleSaveAllDrafts = async () => {
     if (draftItems.length === 0) return;
 
-    const newItems = draftItems.filter((d) => !d.isDuplicate);
-    if (newItems.length === 0) return;
-
     setIsSaving(true);
     try {
-      const booksToSave: BookRecord[] = newItems.map((draft, idx) => ({
-        id: `book_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
-        title: draft.title.trim(),
-        author: draft.author.trim() || 'Khuyết danh',
-        publisher: draft.publisher?.trim() || '',
-        category: draft.category?.trim() || 'Chung',
-        created_at: Date.now(),
-        updated_at: Date.now(),
-      }));
+      const booksToSave: BookRecord[] = draftItems.map((draft, idx) => {
+        const { isDuplicate, matchedBook } = checkDuplicateBook(
+          { title: draft.title, author: draft.author },
+          existingBooks
+        );
+
+        if (isDuplicate && matchedBook) {
+          // Tự động gộp / cập nhật cuốn đã có sẵn trong kho mà không cần hỏi
+          const prefersNewTitle =
+            (draft.title.includes('(') && !matchedBook.title.includes('(')) ||
+            (/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(draft.title) && !/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(matchedBook.title)) ||
+            draft.title.length > matchedBook.title.length;
+
+          return {
+            ...matchedBook,
+            title: prefersNewTitle ? draft.title.trim() : matchedBook.title,
+            author: (draft.author?.trim() && draft.author !== 'Khuyết danh') ? draft.author.trim() : matchedBook.author,
+            publisher: draft.publisher?.trim() || matchedBook.publisher,
+            category: (draft.category?.trim() && draft.category !== 'Chung') ? draft.category.trim() : matchedBook.category,
+            updated_at: Date.now(),
+          };
+        } else {
+          // Thêm mới
+          return {
+            id: `book_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+            title: draft.title.trim(),
+            author: draft.author.trim() || 'Khuyết danh',
+            publisher: draft.publisher?.trim() || '',
+            category: draft.category?.trim() || 'Chung',
+            created_at: Date.now(),
+            updated_at: Date.now(),
+          };
+        }
+      });
 
       await onSaveToLibrary(booksToSave);
       setDraftItems([]);
@@ -207,8 +229,6 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       setIsSaving(false);
     }
   };
-
-  const newBooksCount = draftItems.filter((d) => !d.isDuplicate).length;
 
   return (
     <div className="space-y-3">
@@ -295,7 +315,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
             <button
               onClick={handleSaveAllDrafts}
-              disabled={newBooksCount === 0 || isSaving}
+              disabled={draftItems.length === 0 || isSaving}
               className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-40"
             >
               {isSaving ? (
@@ -303,7 +323,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
               ) : (
                 <CheckCircle2 className="w-3.5 h-3.5" />
               )}
-              <span>Lưu sách mới ({newBooksCount})</span>
+              <span>Lưu vào kho ({draftItems.length})</span>
             </button>
           </div>
         </div>
