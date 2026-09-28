@@ -327,11 +327,13 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                 {draftItems.map((draft, idx) => (
                   <tr
                     key={draft.tempId}
-                    className={`hover:bg-slate-50/60 transition ${
-                      draft.isDuplicate ? 'bg-amber-50/40' : ''
+                    className={`transition ${
+                      draft.isDuplicate
+                        ? 'bg-amber-50/60 hover:bg-amber-100/60'
+                        : 'bg-emerald-50/80 hover:bg-emerald-100/80 border-l-3 border-l-emerald-500'
                     }`}
                   >
-                    <td className="py-1.5 px-2 text-center font-mono text-slate-400 font-bold text-[11px]">
+                    <td className="py-1.5 px-2 text-center font-mono text-slate-500 font-bold text-[11px]">
                       {idx + 1}
                     </td>
 
@@ -341,7 +343,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         type="text"
                         value={draft.title}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { title: e.target.value })}
-                        className="w-full px-2 py-1 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 rounded-lg font-bold text-slate-900 focus:outline-none transition text-xs"
+                        className="w-full px-2 py-1 bg-white/90 hover:bg-white focus:bg-white border border-slate-200/80 rounded-lg font-bold text-slate-900 focus:outline-none transition text-xs shadow-2xs"
                       />
                     </td>
 
@@ -351,7 +353,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         type="text"
                         value={draft.author}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { author: e.target.value })}
-                        className="w-full px-2 py-1 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 rounded-lg text-slate-800 focus:outline-none transition text-xs"
+                        className="w-full px-2 py-1 bg-white/90 hover:bg-white focus:bg-white border border-slate-200/80 rounded-lg text-slate-800 focus:outline-none transition text-xs shadow-2xs"
                       />
                     </td>
 
@@ -362,7 +364,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         list="cat-suggestions"
                         value={draft.category || 'Chung'}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { category: e.target.value })}
-                        className="w-full px-2 py-1 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 rounded-lg text-slate-800 focus:outline-none transition text-xs"
+                        className="w-full px-2 py-1 bg-white/90 hover:bg-white focus:bg-white border border-slate-200/80 rounded-lg text-slate-800 focus:outline-none transition text-xs shadow-2xs"
                       />
                       <datalist id="cat-suggestions">
                         {categories.map((c) => (
@@ -377,7 +379,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         type="text"
                         value={draft.publisher || ''}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { publisher: e.target.value })}
-                        className="w-full px-2 py-1 bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 rounded-lg text-slate-800 focus:outline-none transition text-xs"
+                        className="w-full px-2 py-1 bg-white/90 hover:bg-white focus:bg-white border border-slate-200/80 rounded-lg text-slate-800 focus:outline-none transition text-xs shadow-2xs"
                         placeholder="NXB..."
                       />
                     </td>
@@ -386,15 +388,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 whitespace-nowrap">
                       {draft.isDuplicate ? (
                         <div
-                          className="inline-flex items-center gap-1 text-amber-900 bg-amber-100/80 px-2 py-0.5 rounded text-[10px] font-bold border border-amber-200 max-w-[160px] truncate"
+                          className="inline-flex items-center gap-1 text-amber-900 bg-amber-100 px-2 py-0.5 rounded-md text-[10px] font-bold border border-amber-300/80 max-w-[160px] truncate shadow-2xs"
                           title={`Trùng với: "${draft.duplicateMatchTitle}"`}
                         >
-                          <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                          <AlertTriangle className="w-3 h-3 text-amber-700 shrink-0" />
                           <span>Trùng kho</span>
                         </div>
                       ) : (
-                        <div className="inline-flex items-center gap-1 text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded text-[10px] font-bold border border-emerald-200">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                        <div className="inline-flex items-center gap-1 text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded-md text-[10px] font-bold border border-emerald-300/80 shadow-2xs">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-700 shrink-0" />
                           <span>Sách mới</span>
                         </div>
                       )}
