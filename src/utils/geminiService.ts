@@ -107,8 +107,8 @@ export async function testGeminiApiKey(candidateKey: string): Promise<{ success:
     });
 
     if (!directResp.ok) {
-      // Fallback test model gemini-2.5-flash
-      const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      // Fallback test model gemini-1.5-flash
+      const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
       const fbResp = await fetch(fallbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -174,9 +174,7 @@ async function callGeminiDirect(payload: any, preferredModel?: string): Promise<
   let primaryModel = "gemini-3.5-flash-lite";
   let modelsToTry = [
     "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash"
+    "gemini-3.1-flash-lite"
   ];
 
   if (preferredModel) {
@@ -186,9 +184,7 @@ async function callGeminiDirect(payload: any, preferredModel?: string): Promise<
     primaryModel = "gemini-3.1-flash-lite";
     modelsToTry = [
       "gemini-3.1-flash-lite",
-      "gemini-3.5-flash-lite",
-      "gemini-2.5-flash-lite",
-      "gemini-2.5-flash"
+      "gemini-3.5-flash-lite"
     ];
   }
 

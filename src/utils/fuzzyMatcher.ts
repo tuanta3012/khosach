@@ -125,12 +125,21 @@ export function checkDuplicateBook(
 
     if (normAuthor && book.author) {
       const bookAuthorNorm = normalizeForComparison(book.author);
-      const authorScore = stringSimilarity(normAuthor, bookAuthorNorm);
-      // Nếu tác giả khớp cao, ưu tiên đánh giá trùng
-      if (authorScore >= 0.8) {
-        totalScore = titleScore * 0.6 + authorScore * 0.4;
+      const isMissingAuthor =
+        normAuthor === 'khuyet danh' ||
+        normAuthor === 'chua ro' ||
+        bookAuthorNorm === 'khuyet danh' ||
+        bookAuthorNorm === 'chua ro';
+
+      if (isMissingAuthor) {
+        totalScore = titleScore;
       } else {
-        totalScore = titleScore * 0.8 + authorScore * 0.2;
+        const authorScore = stringSimilarity(normAuthor, bookAuthorNorm);
+        if (authorScore >= 0.8) {
+          totalScore = titleScore * 0.6 + authorScore * 0.4;
+        } else {
+          totalScore = titleScore * 0.8 + authorScore * 0.2;
+        }
       }
     }
 

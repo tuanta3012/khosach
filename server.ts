@@ -66,8 +66,6 @@ async function generateContentWithFallback(params: { contents: any; config?: any
   let modelsToTry = [
     'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
-    'gemini-2.5-flash-lite',
-    'gemini-2.5-flash',
   ];
 
   if (params.preferredModel) {
@@ -78,8 +76,6 @@ async function generateContentWithFallback(params: { contents: any; config?: any
     modelsToTry = [
       'gemini-3.1-flash-lite',
       'gemini-3.5-flash-lite',
-      'gemini-2.5-flash-lite',
-      'gemini-2.5-flash',
     ];
   }
 
@@ -107,7 +103,7 @@ async function generateContentWithFallback(params: { contents: any; config?: any
     }
   }
 
-  throw lastError || new Error("Cả 4 model (3.5-flash-lite, 3.1-flash-lite, 2.5-flash-lite, 2.5-flash) đều tạm thời gián đoạn.");
+  throw lastError || new Error("Cả 2 model (3.5-flash-lite, 3.1-flash-lite) đều tạm thời gián đoạn.");
 }
 
 // API: Kiểm tra tính hợp lệ của Gemini API Key (Có Tự động Fallback sang các Model dự phòng)

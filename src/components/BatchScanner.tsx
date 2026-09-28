@@ -89,12 +89,37 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
   });
 
   // Hàng đợi lưu lại các ảnh bị lỗi chưa bóc tách xong để Resume / Retry
-  const [failedImagesQueue, setFailedImagesQueue] = useState<string[]>([]);
+  const [failedImagesQueue, setFailedImagesQueue] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('batch_scanner_failed_queue');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
 
-  // Bảng sách đã trích xuất & kiểm trùng
-  const [draftItems, setDraftItems] = useState<DraftBookItem[]>([]);
+  // Bảng sách đã trích xuất & kiểm trùng (Tự động nạp từ bộ nhớ tạm và tái đánh giá trùng lặp)
+  const [draftItems, setDraftItems] = useState<DraftBookItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('batch_scanner_drafts');
+      const parsed = saved ? JSON.parse(saved) : [];
+      return parsed.length > 0 ? flagDuplicateDrafts(parsed, existingBooks) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [isSaving, setIsSaving] = useState(false);
   const [enrichingId, setEnrichingId] = useState<string | null>(null);
+
+  // Đồng bộ hóa trạng thái ra LocalStorage để tránh mất mát dữ liệu khi chuyển Tab
+  React.useEffect(() => {
+    localStorage.setItem('batch_scanner_drafts', JSON.stringify(draftItems));
+  }, [draftItems]);
+
+  React.useEffect(() => {
+    localStorage.setItem('batch_scanner_failed_queue', JSON.stringify(failedImagesQueue));
+  }, [failedImagesQueue]);
 
   /**
    * Hàm cốt lõi: Xử lý danh sách ảnh nén theo từng Lô (Chunk),
@@ -298,31 +323,31 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     setDraftItems((prev) => prev.filter((d) => d.tempId !== draftId));
   };
 
-  // Lưu toàn bộ bảng chờ vào kho chính (TỰ ĐỘNG CẬP NHẬT NẾU TRÙNG)
+  // Chỉ lưu các cuốn sách mới (chưa trùng) vào kho chính
   const handleSaveAllDrafts = async () => {
-    if (draftItems.length === 0) return;
+    const newDrafts = draftItems.filter((d) => !d.isDuplicate);
+    if (newDrafts.length === 0) return;
     setIsSaving(true);
 
     try {
       const now = Date.now();
-      const booksToSave: BookRecord[] = draftItems.map((draft, idx) => {
-        const dupCheck = checkDuplicateBook({ title: draft.title, author: draft.author }, existingBooks);
-        const existingId = dupCheck.isDuplicate && dupCheck.matchedBook ? dupCheck.matchedBook.id : undefined;
-
+      const booksToSave: BookRecord[] = newDrafts.map((draft, idx) => {
         return {
-          id: existingId || `book_${now}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
+          id: `book_${now}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
           title: draft.title,
           author: draft.author || 'Khuyết danh',
           publisher: draft.publisher || '',
           category: draft.category || 'Chung',
-          created_at: dupCheck.matchedBook ? dupCheck.matchedBook.created_at : now,
+          created_at: now,
           updated_at: now,
           is_ai_normalized: false,
         };
       });
 
       await onSaveToLibrary(booksToSave);
-      setDraftItems([]);
+      
+      // Chỉ giữ lại các cuốn sách TRÙNG (bỏ các cuốn mới đã được lưu thành công)
+      setDraftItems((prev) => prev.filter((d) => d.isDuplicate));
       onSwitchToTable();
     } catch (err: any) {
       console.error('Lỗi khi lưu sách:', err);
@@ -464,7 +489,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
             <button
               onClick={handleSaveAllDrafts}
-              disabled={draftItems.length === 0 || isSaving}
+              disabled={draftItems.filter((d) => !d.isDuplicate).length === 0 || isSaving}
               className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-40"
             >
               {isSaving ? (
@@ -472,7 +497,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
               ) : (
                 <CheckCircle2 className="w-3.5 h-3.5" />
               )}
-              <span>Lưu vào kho ({draftItems.length})</span>
+              <span>Lưu vào kho ({draftItems.filter((d) => !d.isDuplicate).length})</span>
             </button>
           </div>
         </div>
@@ -498,8 +523,8 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     key={draft.tempId}
                     className={`transition ${
                       draft.isDuplicate
-                        ? 'bg-amber-50/60 hover:bg-amber-100/60'
-                        : 'bg-emerald-50/80 hover:bg-emerald-100/80 border-l-3 border-l-emerald-500'
+                        ? 'bg-slate-50/70 hover:bg-slate-100 border-l-4 border-l-slate-300 text-slate-400'
+                        : 'bg-emerald-50/80 hover:bg-emerald-100/90 border-l-4 border-l-emerald-500 text-emerald-950'
                     }`}
                   >
                     <td className="py-1.5 px-2 text-center font-mono text-slate-500 font-bold text-[11px]">
@@ -512,7 +537,11 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         type="text"
                         value={draft.title}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { title: e.target.value })}
-                        className="w-full px-2 py-1 bg-white/90 hover:bg-white focus:bg-white border border-slate-200/80 rounded-lg font-bold text-slate-900 focus:outline-none transition text-xs shadow-2xs"
+                        className={`w-full px-2 py-1 border border-slate-200/80 rounded-lg font-bold focus:outline-none transition text-xs shadow-2xs ${
+                          draft.isDuplicate
+                            ? 'bg-slate-50/40 focus:bg-white text-slate-800'
+                            : 'bg-emerald-50/30 focus:bg-white text-emerald-950'
+                        }`}
                       />
                     </td>
 
@@ -522,7 +551,11 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         type="text"
                         value={draft.author}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { author: e.target.value })}
-                        className="w-full px-2 py-1 bg-white/90 hover:bg-white focus:bg-white border border-slate-200/80 rounded-lg text-slate-800 focus:outline-none transition text-xs shadow-2xs"
+                        className={`w-full px-2 py-1 border border-slate-200/80 rounded-lg focus:outline-none transition text-xs shadow-2xs ${
+                          draft.isDuplicate
+                            ? 'bg-slate-50/40 focus:bg-white text-slate-800'
+                            : 'bg-emerald-50/30 focus:bg-white text-emerald-950'
+                        }`}
                       />
                     </td>
 
@@ -533,7 +566,11 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         list="cat-suggestions"
                         value={draft.category || 'Chung'}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { category: e.target.value })}
-                        className="w-full px-2 py-1 bg-white/90 hover:bg-white focus:bg-white border border-slate-200/80 rounded-lg text-slate-800 focus:outline-none transition text-xs shadow-2xs"
+                        className={`w-full px-2 py-1 border border-slate-200/80 rounded-lg focus:outline-none transition text-xs shadow-2xs ${
+                          draft.isDuplicate
+                            ? 'bg-slate-50/40 focus:bg-white text-slate-800'
+                            : 'bg-emerald-50/30 focus:bg-white text-emerald-950'
+                        }`}
                       />
                       <datalist id="cat-suggestions">
                         {categories.map((c) => (
@@ -548,7 +585,11 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                         type="text"
                         value={draft.publisher || ''}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { publisher: e.target.value })}
-                        className="w-full px-2 py-1 bg-white/90 hover:bg-white focus:bg-white border border-slate-200/80 rounded-lg text-slate-800 focus:outline-none transition text-xs shadow-2xs"
+                        className={`w-full px-2 py-1 border border-slate-200/80 rounded-lg focus:outline-none transition text-xs shadow-2xs ${
+                          draft.isDuplicate
+                            ? 'bg-slate-50/40 focus:bg-white text-slate-800'
+                            : 'bg-emerald-50/30 focus:bg-white text-emerald-950'
+                        }`}
                         placeholder="NXB..."
                       />
                     </td>
@@ -557,14 +598,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 whitespace-nowrap">
                       {draft.isDuplicate ? (
                         <div
-                          className="inline-flex items-center gap-1 text-amber-900 bg-amber-100 px-2 py-0.5 rounded-md text-[10px] font-bold border border-amber-300/80 max-w-[160px] truncate shadow-2xs"
+                          className="inline-flex items-center gap-1 text-slate-900 bg-slate-200/80 px-2 py-0.5 rounded-md text-[10px] font-bold border border-slate-350 shadow-2xs"
                           title={`Trùng với: "${draft.duplicateMatchTitle}"`}
                         >
-                          <AlertTriangle className="w-3 h-3 text-amber-700 shrink-0" />
+                          <AlertTriangle className="w-3 h-3 text-slate-700 shrink-0" />
                           <span>Trùng kho</span>
                         </div>
                       ) : (
-                        <div className="inline-flex items-center gap-1 text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded-md text-[10px] font-bold border border-emerald-300/80 shadow-2xs">
+                        <div className="inline-flex items-center gap-1 text-emerald-900 bg-emerald-100/90 px-2 py-0.5 rounded-md text-[10px] font-bold border border-emerald-300 shadow-2xs">
                           <CheckCircle2 className="w-3 h-3 text-emerald-700 shrink-0" />
                           <span>Sách mới</span>
                         </div>
