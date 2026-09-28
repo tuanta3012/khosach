@@ -13,6 +13,7 @@ import {
   loadLocalSettings,
   saveLocalSettings,
   setLastDriveSyncTimestamp,
+  getLastDriveSyncTimestamp,
   DEFAULT_CATEGORIES,
   DEFAULT_SETTINGS,
 } from './utils/localBooksStorage';
@@ -80,7 +81,7 @@ export default function App() {
     };
   });
 
-  // Đồng bộ hai chiều với Google Drive qua Google Apps Script
+  // Đồng bộ hai chiều với Google Drive qua Google Apps Script (Thêm/Sửa/Xóa từ cả 2 phía)
   const syncWithDrive = async (currentLocalBooks: BookRecord[], actionType: 'STARTUP' | 'MUTATION') => {
     const sheetUrl = getStoredOrConfiguredSheetUrl();
     const scriptUrl = getStoredOrConfiguredScriptUrl();
@@ -92,7 +93,6 @@ export default function App() {
     const isPlaceholderScript = !scriptUrl || scriptUrl.includes('AKfyczt126a5BfMe-0o8');
     const isPlaceholderSheet = !sheetUrl || sheetUrl.includes('1WmvnebrW2NwMAc5r');
 
-    // Nếu người dùng chưa cấu hình URL thật của mình, không kích hoạt đồng bộ nền tự động
     if (isPlaceholderScript && isPlaceholderSheet) {
       console.log('[Sync] Đang dùng liên kết mẫu, bỏ qua đồng bộ mạng. Ứng dụng hoạt động trên bộ nhớ máy.');
       return currentLocalBooks;
@@ -101,61 +101,27 @@ export default function App() {
     setIsSyncingDrive(true);
     try {
       if (actionType === 'STARTUP') {
-        console.log('[Sync] Bắt đầu đồng bộ 2 chiều tự động lúc khởi chạy...');
-        // 1. Kéo dữ liệu từ Sheet về qua proxy
+        console.log('[Sync] Khởi động: Tải toàn bộ dữ liệu master từ Google Drive Sheet về...');
         const res = await pullDataFromDriveWebApp(scriptUrl, sheetUrl);
 
-        if (res.success && res.books && res.books.length > 0) {
-          // 2. Trộn dữ liệu 2 chiều (Local Cache + Sheet) dựa trên ID và updated_at
-          const mergedMap = new Map<string, BookRecord>();
-          
-          // Nạp dữ liệu local máy trước
-          currentLocalBooks.forEach((b) => mergedMap.set(b.id, b));
-          
-          // Trộn dữ liệu từ Sheet
-          let hasNewOrUpdatedFromSheet = false;
-          res.books.forEach((sb) => {
-            const existing = mergedMap.get(sb.id);
-            if (!existing) {
-              mergedMap.set(sb.id, sb);
-              hasNewOrUpdatedFromSheet = true;
-            } else {
-              // So sánh ngày cập nhật
-              if ((sb.updated_at || 0) > (existing.updated_at || 0)) {
-                mergedMap.set(sb.id, sb);
-                hasNewOrUpdatedFromSheet = true;
-              }
-            }
-          });
-
-          const finalBooks = Array.from(mergedMap.values());
-
-          // 3. Nếu có dữ liệu mới/cập nhật từ Sheet, cập nhật vào bộ nhớ máy
-          if (hasNewOrUpdatedFromSheet) {
-            console.log('[Sync] Phát hiện sách mới hoặc mới hơn từ Google Sheet, cập nhật vào bộ nhớ máy...');
-            saveAllLocalBooks(finalBooks);
-            setBooks(finalBooks);
-          }
-
-          // 4. Đẩy lại danh sách đã trộn đầy đủ & sạch sẽ lên Google Sheet nếu có Apps Script
-          if (scriptUrl && !isPlaceholderScript) {
-            console.log('[Sync] Đang đồng nhất dữ liệu sạch lên Google Sheet...');
-            await pushCleanDataToDriveWebApp(scriptUrl, finalBooks, sheetUrl).catch((err) => {
-              console.warn('[Sync] Không đẩy được dữ liệu lên Sheet:', err.message);
-            });
-          }
-
-          setLastDriveSyncTimestamp();
-          showToast(`🚀 Đồng bộ 2 chiều thành công! Kho sách có ${finalBooks.length} cuốn.`, 'success');
-          return finalBooks;
-        } else if (res.success && res.books && res.books.length === 0 && currentLocalBooks.length > 0) {
-          // Sheet trống hoàn toàn, khởi tạo dữ liệu của máy lên Google Sheet
-          if (scriptUrl && !isPlaceholderScript) {
-            console.log('[Sync] Sheet trống, đang tự động khởi tạo dữ liệu của máy lên Google Sheet...');
-            await pushCleanDataToDriveWebApp(scriptUrl, currentLocalBooks, sheetUrl).catch((err) => {
-              console.warn('[Sync] Khởi tạo dữ liệu lên Sheet thất bại:', err.message);
-            });
+        if (res.success && res.books) {
+          if (res.books.length > 0) {
+            console.log(`[Sync] Đã tải về ${res.books.length} cuốn sách master từ Google Drive, tiến hành thay thế dữ liệu trên máy.`);
+            saveAllLocalBooks(res.books);
+            setBooks(res.books);
             setLastDriveSyncTimestamp();
+            showToast(`🚀 Đã cập nhật ${res.books.length} sách từ Drive thay thế dữ liệu máy!`, 'success');
+            return res.books;
+          } else if (res.books.length === 0 && currentLocalBooks.length > 0) {
+            // Google Drive trống hoàn toàn (vừa liên kết Sheet mới trống), đẩy dữ liệu cục bộ lên làm mốc ban đầu
+            if (scriptUrl && !isPlaceholderScript) {
+              console.log('[Sync] Phát hiện Google Sheet trống, đang tự động đồng bộ đẩy dữ liệu máy lên...');
+              await pushCleanDataToDriveWebApp(scriptUrl, currentLocalBooks, sheetUrl).catch((err) => {
+                console.warn('[Sync] Khởi tạo dữ liệu lên Sheet thất bại:', err.message);
+              });
+              setLastDriveSyncTimestamp();
+              showToast(`🚀 Đã khởi tạo thành công ${currentLocalBooks.length} sách lên Google Sheet trống!`, 'success');
+            }
           }
         }
       } else if (actionType === 'MUTATION') {
