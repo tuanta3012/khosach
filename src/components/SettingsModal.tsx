@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { X, Settings as SettingsIcon, Tag, Plus, Check, RefreshCw, ArrowUpCircle, Sparkles, Pause, Loader2 } from 'lucide-react';
+import { X, Settings as SettingsIcon, Check, RefreshCw, ArrowUpCircle, Sparkles, Pause, Loader2 } from 'lucide-react';
 import { LibrarySettings, BookRecord } from '../types';
 import { useToast } from '../context/ToastContext';
 import { CURRENT_APP_VERSION } from '../version';
@@ -29,8 +29,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   isAutoNormalizing = false,
 }) => {
   const { showToast } = useToast();
-  const [categories, setCategories] = useState<string[]>(settings.categoriesList || []);
-  const [newCategoryInput, setNewCategoryInput] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
 
@@ -115,26 +113,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách! AI sẽ bắt đầu phân loại lại chi tiết.`, 'success');
   };
 
-  const handleAddCategory = () => {
-    if (!newCategoryInput.trim()) return;
-    if (categories.includes(newCategoryInput.trim())) {
-      showToast('Thể loại này đã tồn tại!', 'info');
-      return;
-    }
-    setCategories([...categories, newCategoryInput.trim()]);
-    setNewCategoryInput('');
-  };
-
-  const handleRemoveCategory = (cat: string) => {
-    setCategories(categories.filter((c) => c !== cat));
-  };
-
   const handleSaveAll = async () => {
     setIsSaving(true);
     try {
       await onSaveSettings({
         ...settings,
-        categoriesList: categories,
       });
       showToast('Đã lưu cấu hình thành công!', 'success');
       onClose();
@@ -162,11 +145,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   return (
-    <div 
-      className="fixed inset-0 z-50 flex items-center justify-center p-3.5 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200"
+    <div
+      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4"
       onClick={onClose}
     >
-      <div 
+      <div
         className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[88vh]"
         onClick={(e) => e.stopPropagation()}
       >
@@ -178,7 +161,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-900 leading-tight">Cấu Hình Kho Sách</h3>
-              <p className="text-[10px] text-slate-500">Thể loại &amp; Tùy chọn hệ thống</p>
+              <p className="text-[10px] text-slate-500">Chuẩn hóa &amp; Tùy chọn hệ thống</p>
             </div>
           </div>
           <button
@@ -192,164 +175,117 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Content */}
         <div className="p-4 space-y-3.5 overflow-y-auto flex-1">
-          {/* 1. Quản lý danh sách Thể loại */}
-          <div className="space-y-2">
-            <label className="block text-xs font-bold text-slate-800">
-              Thể loại sách ({categories.length})
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newCategoryInput}
-                onChange={(e) => setNewCategoryInput(e.target.value)}
-                placeholder="Thêm thể loại mới..."
-                className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 placeholder:text-slate-400"
-                onKeyDown={(e) => e.key === 'Enter' && handleAddCategory()}
-              />
-              <button
-                type="button"
-                onClick={handleAddCategory}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 transition shrink-0 active:scale-95"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Thêm</span>
-              </button>
-            </div>
-
-            <div className="flex flex-wrap gap-1.5 pt-1 max-h-32 overflow-y-auto">
-              {categories.map((cat) => (
-                <span
-                  key={cat}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-50 text-slate-800 text-xs font-medium rounded-lg border border-slate-200 shadow-2xs"
-                >
-                  <Tag className="w-3 h-3 text-slate-400" />
-                  <span>{cat}</span>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveCategory(cat)}
-                    className="ml-0.5 text-slate-400 hover:text-rose-600 p-0.5"
-                    aria-label={`Xóa ${cat}`}
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* 2. AI Chuẩn Hóa */}
+          {/* 1. AI Chuẩn Hóa */}
           {onBatchUpdateBooks && (
-            <div className="pt-2 border-t border-slate-100">
-              <div className="p-3 bg-purple-50/60 rounded-2xl border border-purple-100 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-purple-950 flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4 text-purple-600" />
-                    Chuẩn hóa AI (Gemini)
-                  </span>
-                  <span className="text-[10.5px] font-mono text-purple-800 font-bold bg-purple-100 px-2 py-0.5 rounded-md">
-                    {normalizedCount}/{totalBooks} cuốn
-                  </span>
-                </div>
-
-                {/* Công tắc tự động ngầm */}
-                <div className="flex items-center justify-between p-2 bg-white/70 border border-purple-100 rounded-xl">
-                  <span className="text-xs font-semibold text-purple-950">Chuẩn hóa tự động ngầm</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onSaveSettings({
-                        ...settings,
-                        autoNormalizeEnabled: !settings.autoNormalizeEnabled,
-                      });
-                      showToast(
-                        !settings.autoNormalizeEnabled
-                          ? 'Đã bật chuẩn hóa tự động ngầm!'
-                          : 'Đã tắt chuẩn hóa tự động ngầm!',
-                        'success'
-                      );
-                    }}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                      settings.autoNormalizeEnabled ? 'bg-purple-600' : 'bg-slate-300'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                        settings.autoNormalizeEnabled ? 'translate-x-4' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {/* Thanh tiến trình */}
-                <div className="w-full bg-slate-200/60 rounded-full h-1.5 overflow-hidden">
-                  <div 
-                    className="bg-purple-600 h-full rounded-full transition-all duration-300"
-                    style={{ width: `${totalBooks > 0 ? (normalizedCount / totalBooks) * 100 : 0}%` }}
-                  />
-                </div>
-
-                {isNormalizing && (
-                  <div className="p-2 bg-white/80 border border-purple-100 rounded-xl">
-                    <div className="flex items-center gap-1.5 text-[10px] font-bold text-purple-900">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-600 shrink-0" />
-                      <span className="truncate">{currentBatchText || 'Đang xử lý...'}</span>
-                    </div>
-                  </div>
-                )}
-
-                {isAutoNormalizing && !isNormalizing && (
-                  <div className="p-2 bg-emerald-50 border border-emerald-100 rounded-xl">
-                    <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-900">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600 shrink-0" />
-                      <span>Đang chuẩn hóa ngầm toàn bộ kho sách...</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Nút đặt lại trạng thái để AI quét lại chuyên sâu */}
-                <div className="pt-1.5 flex items-center justify-between gap-2 border-t border-purple-100/80">
-                  <span className="text-[10px] text-slate-500">Phân loại lại thể loại chuyên sâu:</span>
-                  <button
-                    type="button"
-                    onClick={handleResetAiStatus}
-                    disabled={isNormalizing || isAutoNormalizing}
-                    className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 text-[11px] font-bold rounded-lg transition active:scale-95 disabled:opacity-50 shrink-0 flex items-center gap-1"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Đặt lại AI</span>
-                  </button>
-                </div>
-
-                {/* Nút thủ công khi tắt auto */}
-                {!settings.autoNormalizeEnabled && (
-                  <div className="pt-0.5">
-                    {!isNormalizing ? (
-                      <button
-                        type="button"
-                        onClick={handleStartNormalize}
-                        disabled={pendingBooks.length === 0}
-                        className="w-full flex items-center justify-center gap-1.5 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl transition shadow-xs disabled:opacity-40 active:scale-[0.99]"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>{pendingBooks.length === 0 ? 'Tất cả đã chuẩn hóa' : `Chuẩn hóa ${pendingBooks.length} cuốn`}</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={handleStopNormalize}
-                        className="w-full flex items-center justify-center gap-1.5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition shadow-xs active:scale-[0.99]"
-                      >
-                        <Pause className="w-3.5 h-3.5" />
-                        <span>Tạm dừng</span>
-                      </button>
-                    )}
-                  </div>
-                )}
+            <div className="p-3 bg-purple-50/60 rounded-2xl border border-purple-100 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-purple-950 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-purple-600" />
+                  Chuẩn hóa AI (Gemini)
+                </span>
+                <span className="text-[10.5px] font-mono text-purple-800 font-bold bg-purple-100 px-2 py-0.5 rounded-md">
+                  {normalizedCount}/{totalBooks} cuốn
+                </span>
               </div>
+
+              {/* Công tắc tự động ngầm */}
+              <div className="flex items-center justify-between p-2 bg-white/70 border border-purple-100 rounded-xl">
+                <span className="text-xs font-semibold text-purple-950">Chuẩn hóa tự động ngầm</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSaveSettings({
+                      ...settings,
+                      autoNormalizeEnabled: !settings.autoNormalizeEnabled,
+                    });
+                    showToast(
+                      !settings.autoNormalizeEnabled
+                        ? 'Đã bật chuẩn hóa tự động ngầm!'
+                        : 'Đã tắt chuẩn hóa tự động ngầm!',
+                      'success'
+                    );
+                  }}
+                  className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    settings.autoNormalizeEnabled ? 'bg-purple-600' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                      settings.autoNormalizeEnabled ? 'translate-x-4' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* Thanh tiến trình */}
+              <div className="w-full bg-slate-200/60 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-purple-600 h-full rounded-full transition-all duration-300"
+                  style={{ width: `${totalBooks > 0 ? (normalizedCount / totalBooks) * 100 : 0}%` }}
+                />
+              </div>
+
+              {isNormalizing && (
+                <div className="p-2 bg-white/80 border border-purple-100 rounded-xl">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-purple-900">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-600 shrink-0" />
+                    <span className="truncate">{currentBatchText || 'Đang xử lý...'}</span>
+                  </div>
+                </div>
+              )}
+
+              {isAutoNormalizing && !isNormalizing && (
+                <div className="p-2 bg-emerald-50 border border-emerald-100 rounded-xl">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-900">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600 shrink-0" />
+                    <span>Đang chuẩn hóa ngầm toàn bộ kho sách...</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Nút đặt lại trạng thái để AI quét lại chuyên sâu */}
+              <div className="pt-1.5 flex items-center justify-between gap-2 border-t border-purple-100/80">
+                <span className="text-[10px] text-slate-500">Phân loại lại thể loại chuyên sâu:</span>
+                <button
+                  type="button"
+                  onClick={handleResetAiStatus}
+                  disabled={isNormalizing || isAutoNormalizing}
+                  className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 text-[11px] font-bold rounded-lg transition active:scale-95 disabled:opacity-50 shrink-0 flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Đặt lại AI</span>
+                </button>
+              </div>
+
+              {/* Nút thủ công khi tắt auto */}
+              {!settings.autoNormalizeEnabled && (
+                <div className="pt-0.5">
+                  {!isNormalizing ? (
+                    <button
+                      type="button"
+                      onClick={handleStartNormalize}
+                      disabled={pendingBooks.length === 0}
+                      className="w-full flex items-center justify-center gap-1.5 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl transition shadow-xs disabled:opacity-40 active:scale-[0.99]"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>{pendingBooks.length === 0 ? 'Tất cả đã chuẩn hóa' : `Chuẩn hóa ${pendingBooks.length} cuốn`}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleStopNormalize}
+                      className="w-full flex items-center justify-center gap-1.5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition shadow-xs active:scale-[0.99]"
+                    >
+                      <Pause className="w-3.5 h-3.5" />
+                      <span>Tạm dừng</span>
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
-          {/* 3. Quản lý cập nhật phiên bản */}
+          {/* 2. Quản lý cập nhật phiên bản */}
           <div className="pt-2 border-t border-slate-100">
             <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between gap-3">
               <div>
@@ -374,7 +310,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* 4. Nạp lại dữ liệu gốc */}
+          {/* 3. Nạp lại dữ liệu gốc */}
           {onResetMasterData && (
             <div className="pt-2 border-t border-slate-100">
               <div className="p-3 bg-amber-50/60 rounded-2xl border border-amber-100 flex items-center justify-between gap-3">
