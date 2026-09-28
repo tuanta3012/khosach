@@ -4,7 +4,7 @@ import { BookRecord } from '../types';
  * Mã nguồn Google Apps Script mẫu để người dùng dán vào script.google.com
  */
 export const GOOGLE_APPS_SCRIPT_CODE = `/**
- * GOOGLE APPS SCRIPT - CẦU NỐI ĐỒNG BỘ KHO SÁCH 2 CHIỀU
+ * GOOGLE APPS SCRIPT - CẦU NỐI ĐỒNG BỘ KHO SÁCH 2 CHIỀU (7 CỘT)
  * Hướng dẫn cấp quyền & triển khai:
  * 1. Mở https://script.google.com -> Tạo Dự án mới
  * 2. Dán toàn bộ mã này vào file Code.gs -> Bấm Lưu (Ctrl + S)
@@ -90,13 +90,20 @@ function doGet(e) {
       var row = data[i];
       if (!row || (!row[0] && !row[1])) continue;
       
+      var isNormalized = false;
+      var rawAiVal = row[6] ? String(row[6]).trim().toLowerCase() : '';
+      if (rawAiVal === 'có' || rawAiVal === '1' || rawAiVal === 'true' || rawAiVal === 'yes') {
+        isNormalized = true;
+      }
+
       var book = {
         id: row[0] ? String(row[0]) : 'book_' + Date.now() + '_' + i,
         title: String(row[1] || '').trim(),
         author: String(row[2] || '').trim(),
         category: String(row[3] || 'Chung').trim(),
         publisher: String(row[4] || '').trim(),
-        updated_at: row[5] ? new Date(row[5]).getTime() : Date.now()
+        updated_at: row[5] ? new Date(row[5]).getTime() : Date.now(),
+        is_ai_normalized: isNormalized
       };
       if (book.title) books.push(book);
     }
@@ -126,12 +133,12 @@ function doPost(e) {
       sheet.setName(SHEET_NAME);
     }
     
-    // Ghi đè toàn bộ dữ liệu đã làm sạch
+    // Ghi đè toàn bộ dữ liệu đã làm sạch (7 cột)
     sheet.clear();
-    sheet.appendRow(["ID", "Tên Sách", "Tác Giả", "Thể Loại", "Nhà Xuất Bản", "Ngày Cập Nhật"]);
+    sheet.appendRow(["ID", "Tên Sách", "Tác Giả", "Thể Loại", "Nhà Xuất Bản", "Ngày Cập Nhật", "Đã AI"]);
     
-    // Đặt định dạng tiêu đề
-    sheet.getRange(1, 1, 1, 6).setFontWeight("bold").setBackground("#e6f4ea");
+    // Đặt định dạng tiêu đề (7 cột)
+    sheet.getRange(1, 1, 1, 7).setFontWeight("bold").setBackground("#e6f4ea");
     
     var rows = books.map(function(b) {
       return [
@@ -140,17 +147,18 @@ function doPost(e) {
         b.author || '',
         b.category || 'Chung',
         b.publisher || '',
-        b.updated_at ? new Date(b.updated_at).toLocaleString('vi-VN') : new Date().toLocaleString('vi-VN')
+        b.updated_at ? new Date(b.updated_at).toLocaleString('vi-VN') : new Date().toLocaleString('vi-VN'),
+        b.is_ai_normalized ? 'Có' : 'Chưa'
       ];
     });
     
     if (rows.length > 0) {
-      sheet.getRange(2, 1, rows.length, 6).setValues(rows);
+      sheet.getRange(2, 1, rows.length, 7).setValues(rows);
     }
     
     return ContentService.createTextOutput(JSON.stringify({ 
       status: "success", 
-      message: "Đã cập nhật " + books.length + " cuốn sách sạch lên Google Sheet/Drive thành công!", 
+      message: "Đã cập nhật " + books.length + " cuốn sách lên Google Sheet/Drive thành công!", 
       count: books.length 
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
@@ -186,6 +194,15 @@ export function sanitizeAppsScriptUrl(url: string): string {
 export function sanitizeDocId(id: string): string {
   if (!id) return '';
   return id.replace(/[^a-zA-Z0-9_\-]/g, '').trim();
+}
+
+/**
+ * Rút gọn thể loại chỉ lấy duy nhất 1 thể loại tiêu biểu
+ */
+export function sanitizeSingleCategory(rawCategory: string): string {
+  if (!rawCategory || !rawCategory.trim()) return 'Chung';
+  const first = rawCategory.split(/[,/|+\\]/)[0].trim();
+  return first || 'Chung';
 }
 
 /**
@@ -245,12 +262,14 @@ export function parseGoogleSheetCsvText(csvText: string): BookRecord[] {
   let authorIdx = headerCells.findIndex(h => h.includes('tác giả') || h.includes('author') || h.includes('người viết'));
   let categoryIdx = headerCells.findIndex(h => h.includes('thể loại') || h.includes('category') || h.includes('loại'));
   let publisherIdx = headerCells.findIndex(h => h.includes('nhà xuất bản') || h.includes('nxb') || h.includes('publisher'));
+  let aiNormalizedIdx = headerCells.findIndex(h => h.includes('đã ai') || h.includes('ai') || h.includes('normalized'));
 
   if (titleIdx === -1 && headerCells.length > 1) titleIdx = 1;
   if (titleIdx === -1 && headerCells.length > 0) titleIdx = 0;
   if (authorIdx === -1 && headerCells.length > 2) authorIdx = 2;
   if (categoryIdx === -1 && headerCells.length > 3) categoryIdx = 3;
   if (publisherIdx === -1 && headerCells.length > 4) publisherIdx = 4;
+  if (aiNormalizedIdx === -1 && headerCells.length > 6) aiNormalizedIdx = 6;
 
   const books: BookRecord[] = [];
 
@@ -262,14 +281,20 @@ export function parseGoogleSheetCsvText(csvText: string): BookRecord[] {
     const rawId = (idIdx !== -1 && idIdx < row.length && row[idIdx]) ? row[idIdx] : '';
     const bookId = sanitizeDocId(rawId) || `sheet_import_${Date.now()}_${i}`;
 
+    const rawAi = (aiNormalizedIdx !== -1 && aiNormalizedIdx < row.length && row[aiNormalizedIdx]) ? row[aiNormalizedIdx].toLowerCase() : '';
+    const isNormalized = rawAi === 'có' || rawAi === '1' || rawAi === 'true' || rawAi === 'yes';
+
+    const rawCat = (categoryIdx !== -1 && categoryIdx < row.length && row[categoryIdx]) ? row[categoryIdx] : 'Chung';
+
     const book: BookRecord = {
       id: bookId,
       title: title,
       author: (authorIdx !== -1 && authorIdx < row.length && row[authorIdx]) ? row[authorIdx] : 'Chưa rõ',
-      category: (categoryIdx !== -1 && categoryIdx < row.length && row[categoryIdx]) ? row[categoryIdx] : 'Chung',
+      category: sanitizeSingleCategory(rawCat),
       publisher: (publisherIdx !== -1 && publisherIdx < row.length && row[publisherIdx]) ? row[publisherIdx] : '',
       updated_at: Date.now(),
       created_at: Date.now(),
+      is_ai_normalized: isNormalized,
     };
     books.push(book);
   }
@@ -465,14 +490,24 @@ export async function pullDataFromDriveWebApp(
       const parsedBooks: BookRecord[] = rawBooks.map((item: any, idx: number) => {
         const rawId = String(item.id || '');
         const bookId = sanitizeDocId(rawId) || `drive_import_${Date.now()}_${idx}`;
+        const rawAi = item.is_ai_normalized ?? item.isNormalized ?? item['Đã AI'] ?? item['is_ai_normalized'];
+        const isNormalized = Boolean(
+          rawAi === true || 
+          rawAi === 1 || 
+          String(rawAi).toLowerCase() === 'true' || 
+          String(rawAi).toLowerCase() === 'có' || 
+          String(rawAi).toLowerCase() === 'yes'
+        );
+
         return {
           id: bookId,
           title: String(item.title || item.name || item['Tên Sách'] || '').trim(),
           author: String(item.author || item.writer || item['Tác Giả'] || 'Chưa rõ').trim(),
-          category: String(item.category || item.genre || item['Thể Loại'] || 'Chung').trim(),
+          category: sanitizeSingleCategory(String(item.category || item.genre || item['Thể Loại'] || 'Chung')),
           publisher: String(item.publisher || item.nxb || item['Nhà Xuất Bản'] || '').trim(),
           updated_at: item.updated_at ? Number(item.updated_at) : Date.now(),
           created_at: item.created_at ? Number(item.created_at) : Date.now(),
+          is_ai_normalized: isNormalized,
         };
       }).filter((b: BookRecord) => b.title.length > 0);
 

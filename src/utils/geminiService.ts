@@ -5,6 +5,7 @@
 
 import { BookRecord } from '../types';
 import { getStoredOrConfiguredApiKey } from '../config/syncConfig';
+import { sanitizeSingleCategory } from './driveSyncService';
 
 // Simple yet effective XOR encryption key to prevent casual signature scanning of the APK bundle.
 const OBFUSCATION_SALT = "kho-sach-secure-salt-2026";
@@ -254,21 +255,21 @@ async function executeTask<T>(
 }
 
 const CATEGORY_GUIDELINES = `
-QUY TẮC PHÂN LOẠI THỂ LOẠI SÁCH CHUYÊN SÂU (BẮT BUỘC KHÔNG gán nhãn chung chung như "Văn học" hay "Sách"):
-Hãy chọn thể loại chính xác và phong phú nhất phù hợp với nội dung cuốn sách:
-- Văn học kinh điển (Anna Karenina, Những người khốn khổ, Đồi gió hú, Chiến tranh và hòa bình...)
-- Tiểu thuyết lãng mạn (After You, Me Before You, Anh có thích nước Mỹ không, Ngôn tình...)
-- Giả tưởng / Kỳ ảo (Anh chàng Hobbit, Chúa Nhẫn, Harry Potter, Trò chơi vương quyền...)
-- Trinh thám / Ly kỳ / Kinh dị (Sherlock Holmes, Dan Brown, Higashino Keigo...)
-- Văn học Việt Nam (Ba người khác, Dế Mèn phiêu lưu ký, Tuổi thơ dữ dội, Số đỏ...)
-- Hồi ký / Tự truyện / Tiểu sử (B. Trọc, Anh em nhà Himmler, Steve Jobs...)
-- Văn học thiếu nhi (Anne Tóc đỏ dưới chái nhà xanh, Hoàng tử bé, Dork Diaries...)
-- Tản văn / Tùy bút / Thơ (Ngồi khóc trên cây, Cà phê cùng Tony, Thơ Xuân Diệu...)
-- Kinh tế / Tài chính / Quản trị (Tâm lý học về tiền, Cha giàu cha nghèo, Từ tốt đến vĩ đại...)
-- Tâm lý / Phát triển bản thân (Hiểu về trái tim, Đắc nhân tâm, An hưởng tuổi vàng...)
-- Khoa học / Công nghệ / Y học (Atlas giải phẫu cơ thể người, Vũ trụ, Sapiens...)
-- Lịch sử / Văn hóa / Xã hội
-- Triết học / Tôn giáo / Tâm linh
+QUY TẮC PHÂN LOẠI THỂ LOẠI SÁCH (BẮT BUỘC KHÔNG gán nhãn chung chung như "Văn học" hay "Sách"):
+BẮT BUỘC CHỈ CHỌN DUY NHẤT 1 THỂ LOẠI TIÊU BIỂU NHẤT (KHÔNG ghép nhiều thể loại bằng dấu phẩy, KHÔNG ghi 2 thể loại cùng lúc):
+- Văn học kinh điển
+- Tiểu thuyết lãng mạn
+- Giả tưởng / Kỳ ảo
+- Trinh thám / Ly kỳ
+- Văn học Việt Nam
+- Hồi ký / Tự truyện
+- Văn học thiếu nhi
+- Tản văn / Tùy bút
+- Kinh tế / Quản trị
+- Tâm lý / Phát triển bản thân
+- Khoa học / Y học
+- Lịch sử / Văn hóa
+- Triết học / Tâm linh
 `;
 
 /**
@@ -436,9 +437,16 @@ Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ ngu
         },
       };
     },
-    (directResult) => ({
-      success: true,
-      normalized: directResult || [],
-    })
+    (directResult) => {
+      const list = Array.isArray(directResult) ? directResult : [];
+      return {
+        success: true,
+        normalized: list.map((b: any) => ({
+          ...b,
+          category: sanitizeSingleCategory(b.category || 'Chung'),
+          is_ai_normalized: true,
+        })),
+      };
+    }
   );
 }

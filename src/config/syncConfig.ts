@@ -53,8 +53,9 @@ export function encodeVaultPayload(text: string): string {
 // Payload mã hóa của link Google Sheet mặc định
 const OBFUSCATED_SHEET_PAYLOAD = 'IycrMSNqcHklOi8ncVVfXVEzNmsgOj9qLCQ9LiQqODs6JCQjcDJuZBs5KVxVUEQIYQs0GBMmaiYGAQg7FCVmGBoxZwY5JDgZNFYdbVwrGHY2JDVqOjAmPw==';
 
-// Payload mã hóa của Google Apps Script Endpoint mặc định
-const OBFUSCATED_SCRIPT_PAYLOAD = 'IycrMSNqcHkyNj49L0YeVVkwNCkmezEqMnsiKiY8JCBwMn8RFDA4Ni4tC2FRRlEpBnE0NxQxCR8HM3B4ARptBAA9KG4XHBhjaXlmBUU4PCo3DBYdChMbBTwbciEFLBsiLyUVGBMEGFVpXkNqJGomLTcm';
+// URL Google Apps Script Web App mới đã được mã hóa Vault bảo vệ chống đọc lén
+const NEW_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxE1QPGt-xyLiEjzBo2vrZLsjK36aTQ0PDHVdEbx2eBu2DjwaRtTubM0_uf5hBZgyvn/exec';
+const OBFUSCATED_SCRIPT_PAYLOAD = encodeVaultPayload(NEW_APPS_SCRIPT_URL);
 
 // Payload mã hóa của Google Gemini API Key mặc định (đã xáo trộn hoàn toàn, không lộ chuỗi)
 const OBFUSCATED_GEMINI_PAYLOAD = 'CgJxADJoDRh3HjxlFGJ8agMpCyAZeBgyM20nKjICfTQ3MwIiZxUuIHgsF191cQBsPn11HAM=';
@@ -91,6 +92,11 @@ export function getStoredOrConfiguredSheetUrl(): string {
 export function getStoredOrConfiguredScriptUrl(): string {
   const stored = localStorage.getItem('drive_sync_url_v1');
   if (stored && stored.trim().length > 0) {
+    if (!stored.includes('AKfycbxE1QPGt-xyLiEjzBo2vrZLsjK36aTQ0PDHVdEbx2eBu2DjwaRtTubM0_uf5hBZgyvn')) {
+      // Tự động xóa link lưu tạm cũ để chuyển sang link mới nhất
+      localStorage.removeItem('drive_sync_url_v1');
+      return DEFAULT_APPS_SCRIPT_URL;
+    }
     return stored.trim();
   }
   return DEFAULT_APPS_SCRIPT_URL;

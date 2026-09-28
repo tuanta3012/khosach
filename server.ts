@@ -45,6 +45,12 @@ function getAiClient(customKey?: string) {
   return defaultAi;
 }
 
+function sanitizeSingleCategory(rawCategory: string): string {
+  if (!rawCategory || !rawCategory.trim()) return 'Chung';
+  const first = rawCategory.split(/[,/|+\\]/)[0].trim();
+  return first || 'Chung';
+}
+
 async function generateContentWithFallback(params: { contents: any; config?: any; apiKey?: string }) {
   const primaryModel = 'gemini-3.5-flash-lite';
   const fallbackModel = 'gemini-3.1-flash-lite';
@@ -263,7 +269,14 @@ Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ ngu
     });
 
     const output = JSON.parse(response.text || '[]');
-    return res.json({ success: true, normalized: output });
+    const cleaned = Array.isArray(output)
+      ? output.map((b: any) => ({
+          ...b,
+          category: sanitizeSingleCategory(b.category || 'Chung'),
+          is_ai_normalized: true,
+        }))
+      : [];
+    return res.json({ success: true, normalized: cleaned });
   } catch (err: any) {
     console.error('Error in batch normalization API:', err);
     return res.status(500).json({
