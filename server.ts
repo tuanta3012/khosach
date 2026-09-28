@@ -410,7 +410,7 @@ app.all('/api/drive/proxy', async (req, res) => {
 
       response = await fetch(currentUrl, {
         ...fetchOptions,
-        signal: AbortSignal.timeout(20000), // Timeout 20 giây
+        signal: AbortSignal.timeout(60000), // Timeout 60 giây hỗ trợ Google Apps Script đồng bộ dữ liệu lớn
       });
 
       const status = response.status;
