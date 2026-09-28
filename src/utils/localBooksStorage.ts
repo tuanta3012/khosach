@@ -13,7 +13,7 @@ export const DEFAULT_CATEGORIES = Array.from(
 export const DEFAULT_SETTINGS: LibrarySettings = {
   autoEnrichEnabled: true,
   categoriesList: DEFAULT_CATEGORIES,
-  autoNormalizeEnabled: false,
+  autoNormalizeEnabled: true,
 };
 
 /**
@@ -144,6 +144,7 @@ export function loadLocalSettings(): LibrarySettings {
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
+        autoNormalizeEnabled: parsed.autoNormalizeEnabled ?? true,
         categoriesList: parsed.categoriesList || DEFAULT_CATEGORIES,
       };
     }

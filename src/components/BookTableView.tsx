@@ -245,17 +245,6 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
   const columns = useMemo<ColumnDef<BookRecord>[]>(
     () => [
       {
-        id: 'index',
-        header: '#',
-        cell: (info) => (
-          <span className="text-[11px] font-mono text-slate-400 font-semibold">
-            {info.row.index + 1}
-          </span>
-        ),
-        size: 40,
-        enableSorting: false,
-      },
-      {
         accessorKey: 'title',
         header: ({ column }) => (
           <button
@@ -272,8 +261,14 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
             )}
           </button>
         ),
-        cell: ({ row }) => {
+        cell: ({ row, table }) => {
           const isEditing = editingRowId === row.original.id;
+          const pageIndex = table.getState().pagination.pageIndex || 0;
+          const pageSize = table.getState().pagination.pageSize || 50;
+          const currentDisplayedRows = table.getRowModel().rows;
+          const rowIndexInCurrentView = currentDisplayedRows.findIndex((r) => r.id === row.id);
+          const displayIndex = (pageIndex * pageSize) + (rowIndexInCurrentView >= 0 ? rowIndexInCurrentView : 0) + 1;
+
           if (isEditing) {
             return (
               <input
@@ -289,7 +284,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
           }
           return (
             <span className="text-xs font-bold text-slate-900 leading-snug line-clamp-2">
-              {row.original.title}
+              <span className="text-slate-400 font-mono font-bold mr-0.5">{displayIndex}.</span>{row.original.title}
             </span>
           );
         },
@@ -686,20 +681,23 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
       {/* Main Search Results & List View */}
       {viewMode === 'list' ? (
         /* Mobile Compact Cards View */
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           {table.getRowModel().rows.length > 0 ? (
-            table.getRowModel().rows.map((row) => {
+            table.getRowModel().rows.map((row, idx) => {
               const book = row.original;
               const isEditing = editingRowId === book.id;
+              const pageIndex = table.getState().pagination.pageIndex || 0;
+              const pageSize = table.getState().pagination.pageSize || 50;
+              const displayIndex = pageIndex * pageSize + idx + 1;
 
               if (isEditing) {
                 return (
                   <div
                     key={book.id}
-                    className="bg-emerald-50/70 border border-emerald-400 rounded-xl p-3 space-y-2 shadow-xs"
+                    className="bg-emerald-50/70 border border-emerald-400 rounded-xl p-2.5 space-y-1.5 shadow-xs"
                   >
                     <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
-                      Sửa nhanh cuốn #{row.index + 1}
+                      Sửa nhanh cuốn #{displayIndex}
                     </div>
                     <div>
                       <label className="text-[10px] font-bold text-slate-500">
@@ -714,7 +712,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                             title: e.target.value,
                           }))
                         }
-                        className="w-full px-2.5 py-1.5 text-xs font-bold text-slate-900 bg-white border border-emerald-500 rounded-lg focus:outline-none"
+                        className="w-full px-2 py-1 text-xs font-bold text-slate-900 bg-white border border-emerald-500 rounded-lg focus:outline-none"
                       />
                     </div>
                     <div className="grid grid-cols-2 gap-2">
@@ -731,7 +729,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                               author: e.target.value,
                             }))
                           }
-                          className="w-full px-2 py-1 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
+                          className="w-full px-2 py-0.5 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
                         />
                       </div>
                       <div>
@@ -747,7 +745,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                               category: e.target.value,
                             }))
                           }
-                          className="w-full px-2 py-1 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
+                          className="w-full px-2 py-0.5 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
                         />
                       </div>
                     </div>
@@ -764,19 +762,19 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                             publisher: e.target.value,
                           }))
                         }
-                        className="w-full px-2 py-1 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
+                        className="w-full px-2 py-0.5 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
                       />
                     </div>
-                    <div className="flex items-center justify-end gap-2 pt-1">
+                    <div className="flex items-center justify-end gap-2 pt-0.5">
                       <button
                         onClick={handleCancelEdit}
-                        className="px-3 py-1 bg-slate-200 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-300 transition"
+                        className="px-2.5 py-0.5 bg-slate-200 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-300 transition"
                       >
                         Hủy
                       </button>
                       <button
                         onClick={() => handleSaveInline(book)}
-                        className="px-3 py-1 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition shadow-xs"
+                        className="px-2.5 py-0.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition shadow-xs"
                       >
                         Lưu Cập Nhật
                       </button>
@@ -788,40 +786,17 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
               return (
                 <div
                   key={book.id}
-                  className="bg-white border border-slate-200/90 rounded-xl p-2.5 shadow-2xs hover:border-emerald-300 transition"
+                  className="bg-white border border-slate-200/90 rounded-xl p-2 shadow-2xs hover:border-emerald-300 transition"
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-start gap-2 min-w-0 flex-1">
-                      <span className="text-[10px] font-mono font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded mt-0.5 shrink-0">
-                        #{row.index + 1}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <h2 className="text-xs sm:text-sm font-extrabold text-slate-900 leading-tight">
-                          {book.title}
-                        </h2>
-                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mt-1 text-[11px] text-slate-600">
-                          {book.author && (
-                            <span className="flex items-center gap-1 font-medium">
-                              <User className="w-3 h-3 text-slate-400 shrink-0" />
-                              <span className="truncate">{book.author}</span>
-                            </span>
-                          )}
-                          {book.publisher && (
-                            <span className="flex items-center gap-1 text-slate-500">
-                              <Building className="w-3 h-3 text-slate-400 shrink-0" />
-                              <span className="truncate">{book.publisher}</span>
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+                  {/* Top Row: Full Width Title + Action Buttons */}
+                  <div className="flex items-start justify-between gap-1.5">
+                    <h2 className="text-xs sm:text-sm font-extrabold text-slate-900 leading-tight min-w-0 flex-1">
+                      <span className="text-slate-400 font-mono font-bold mr-0.5">{displayIndex}.</span>{book.title}
+                    </h2>
 
-                    <div className="flex items-center gap-1 shrink-0">
-                      <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 rounded text-[10px] font-bold border border-emerald-200">
-                        {book.category || 'Chung'}
-                      </span>
+                    <div className="flex items-center gap-0.5 shrink-0 pt-0.5">
                       {confirmDeleteId === book.id ? (
-                        <div className="flex items-center gap-1 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded-lg animate-in fade-in slide-in-from-right-1 duration-150">
+                        <div className="flex items-center gap-1 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded-lg animate-in fade-in duration-150">
                           <span className="text-[10px] font-bold text-rose-700 shrink-0">Xóa?</span>
                           <button
                             onClick={() => {
@@ -859,6 +834,31 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                       )}
                     </div>
                   </div>
+
+                  {/* Bottom Row: Left (Author/Publisher) | Right (Category Badge) */}
+                  <div className="flex items-center justify-between gap-2 mt-1 pt-0.5 border-t border-slate-100/80 text-[10.5px] text-slate-600">
+                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 min-w-0 flex-1">
+                      {book.author && (
+                        <span className="flex items-center gap-1 font-medium">
+                          <User className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="truncate max-w-[130px] sm:max-w-[200px]">{book.author}</span>
+                        </span>
+                      )}
+                      {book.publisher && (
+                        <span className="flex items-center gap-1 text-slate-500">
+                          <Building className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="truncate max-w-[110px] sm:max-w-[180px]">{book.publisher}</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Thể loại căn phải dòng dưới */}
+                    <div className="shrink-0 ml-auto">
+                      <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 rounded text-[9.5px] font-bold border border-emerald-200/80">
+                        {book.category || 'Chung'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               );
             })
@@ -888,7 +888,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                     {headerGroup.headers.map((header) => (
                       <th
                         key={header.id}
-                        className="px-2.5 py-2 font-bold whitespace-nowrap"
+                        className="px-2 py-1.5 font-bold whitespace-nowrap"
                       >
                         {header.isPlaceholder
                           ? null
@@ -911,7 +911,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                       }`}
                     >
                       {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="px-2.5 py-2 align-middle">
+                        <td key={cell.id} className="px-2 py-1.5 align-middle">
                           {flexRender(
                             cell.column.columnDef.cell,
                             cell.getContext()

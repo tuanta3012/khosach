@@ -142,8 +142,10 @@ export function getGeminiApiKey(): string {
   return "";
 }
 
+let lastCallTimestamp = 0;
+
 /**
- * Direct fetch helper to query Gemini REST API directly from the mobile client
+ * Direct fetch helper with rate limit throttle (RPM 15 guard), 429 retry, and model failover
  */
 async function callGeminiDirect(payload: any): Promise<any> {
   const apiKey = getGeminiApiKey();
@@ -151,56 +153,62 @@ async function callGeminiDirect(payload: any): Promise<any> {
     throw new Error("Không tìm thấy Gemini API Key. Hãy khai báo API Key hoặc cấu hình trong ứng dụng.");
   }
 
+  // Đảm bảo giãn cách tối thiểu 3.8 giây giữa các lệnh gọi direct REST để tôn trọng RPM 15
+  const now = Date.now();
+  const timeSinceLast = now - lastCallTimestamp;
+  if (timeSinceLast < 3800) {
+    const delay = 3800 - timeSinceLast;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  lastCallTimestamp = Date.now();
+
   const primaryModel = "gemini-3.5-flash-lite";
   const fallbackModel = "gemini-3.1-flash-lite";
 
+  const executeWithModel = async (modelName: string, retries = 2): Promise<any> => {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    try {
+      console.log(`[GeminiService] Calling model ${modelName}...`);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorDetails = await response.json().catch(() => ({}));
+        const message = errorDetails?.error?.message || `HTTP ${response.status}`;
+        
+        // Nếu dính lỗi 429 Quota/Rate Limit và còn lượt thử -> chờ 6s rồi thử lại
+        if ((response.status === 429 || message.toLowerCase().includes('quota')) && retries > 0) {
+          console.warn(`[GeminiService] Rate limit 429 hit on ${modelName}. Retrying in 6s... (${retries} left)`);
+          await new Promise((res) => setTimeout(res, 6000));
+          return await executeWithModel(modelName, retries - 1);
+        }
+
+        throw new Error(`Google API Error (${modelName}): ${message}`);
+      }
+
+      const data = await response.json();
+      const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!textOutput) {
+        throw new Error(`Phản hồi trống từ Gemini API (${modelName}).`);
+      }
+      return JSON.parse(textOutput.trim());
+    } catch (err: any) {
+      if (retries > 0 && err.message?.includes('429')) {
+        await new Promise((res) => setTimeout(res, 6000));
+        return await executeWithModel(modelName, retries - 1);
+      }
+      throw err;
+    }
+  };
+
   try {
-    console.log(`[GeminiService] Executing direct REST call with primary: ${primaryModel}`);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${primaryModel}:generateContent?key=${apiKey}`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const errorDetails = await response.json().catch(() => ({}));
-      const message = errorDetails?.error?.message || `HTTP ${response.status}`;
-      throw new Error(`Google API Error: ${message}`);
-    }
-
-    const data = await response.json();
-    const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!textOutput) {
-      throw new Error("Phản hồi trống từ Gemini API.");
-    }
-    return JSON.parse(textOutput.trim());
+    return await executeWithModel(primaryModel);
   } catch (err: any) {
-    console.warn(`[GeminiService] Primary model ${primaryModel} failed (${err.message || err}). Attempting fallback: ${fallbackModel}`);
-    
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${fallbackModel}:generateContent?key=${apiKey}`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const errorDetails = await response.json().catch(() => ({}));
-      const message = errorDetails?.error?.message || `HTTP ${response.status}`;
-      throw new Error(`Google API Error (Fallback): ${message}`);
-    }
-
-    const data = await response.json();
-    const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!textOutput) {
-      throw new Error("Phản hồi trống từ Gemini API (Fallback).");
-    }
-    return JSON.parse(textOutput.trim());
+    console.warn(`[GeminiService] Primary model ${primaryModel} failed (${err.message}). Falling back to ${fallbackModel}...`);
+    return await executeWithModel(fallbackModel);
   }
 }
 
@@ -214,8 +222,6 @@ async function executeTask<T>(
   directPayloadCreator: () => any,
   transformDirectResponse: (res: any) => T
 ): Promise<T> {
-  // In Capacitor, hostname is usually localhost or capacitor-native, and Express is not available locally.
-  // We can skip server attempt entirely if we are on a pure client environment to save latency.
   const isWebPreview = window.location.port === '3000' || window.location.hostname.includes('run.app');
   
   if (isWebPreview) {
@@ -247,6 +253,24 @@ async function executeTask<T>(
   return transformDirectResponse(directResult);
 }
 
+const CATEGORY_GUIDELINES = `
+QUY TẮC PHÂN LOẠI THỂ LOẠI SÁCH CHUYÊN SÂU (BẮT BUỘC KHÔNG gán nhãn chung chung như "Văn học" hay "Sách"):
+Hãy chọn thể loại chính xác và phong phú nhất phù hợp với nội dung cuốn sách:
+- Văn học kinh điển (Anna Karenina, Những người khốn khổ, Đồi gió hú, Chiến tranh và hòa bình...)
+- Tiểu thuyết lãng mạn (After You, Me Before You, Anh có thích nước Mỹ không, Ngôn tình...)
+- Giả tưởng / Kỳ ảo (Anh chàng Hobbit, Chúa Nhẫn, Harry Potter, Trò chơi vương quyền...)
+- Trinh thám / Ly kỳ / Kinh dị (Sherlock Holmes, Dan Brown, Higashino Keigo...)
+- Văn học Việt Nam (Ba người khác, Dế Mèn phiêu lưu ký, Tuổi thơ dữ dội, Số đỏ...)
+- Hồi ký / Tự truyện / Tiểu sử (B. Trọc, Anh em nhà Himmler, Steve Jobs...)
+- Văn học thiếu nhi (Anne Tóc đỏ dưới chái nhà xanh, Hoàng tử bé, Dork Diaries...)
+- Tản văn / Tùy bút / Thơ (Ngồi khóc trên cây, Cà phê cùng Tony, Thơ Xuân Diệu...)
+- Kinh tế / Tài chính / Quản trị (Tâm lý học về tiền, Cha giàu cha nghèo, Từ tốt đến vĩ đại...)
+- Tâm lý / Phát triển bản thân (Hiểu về trái tim, Đắc nhân tâm, An hưởng tuổi vàng...)
+- Khoa học / Công nghệ / Y học (Atlas giải phẫu cơ thể người, Vũ trụ, Sapiens...)
+- Lịch sử / Văn hóa / Xã hội
+- Triết học / Tôn giáo / Tâm linh
+`;
+
 /**
  * 1. AI Vision: Batch scanning of book images to extract metadata
  */
@@ -273,7 +297,9 @@ Hãy đọc kỹ tất cả văn bản trong các ảnh này (chứa gáy sách,
 - author: Tác giả (bắt buộc, nếu không rõ ghi "Nhiều tác giả" hoặc "Khuyết danh")
 - publisher: Nhà xuất bản / Công ty phát hành (ví dụ: NXB Trẻ, Nhã Nam, Kim Đồng, NXB Phụ Nữ, NXB Văn Học...)
 - publish_year: Năm xuất bản (số nguyên 4 chữ số nếu thấy, hoặc ước lượng phù hợp nếu rõ ràng, nếu không để null)
-- category: Thể loại sách tiếng Việt (ví dụ: Văn học, Kinh tế - Đầu tư, Lịch sử, Kỹ năng sống, Tâm lý học, Khoa học, Triết học, Thiếu nhi...)
+- category: Thể loại sách chuyên sâu theo quy tắc bên dưới
+
+${CATEGORY_GUIDELINES}
 
 Trả về mảng JSON chứa các sách bóc tách được.`,
       });
@@ -291,7 +317,7 @@ Trả về mảng JSON chứa các sách bóc tách được.`,
                 author: { type: 'STRING', description: 'Tác giả' },
                 publisher: { type: 'STRING', description: 'Nhà xuất bản' },
                 publish_year: { type: 'INTEGER', description: 'Năm xuất bản' },
-                category: { type: 'STRING', description: 'Thể loại sách' },
+                category: { type: 'STRING', description: 'Thể loại sách chuyên sâu' },
               },
               required: ['title', 'author', 'publisher'],
             },
@@ -324,12 +350,14 @@ Tên hiện tại: "${title}"
 Tác giả hiện tại: "${author || ''}"
 NXB hiện tại: "${publisher || ''}"
 
+${CATEGORY_GUIDELINES}
+
 Trả về thông tin chuẩn nhất:
 - title: Tên sách chuẩn có dấu đầy đủ
 - author: Tác giả chuẩn
 - publisher: Nhà xuất bản uy tín
 - publish_year: Năm phát hành bản in phổ biến
-- category: Thể loại chuẩn (Văn học, Kinh tế, Lịch sử, Tâm lý, Khoa học...)
+- category: Thể loại chuyên sâu theo hướng dẫn trên
 - summary: Tóm tắt 1-2 câu nội dung cuốn sách`;
 
       return {
@@ -374,9 +402,10 @@ export async function batchNormalize(books: BookRecord[]): Promise<{ success: bo
 Hãy sửa lỗi chính tả, sửa tiếng Việt không dấu thành có dấu chuẩn xác, viết hoa chữ cái đầu đúng quy tắc tiếng Việt/quốc tế cho danh sách các cuốn sách sau đây. 
 Nếu thông tin tác giả chưa đúng hoặc thiếu dấu, hãy tự động sửa lại chính xác (ví dụ: "nguyen nhat anh" -> "Nguyễn Nhật Ánh"). 
 Nếu nhà xuất bản viết tắt hoặc thiếu dấu, hãy điền đầy đủ (ví dụ: "nxb tre" -> "NXB Trẻ", "nha nam" -> "Nhã Nam", "nxb kim dong" -> "NXB Kim Đồng").
-Nếu thể loại chưa chuẩn, hãy phân loại và đưa về các thể loại chuẩn tiếng Việt phù hợp (như: Văn học, Kinh tế, Lịch sử, Tâm lý học, Khoa học, Thiếu nhi, Kỹ năng sống, Triết học, Mỹ thuật...).
 
-Dưới đây là danh sách sách dạng JSON cần chuẩn hóa:
+${CATEGORY_GUIDELINES}
+
+Dưới đây là danh sách sách dạng JSON cần chuẩn hóa và phân loại lại chuyên sâu:
 ${JSON.stringify(books)}
 
 Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ nguyên trường "id" của từng cuốn sách, và bổ sung thuộc tính "is_ai_normalized": true cho tất cả sách đã chuẩn hóa thành công.`;
@@ -398,7 +427,7 @@ Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ ngu
                 title: { type: 'STRING', description: 'Tên sách chuẩn' },
                 author: { type: 'STRING', description: 'Tác giả chuẩn' },
                 publisher: { type: 'STRING', description: 'Nhà xuất bản chuẩn' },
-                category: { type: 'STRING', description: 'Thể loại chuẩn' },
+                category: { type: 'STRING', description: 'Thể loại chuyên sâu' },
                 is_ai_normalized: { type: 'BOOLEAN', description: 'Bắt buộc là true' },
               },
               required: ['id', 'title', 'author', 'publisher', 'category', 'is_ai_normalized'],

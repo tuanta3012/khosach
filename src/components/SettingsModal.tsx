@@ -105,6 +105,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setCurrentBatchText('Đang hoàn thành lô rồi dừng...');
   };
 
+  const handleResetAiStatus = async () => {
+    if (!onBatchUpdateBooks || books.length === 0) return;
+    const resetList: BookRecord[] = books.map((b) => ({
+      ...b,
+      is_ai_normalized: false,
+    }));
+    await onBatchUpdateBooks(resetList);
+    showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách! AI sẽ bắt đầu phân loại lại chi tiết.`, 'success');
+  };
+
   const handleAddCategory = () => {
     if (!newCategoryInput.trim()) return;
     if (categories.includes(newCategoryInput.trim())) {
@@ -295,6 +305,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   </div>
                 )}
+
+                {/* Nút đặt lại trạng thái để AI quét lại chuyên sâu */}
+                <div className="pt-1.5 flex items-center justify-between gap-2 border-t border-purple-100/80">
+                  <span className="text-[10px] text-slate-500">Phân loại lại thể loại chuyên sâu:</span>
+                  <button
+                    type="button"
+                    onClick={handleResetAiStatus}
+                    disabled={isNormalizing || isAutoNormalizing}
+                    className="px-2.5 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 text-[11px] font-bold rounded-lg transition active:scale-95 disabled:opacity-50 shrink-0 flex items-center gap-1"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Đặt lại AI</span>
+                  </button>
+                </div>
 
                 {/* Nút thủ công khi tắt auto */}
                 {!settings.autoNormalizeEnabled && (

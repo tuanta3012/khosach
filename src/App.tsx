@@ -244,7 +244,7 @@ export default function App() {
 
     const runAutoNormalize = async () => {
       setIsAutoNormalizing(true);
-      const batch = pending.slice(0, 5);
+      const batch = pending.slice(0, 8);
       console.log(`[AutoNormalize] Bắt đầu chuẩn hóa ngầm ${batch.length} cuốn sách chưa chuẩn hóa...`);
 
       try {
@@ -272,11 +272,11 @@ export default function App() {
       } finally {
         setTimeout(() => {
           setIsAutoNormalizing(false);
-        }, 3000);
+        }, 4000);
       }
     };
 
-    const timer = setTimeout(runAutoNormalize, 3000);
+    const timer = setTimeout(runAutoNormalize, 2000);
     return () => clearTimeout(timer);
   }, [books, settings.autoNormalizeEnabled, isAutoNormalizing, isLoading]);
 

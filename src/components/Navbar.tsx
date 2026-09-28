@@ -3,10 +3,9 @@ import {
   BookOpen,
   Camera,
   Layers,
-  Sparkles,
-  HardDrive,
   Settings,
-  Plus,
+  PlusCircle,
+  ArrowUpDown,
 } from 'lucide-react';
 import { AuthUser } from '../types';
 
@@ -35,8 +34,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <>
       {/* Top Bar for Mobile & Desktop */}
-      <header className="sticky top-0 z-40 bg-slate-900 text-white shadow-md border-b border-slate-800 pt-[env(safe-area-inset-top,0px)]">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6">
+      <header className="sticky top-0 z-40 bg-slate-900 text-white shadow-md border-b border-slate-800/80 pt-[env(safe-area-inset-top,0px)]">
+        <div className="max-w-7xl mx-auto px-3.5 sm:px-6">
           <div className="flex items-center justify-between h-14 sm:h-16 gap-2">
             {/* Logo & Branding */}
             <div className="flex items-center gap-2.5">
@@ -53,7 +52,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </span>
                 </div>
                 <p className="text-[10px] sm:text-xs text-slate-400 flex items-center gap-1 font-medium">
-                  <span className={`w-1.5 h-1.5 rounded-full ${isSyncingDrive ? 'bg-amber-400 animate-ping' : 'bg-emerald-400 animate-pulse'}`}></span>
+                  <span className={`w-1.5 h-1.5 rounded-full ${isSyncingDrive ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
                   <span>{isSyncingDrive ? 'Đang đồng bộ Drive...' : 'Bộ nhớ máy + Drive'}</span>
                 </p>
               </div>
@@ -63,7 +62,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="hidden md:flex items-center gap-1 bg-slate-800/90 p-1 rounded-xl border border-slate-700/60">
               <button
                 onClick={() => onTabChange('table')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition ${
                   currentTab === 'table'
                     ? 'bg-emerald-500 text-slate-950 shadow-xs'
                     : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
@@ -75,7 +74,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
               <button
                 onClick={() => onTabChange('scanner')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition ${
                   currentTab === 'scanner'
                     ? 'bg-emerald-500 text-slate-950 shadow-xs'
                     : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
@@ -83,80 +82,70 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 <Camera className="w-4 h-4" />
                 <span>Quét Gáy AI</span>
-                <Sparkles className="w-3 h-3 text-amber-300 animate-pulse" />
               </button>
             </div>
 
-            {/* Header Right Quick Action Buttons */}
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={onOpenAddModal}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs transition active:scale-95 shadow-xs"
-              >
-                <Plus className="w-4 h-4 stroke-[2.5]" />
-                <span className="hidden sm:inline">Thêm Sách</span>
-              </button>
-
-              <button
-                onClick={onOpenSyncModal}
-                title="Sao lưu / Nhập Xuất"
-                className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
-              >
-                <HardDrive className="w-4 h-4" />
-              </button>
-
+            {/* Header Right Action Button - ONLY Settings Gear */}
+            <div className="flex items-center">
               <button
                 onClick={onOpenSettingsModal}
-                title="Cài đặt"
-                className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                title="Cài đặt hệ thống"
+                className="p-2.5 text-slate-300 hover:text-white hover:bg-slate-800 active:scale-95 rounded-xl transition border border-transparent hover:border-slate-700/60"
               >
-                <Settings className="w-4 h-4" />
+                <Settings className="w-5 h-5" />
               </button>
             </div>
           </div>
         </div>
       </header>
 
-      {/* Bottom Sticky Navigation Dock for Mobile (Icon-only, touch-optimized) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-6 pt-2 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] flex items-center justify-around shadow-2xl">
-        <button
-          onClick={() => onTabChange('table')}
-          title={`Kho Sách (${totalBooksCount})`}
-          className={`p-2 rounded-xl transition ${
-            currentTab === 'table' ? 'text-emerald-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <Layers className="w-5 h-5" />
-        </button>
+      {/* Bottom Navigation Dock for Mobile (Icon-only, compact, touch-optimized) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-5 pt-1 pb-[max(0.35rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
+        <div className="flex items-center justify-around max-w-md mx-auto h-11">
+          {/* 1. Kho Sách */}
+          <button
+            onClick={() => onTabChange('table')}
+            title="Kho Sách"
+            className={`p-1.5 rounded-lg transition-all duration-150 active:scale-95 ${
+              currentTab === 'table'
+                ? 'text-emerald-400 bg-emerald-500/10 font-bold border border-emerald-500/20'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <Layers className="w-5 h-5" />
+          </button>
 
-        <button
-          onClick={() => onTabChange('scanner')}
-          title="Quét Gáy AI"
-          className={`p-2 rounded-xl transition ${
-            currentTab === 'scanner' ? 'text-emerald-400 bg-slate-800/80 font-bold' : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <div className="relative">
+          {/* 2. Quét AI */}
+          <button
+            onClick={() => onTabChange('scanner')}
+            title="Quét Gáy AI"
+            className={`p-1.5 rounded-lg transition-all duration-150 active:scale-95 ${
+              currentTab === 'scanner'
+                ? 'text-emerald-400 bg-emerald-500/10 font-bold border border-emerald-500/20'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
             <Camera className="w-5 h-5" />
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-400 rounded-full animate-ping"></span>
-          </div>
-        </button>
+          </button>
 
-        <button
-          onClick={onOpenAddModal}
-          title="Thêm Sách Mới"
-          className="p-1.5 rounded-full bg-emerald-500 text-slate-950 font-bold active:scale-90 transition shadow-md"
-        >
-          <Plus className="w-5 h-5 stroke-[3]" />
-        </button>
+          {/* 3. Thêm Sách */}
+          <button
+            onClick={onOpenAddModal}
+            title="Thêm Sách Mới"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-slate-800/60 transition-all duration-150 active:scale-95"
+          >
+            <PlusCircle className="w-5 h-5 text-emerald-400" />
+          </button>
 
-        <button
-          onClick={onOpenSyncModal}
-          title="Sao Lưu / Đồng Bộ"
-          className="p-2 rounded-xl text-slate-400 hover:text-slate-200 transition"
-        >
-          <HardDrive className="w-5 h-5" />
-        </button>
+          {/* 4. Đồng Bộ */}
+          <button
+            onClick={onOpenSyncModal}
+            title="Sao Lưu / Đồng Bộ"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 transition-all duration-150 active:scale-95"
+          >
+            <ArrowUpDown className="w-5 h-5" />
+          </button>
+        </div>
       </nav>
     </>
   );

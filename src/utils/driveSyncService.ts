@@ -19,7 +19,7 @@ export const GOOGLE_APPS_SCRIPT_CODE = `/**
  */
 
 // DÁN LINK GOOGLE SHEET CỦA BẠN VÀO ĐÂY (NẾU CÓ):
-const TARGET_FILE_URL = "";
+const TARGET_FILE_URL = "https://docs.google.com/spreadsheets/d/1WmvnebrW2NwMAc5rIJMu_v9YJa8PxqtMkd-_jtK3uqg/edit";
 
 const SHEET_NAME = "KhoSachClean";
 
@@ -30,8 +30,12 @@ function setupPermissions() {
   Logger.log("Đang kiểm tra & xin cấp quyền truy cập Google Sheets & Google Drive...");
   try {
     var ss = getSpreadsheet("");
-    Logger.log("✅ CẤP QUYỀN THÀNH CÔNG! Tên file đang dùng: " + ss.getName());
-    return "Cấp quyền thành công: " + ss.getName();
+    if (ss) {
+      Logger.log("✅ CẤP QUYỀN THÀNH CÔNG! Tên file đang dùng: " + ss.getName());
+      return "Cấp quyền thành công: " + ss.getName();
+    }
+    Logger.log("✅ Cấp quyền cơ bản thành công.");
+    return "Cấp quyền thành công.";
   } catch (err) {
     Logger.log("❌ Lỗi cấp quyền: " + err.toString());
     throw err;
@@ -46,7 +50,7 @@ function getSpreadsheet(fileUrlParam) {
       return SpreadsheetApp.openByUrl(cleanUrl);
     } catch(e1) {
       // Thử trích xuất Spreadsheet ID từ URL
-      var match = cleanUrl.match(/\\/d\\/([a-zA-Z0-9-_]+)/);
+      var match = cleanUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
       if (match && match[1]) {
         try {
           return SpreadsheetApp.openById(match[1]);
@@ -55,21 +59,13 @@ function getSpreadsheet(fileUrlParam) {
     }
   }
   
-  // Fallback 1: Active Spreadsheet nếu script đính kèm trực tiếp trong Sheet
+  // Fallback: Active Spreadsheet nếu script đính kèm trực tiếp trong Sheet
   try {
     var active = SpreadsheetApp.getActiveSpreadsheet();
     if (active) return active;
   } catch(e3) {}
-  
-  // Fallback 2: Tìm hoặc Tạo file Google Sheet tên Kho_Sach_Clean_Database trong Drive
-  try {
-    var files = DriveApp.getFilesByName("Kho_Sach_Clean_Database");
-    if (files.hasNext()) {
-      return SpreadsheetApp.open(files.next());
-    }
-  } catch(e4) {}
 
-  return SpreadsheetApp.create("Kho_Sach_Clean_Database");
+  throw new Error("Không tìm thấy Google Sheet. Vui lòng kiểm tra link file Sheet đã dán trong cấu hình.");
 }
 
 function doGet(e) {
