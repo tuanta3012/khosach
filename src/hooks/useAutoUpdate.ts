@@ -108,12 +108,11 @@ export function useAutoUpdate() {
       const hasUpdate = compareVersions(latestInfo.version, appVersion) > 0;
       setUpdateInfo(latestInfo);
 
-      const isDev = (import.meta as any).env?.DEV || (typeof window !== 'undefined' && (window.location.hostname.includes('run.app') || window.location.hostname === 'localhost'));
+      const isAiStudioPreview = typeof window !== 'undefined' && window.location.hostname.includes('run.app');
 
-      // Chỉ tự động mở modal nếu:
-      // - Người dùng bấm kiểm tra thủ công (isManual = true)
-      // - Hoặc ứng dụng đang chạy dưới dạng native APK trên thiết bị thật và không phải bản web dev
-      if (hasUpdate && (isManual || (isNative && !isDev))) {
+      // Tự động mở modal cập nhật nếu có phiên bản mới
+      // (chỉ bỏ qua tự động nẩy popup nếu đang dev trong iframe AI Studio preview)
+      if (hasUpdate && (isManual || !isAiStudioPreview)) {
         setIsModalOpen(true);
       }
       return {

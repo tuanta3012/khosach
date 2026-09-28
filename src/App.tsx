@@ -218,19 +218,18 @@ export default function App() {
     initData();
   }, []);
 
-  // 3. Tự động kiểm tra bản cập nhật mới (chỉ chạy ngầm trên thiết bị di động thật sau khi cài APK)
+  // 3. Tự động kiểm tra bản cập nhật mới khi mở ứng dụng (sau 1.5 giây)
   useEffect(() => {
-    const isNative = typeof window !== 'undefined' && !!((window as any).Capacitor?.isNativePlatform?.());
-    const isDev = (import.meta as any).env?.DEV || (typeof window !== 'undefined' && (window.location.hostname.includes('run.app') || window.location.hostname === 'localhost'));
+    const isAiStudioPreview = typeof window !== 'undefined' && window.location.hostname.includes('run.app');
 
-    // Không tự động kiểm tra trên web dev / Cloud Run dev preview
-    if (!isNative || isDev) return;
+    // Không tự động hiển thị popup khi đang xem thử trong iframe preview dev AI Studio
+    if (isAiStudioPreview) return;
 
     const timer = setTimeout(() => {
       checkForUpdate(false).catch((err) => {
-        console.log('Update check skipped:', err);
+        console.log('[AutoUpdate] Bỏ qua kiểm tra ngầm:', err);
       });
-    }, 2500);
+    }, 1500);
 
     return () => clearTimeout(timer);
   }, [checkForUpdate]);
