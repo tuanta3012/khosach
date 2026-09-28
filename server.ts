@@ -66,25 +66,20 @@ async function generateContentWithFallback(params: { contents: any; config?: any
   let modelsToTry = [
     'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
-    'gemini-2.5-flash',
-    'gemini-2.0-flash'
   ];
 
   if (params.preferredModel) {
     primaryModel = params.preferredModel;
-    modelsToTry = [params.preferredModel, ...modelsToTry.filter(m => m !== params.preferredModel)];
+    modelsToTry = [params.preferredModel, ...modelsToTry.filter((m) => m !== params.preferredModel)];
   } else if (waitTime31 < waitTime35) {
-    // Engine 3.1 rảnh hơn -> Ưu tiên chọn 3.1 Flash Lite làm primary
     primaryModel = 'gemini-3.1-flash-lite';
     modelsToTry = [
       'gemini-3.1-flash-lite',
       'gemini-3.5-flash-lite',
-      'gemini-2.5-flash',
-      'gemini-2.0-flash'
     ];
   }
 
-  // Cập nhật timestamp cho model được chọn làm primary
+  // Cập nhật timestamp cho model được chọn làm primary để đảm bảo RPM < 15 (~3.5s per request)
   if (primaryModel === 'gemini-3.5-flash-lite') {
     if (waitTime35 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime35));
     lastCallTimestamp35 = Date.now();
@@ -103,27 +98,29 @@ async function generateContentWithFallback(params: { contents: any; config?: any
         config: params.config,
       });
     } catch (err: any) {
-      console.warn(`[Server AI Dual-Engine] Model ${modelName} failed (${err.message || err}). Trying next model...`);
+      console.warn(`[Server AI Dual-Engine] Model ${modelName} failed (${err.message || err}).`);
       lastError = err;
     }
   }
 
-  throw lastError || new Error("Tất cả các model Gemini đều không phản hồi.");
+  throw lastError || new Error("Cả 2 model gemini-3.5-flash-lite và gemini-3.1-flash-lite đều tạm thời gián đoạn.");
 }
 
-// API: Kiểm tra tính hợp lệ của Gemini API Key
+// API: Kiểm tra tính hợp lệ của Gemini API Key (Có Tự động Fallback sang các Model dự phòng)
 app.post('/api/ai/test-key', async (req, res) => {
   try {
     const customKey = (req.body?.apiKey || req.headers['x-gemini-api-key'] || process.env.GEMINI_API_KEY) as string;
     if (!customKey || !customKey.trim()) {
       return res.status(400).json({ success: false, message: 'Vui lòng cung cấp API Key để kiểm tra.' });
     }
-    const testAi = getAiClient(customKey.trim());
-    const result = await testAi.models.generateContent({
-      model: 'gemini-2.5-flash',
+    
+    // Sử dụng cơ chế Fallback tự động quay vòng qua các model để thử
+    const response = await generateContentWithFallback({
       contents: 'Ping',
+      apiKey: customKey.trim(),
     });
-    if (result && result.text) {
+
+    if (response && response.text) {
       return res.json({ success: true, message: 'Kết nối Google Gemini thành công!' });
     }
     return res.json({ success: true, message: 'API Key hợp lệ và sẵn sàng sử dụng!' });
