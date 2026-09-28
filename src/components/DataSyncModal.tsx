@@ -18,7 +18,7 @@ import {
   pullDataFromDriveWebApp,
   sanitizeAppsScriptUrl,
   parseGoogleSheetCsvText,
-  getProxyUrl,
+  smartDriveFetch,
 } from '../utils/driveSyncService';
 import {
   getStoredOrConfiguredSheetUrl,
@@ -144,11 +144,11 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
         throw new Error('Link Google Sheet không đúng định dạng (/d/SHEET_ID/edit)');
       }
 
-      // Thử đọc qua proxy
-      const proxyUrl = getProxyUrl(`https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv`);
-      const csvResp = await fetch(proxyUrl);
+      // Đọc Google Sheet qua smartDriveFetch
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv`;
+      const csvResp = await smartDriveFetch(csvUrl);
       if (!csvResp.ok) {
-        throw new Error(`Server không tải được Google Sheet (HTTP ${csvResp.status})`);
+        throw new Error(`Không tải được Google Sheet (HTTP ${csvResp.status})`);
       }
       const text = await csvResp.text();
       if (text.includes('<!DOCTYPE html>') || text.includes('<html>')) {
@@ -192,8 +192,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       if (storedSheetUrl.trim()) {
         testUrl += (testUrl.includes('?') ? '&' : '?') + `fileUrl=${encodeURIComponent(storedSheetUrl.trim())}`;
       }
-      const proxyUrl = getProxyUrl(testUrl);
-      const res = await fetch(proxyUrl);
+      const res = await smartDriveFetch(testUrl);
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && data.status === 'success') {
@@ -232,8 +231,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       const match = effectiveSheet.match(/\/d\/([a-zA-Z0-9-_]+)/);
       if (match && match[1]) {
         try {
-          const proxyUrl = getProxyUrl(`https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv`);
-          const csvResp = await fetch(proxyUrl);
+          const csvUrl = `https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv`;
+          const csvResp = await smartDriveFetch(csvUrl);
           if (csvResp.ok) {
             const text = await csvResp.text();
             if (text && !text.includes('<!DOCTYPE html>') && !text.includes('<html>')) {
@@ -259,10 +258,9 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
           if (effectiveSheet.trim()) {
             testUrl += (testUrl.includes('?') ? '&' : '?') + `fileUrl=${encodeURIComponent(effectiveSheet.trim())}`;
           }
-          const proxyAppScriptUrl = getProxyUrl(testUrl);
-          const res = await fetch(proxyAppScriptUrl);
+          const res = await smartDriveFetch(testUrl);
           if (!res.ok) {
-            throw new Error(`Server proxy trả về HTTP ${res.status}`);
+            throw new Error(`Google Apps Script trả về HTTP ${res.status}`);
           }
           const data = await res.json();
           if (data.status === 'success') {
