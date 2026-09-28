@@ -51,26 +51,59 @@ function sanitizeSingleCategory(rawCategory: string): string {
   return first || 'Chung';
 }
 
-async function generateContentWithFallback(params: { contents: any; config?: any; apiKey?: string }) {
-  const modelsToTry = [
+let lastCallTimestamp35 = 0;
+let lastCallTimestamp31 = 0;
+
+async function generateContentWithFallback(params: { contents: any; config?: any; apiKey?: string; preferredModel?: string }) {
+  const aiClient = getAiClient(params.apiKey);
+  const now = Date.now();
+
+  // Đánh giá thời gian chờ cho từng model pool (Target ~15 RPM = ~2.8s throttle per model pool)
+  const waitTime35 = Math.max(0, 2800 - (now - lastCallTimestamp35));
+  const waitTime31 = Math.max(0, 2800 - (now - lastCallTimestamp31));
+
+  let primaryModel = 'gemini-3.5-flash-lite';
+  let modelsToTry = [
     'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
     'gemini-2.5-flash',
     'gemini-2.0-flash'
   ];
-  const aiClient = getAiClient(params.apiKey);
-  let lastError: any = null;
 
+  if (params.preferredModel) {
+    primaryModel = params.preferredModel;
+    modelsToTry = [params.preferredModel, ...modelsToTry.filter(m => m !== params.preferredModel)];
+  } else if (waitTime31 < waitTime35) {
+    // Engine 3.1 rảnh hơn -> Ưu tiên chọn 3.1 Flash Lite làm primary
+    primaryModel = 'gemini-3.1-flash-lite';
+    modelsToTry = [
+      'gemini-3.1-flash-lite',
+      'gemini-3.5-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash'
+    ];
+  }
+
+  // Cập nhật timestamp cho model được chọn làm primary
+  if (primaryModel === 'gemini-3.5-flash-lite') {
+    if (waitTime35 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime35));
+    lastCallTimestamp35 = Date.now();
+  } else if (primaryModel === 'gemini-3.1-flash-lite') {
+    if (waitTime31 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime31));
+    lastCallTimestamp31 = Date.now();
+  }
+
+  let lastError: any = null;
   for (const modelName of modelsToTry) {
     try {
-      console.log(`[Server AI] Attempting model: ${modelName}`);
+      console.log(`[Server AI Dual-Engine] Requesting model: ${modelName}`);
       return await aiClient.models.generateContent({
         model: modelName,
         contents: params.contents,
         config: params.config,
       });
     } catch (err: any) {
-      console.warn(`[Server AI] Model ${modelName} failed. Trying next model if available. Error:`, err.message || err);
+      console.warn(`[Server AI Dual-Engine] Model ${modelName} failed (${err.message || err}). Trying next model...`);
       lastError = err;
     }
   }
@@ -110,7 +143,7 @@ app.post('/api/ai/test-key', async (req, res) => {
   }
 });
 
-// API: Batch OCR & Book Extraction from images (Gemini 2.5 Flash / Flash Latest)
+// API: Batch OCR & Book Extraction from images (Dual Engine Parallel Acceleration)
 app.post('/api/books/scan-images', async (req, res) => {
   try {
     const { images } = req.body;
@@ -118,19 +151,22 @@ app.post('/api/books/scan-images', async (req, res) => {
       return res.status(400).json({ error: 'Không có ảnh nào được gửi lên để phân tích.' });
     }
 
-    const parts: any[] = [];
-    for (const imgBase64 of images) {
-      const cleanBase64 = imgBase64.replace(/^data:image\/[a-zA-Z0-9.+]+;base64,/, '');
-      parts.push({
-        inlineData: {
-          mimeType: 'image/jpeg',
-          data: cleanBase64,
-        },
-      });
-    }
+    const apiKey = (req.headers['x-gemini-api-key'] || req.body?.apiKey) as string | undefined;
 
-    parts.push({
-      text: `Bạn là chuyên gia phân loại thư viện sách tiếng Việt và quốc tế.
+    const processImageChunk = async (chunkImages: string[], preferredModel?: string) => {
+      const parts: any[] = [];
+      for (const imgBase64 of chunkImages) {
+        const cleanBase64 = imgBase64.replace(/^data:image\/[a-zA-Z0-9.+]+;base64,/, '');
+        parts.push({
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: cleanBase64,
+          },
+        });
+      }
+
+      parts.push({
+        text: `Bạn là chuyên gia phân loại thư viện sách tiếng Việt và quốc tế.
 Hãy đọc kỹ tất cả văn bản trong các ảnh này (chứa gáy sách, bìa sách hoặc trang xi-nhê phụ) và bóc tách danh sách các cuốn sách riêng biệt xuất hiện trong ảnh.
 Đối với mỗi cuốn sách, trích xuất chuẩn xác các trường:
 - title: Tên sách (bắt buộc, viết hoa chuẩn)
@@ -140,34 +176,54 @@ Hãy đọc kỹ tất cả văn bản trong các ảnh này (chứa gáy sách,
 - category: Thể loại sách tiếng Việt (ví dụ: Văn học, Kinh tế - Đầu tư, Lịch sử, Kỹ năng sống, Tâm lý học, Khoa học, Triết học, Thiếu nhi...)
 
 Trả về mảng JSON chứa các sách bóc tách được.`,
-    });
+      });
 
-    const apiKey = (req.headers['x-gemini-api-key'] || req.body?.apiKey) as string | undefined;
-    const response = await generateContentWithFallback({
-      contents: { parts },
-      apiKey,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING, description: 'Tên cuốn sách' },
-              author: { type: Type.STRING, description: 'Tác giả' },
-              publisher: { type: Type.STRING, description: 'Nhà xuất bản' },
-              publish_year: { type: Type.INTEGER, description: 'Năm xuất bản' },
-              category: { type: Type.STRING, description: 'Thể loại sách' },
+      const response = await generateContentWithFallback({
+        contents: { parts },
+        apiKey,
+        preferredModel,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING, description: 'Tên cuốn sách' },
+                author: { type: Type.STRING, description: 'Tác giả' },
+                publisher: { type: Type.STRING, description: 'Nhà xuất bản' },
+                publish_year: { type: Type.INTEGER, description: 'Năm xuất bản' },
+                category: { type: Type.STRING, description: 'Thể loại sách' },
+              },
+              required: ['title', 'author', 'publisher'],
             },
-            required: ['title', 'author', 'publisher'],
           },
         },
-      },
-    });
+      });
 
-    const textOutput = response.text || '[]';
-    const books = JSON.parse(textOutput);
-    return res.json({ success: true, count: books.length, books });
+      const textOutput = response.text || '[]';
+      return JSON.parse(textOutput);
+    };
+
+    let allExtractedBooks: any[] = [];
+
+    // Nếu gửi từ 2 ảnh trở lên, chia song song 2 luồng Engine 3.5 & Engine 3.1
+    if (images.length >= 2) {
+      const mid = Math.ceil(images.length / 2);
+      const chunkA = images.slice(0, mid);
+      const chunkB = images.slice(mid);
+
+      console.log(`[Server AI] Executing parallel dual-engine scan: ${chunkA.length} images on Engine A, ${chunkB.length} images on Engine B`);
+      const [resA, resB] = await Promise.all([
+        processImageChunk(chunkA, 'gemini-3.5-flash-lite').catch(() => []),
+        processImageChunk(chunkB, 'gemini-3.1-flash-lite').catch(() => []),
+      ]);
+      allExtractedBooks = [...(resA || []), ...(resB || [])];
+    } else {
+      allExtractedBooks = await processImageChunk(images);
+    }
+
+    return res.json({ success: true, count: allExtractedBooks.length, books: allExtractedBooks });
   } catch (err: any) {
     console.error('Error scanning book images with Gemini:', err);
     return res.status(500).json({
@@ -230,7 +286,7 @@ Trả về thông tin chuẩn nhất:
   }
 });
 
-// API: Batch Normalize book metadata using Gemini 2.5 Flash Lite
+// API: Batch Normalize book metadata using Dual Engine Parallel Acceleration
 app.post('/api/books/batch-normalize', async (req, res) => {
   try {
     const { books } = req.body;
@@ -238,49 +294,72 @@ app.post('/api/books/batch-normalize', async (req, res) => {
       return res.status(400).json({ error: 'Không có danh sách sách để chuẩn hóa.' });
     }
 
-    const prompt = `Bạn là biên tập viên thư viện sách chuyên nghiệp. 
+    const apiKey = (req.headers['x-gemini-api-key'] || req.body?.apiKey) as string | undefined;
+
+    const processNormalizeChunk = async (chunkBooks: any[], preferredModel?: string) => {
+      const prompt = `Bạn là biên tập viên thư viện sách chuyên nghiệp. 
 Hãy sửa lỗi chính tả, sửa tiếng Việt không dấu thành có dấu chuẩn xác, viết hoa chữ cái đầu đúng quy tắc tiếng Việt/quốc tế cho danh sách các cuốn sách sau đây. 
 Nếu thông tin tác giả chưa đúng hoặc thiếu dấu, hãy tự động sửa lại chính xác (ví dụ: "nguyen nhat anh" -> "Nguyễn Nhật Ánh"). 
 Nếu nhà xuất bản viết tắt hoặc thiếu dấu, hãy điền đầy đủ (ví dụ: "nxb tre" -> "NXB Trẻ", "nha nam" -> "Nhã Nam", "nxb kim dong" -> "NXB Kim Đồng").
 Nếu thể loại chưa chuẩn, hãy phân loại và đưa về các thể loại chuẩn tiếng Việt phù hợp (như: Văn học, Kinh tế, Lịch sử, Tâm lý học, Khoa học, Thiếu nhi, Kỹ năng sống, Triết học, Mỹ thuật...).
 
 Dưới đây là danh sách sách dạng JSON cần chuẩn hóa:
-${JSON.stringify(books)}
+${JSON.stringify(chunkBooks)}
 
 Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ nguyên trường "id" của từng cuốn sách, và bổ sung thuộc tính "is_ai_normalized": true cho tất cả sách đã chuẩn hóa thành công.`;
 
-    const apiKey = (req.headers['x-gemini-api-key'] || req.body?.apiKey) as string | undefined;
-    const response = await generateContentWithFallback({
-      contents: prompt,
-      apiKey,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING, description: 'ID giữ nguyên không đổi' },
-              title: { type: Type.STRING, description: 'Tên sách chuẩn' },
-              author: { type: Type.STRING, description: 'Tác giả chuẩn' },
-              publisher: { type: Type.STRING, description: 'Nhà xuất bản chuẩn' },
-              category: { type: Type.STRING, description: 'Thể loại chuẩn' },
-              is_ai_normalized: { type: Type.BOOLEAN, description: 'Bắt buộc là true' }
-            },
-            required: ['id', 'title', 'author', 'publisher', 'category', 'is_ai_normalized']
+      const response = await generateContentWithFallback({
+        contents: prompt,
+        apiKey,
+        preferredModel,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING, description: 'ID giữ nguyên không đổi' },
+                title: { type: Type.STRING, description: 'Tên sách chuẩn' },
+                author: { type: Type.STRING, description: 'Tác giả chuẩn' },
+                publisher: { type: Type.STRING, description: 'Nhà xuất bản chuẩn' },
+                category: { type: Type.STRING, description: 'Thể loại chuẩn' },
+                is_ai_normalized: { type: Type.BOOLEAN, description: 'Bắt buộc là true' }
+              },
+              required: ['id', 'title', 'author', 'publisher', 'category', 'is_ai_normalized']
+            }
           }
         }
-      }
-    });
+      });
 
-    const output = JSON.parse(response.text || '[]');
-    const cleaned = Array.isArray(output)
-      ? output.map((b: any) => ({
-          ...b,
-          category: sanitizeSingleCategory(b.category || 'Chung'),
-          is_ai_normalized: true,
-        }))
-      : [];
+      const output = JSON.parse(response.text || '[]');
+      return Array.isArray(output) ? output : [];
+    };
+
+    let normalizedResults: any[] = [];
+
+    // Nếu từ 4 sách trở lên, chia song song 2 luồng Engine 3.5 & Engine 3.1
+    if (books.length >= 4) {
+      const mid = Math.ceil(books.length / 2);
+      const chunkA = books.slice(0, mid);
+      const chunkB = books.slice(mid);
+
+      console.log(`[Server AI] Executing parallel batch normalize: ${chunkA.length} books on Engine A, ${chunkB.length} books on Engine B`);
+      const [resA, resB] = await Promise.all([
+        processNormalizeChunk(chunkA, 'gemini-3.5-flash-lite').catch(() => []),
+        processNormalizeChunk(chunkB, 'gemini-3.1-flash-lite').catch(() => []),
+      ]);
+      normalizedResults = [...(resA || []), ...(resB || [])];
+    } else {
+      normalizedResults = await processNormalizeChunk(books);
+    }
+
+    const cleaned = normalizedResults.map((b: any) => ({
+      ...b,
+      category: sanitizeSingleCategory(b.category || 'Chung'),
+      is_ai_normalized: true,
+    }));
+
     return res.json({ success: true, normalized: cleaned });
   } catch (err: any) {
     console.error('Error in batch normalization API:', err);

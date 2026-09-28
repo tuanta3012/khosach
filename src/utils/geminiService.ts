@@ -154,37 +154,57 @@ export function getGeminiApiKey(): string {
   return "";
 }
 
-let lastCallTimestamp = 0;
+let lastCallTimestamp35 = 0;
+let lastCallTimestamp31 = 0;
 
 /**
- * Direct fetch helper with rate limit throttle (RPM 15 guard), 429 retry, and model failover
+ * Direct fetch helper with Dual Engine load balancer (Gemini 3.5 Flash Lite + Gemini 3.1 Flash Lite),
+ * rate limit throttle (RPM 15 guard per engine), 429 retry, and model failover
  */
-async function callGeminiDirect(payload: any): Promise<any> {
+async function callGeminiDirect(payload: any, preferredModel?: string): Promise<any> {
   const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new Error("Không tìm thấy Gemini API Key. Hãy khai báo API Key hoặc cấu hình trong ứng dụng.");
   }
 
-  // Đảm bảo giãn cách tối thiểu 3.8 giây giữa các lệnh gọi direct REST để tôn trọng RPM 15
   const now = Date.now();
-  const timeSinceLast = now - lastCallTimestamp;
-  if (timeSinceLast < 3800) {
-    const delay = 3800 - timeSinceLast;
-    await new Promise((resolve) => setTimeout(resolve, delay));
-  }
-  lastCallTimestamp = Date.now();
+  const waitTime35 = Math.max(0, 2800 - (now - lastCallTimestamp35));
+  const waitTime31 = Math.max(0, 2800 - (now - lastCallTimestamp31));
 
-  const modelsToTry = [
+  let primaryModel = "gemini-3.5-flash-lite";
+  let modelsToTry = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.0-flash"
   ];
 
+  if (preferredModel) {
+    primaryModel = preferredModel;
+    modelsToTry = [preferredModel, ...modelsToTry.filter(m => m !== preferredModel)];
+  } else if (waitTime31 < waitTime35) {
+    primaryModel = "gemini-3.1-flash-lite";
+    modelsToTry = [
+      "gemini-3.1-flash-lite",
+      "gemini-3.5-flash-lite",
+      "gemini-2.5-flash",
+      "gemini-2.0-flash"
+    ];
+  }
+
+  // Throttle per engine
+  if (primaryModel === "gemini-3.5-flash-lite") {
+    if (waitTime35 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime35));
+    lastCallTimestamp35 = Date.now();
+  } else if (primaryModel === "gemini-3.1-flash-lite") {
+    if (waitTime31 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime31));
+    lastCallTimestamp31 = Date.now();
+  }
+
   const executeWithModel = async (modelName: string, retries = 2): Promise<any> => {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
     try {
-      console.log(`[GeminiService] Calling model ${modelName}...`);
+      console.log(`[GeminiService Dual-Engine] Calling model ${modelName}...`);
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -195,10 +215,10 @@ async function callGeminiDirect(payload: any): Promise<any> {
         const errorDetails = await response.json().catch(() => ({}));
         const message = errorDetails?.error?.message || `HTTP ${response.status}`;
         
-        // Nếu dính lỗi 429 Quota/Rate Limit và còn lượt thử -> chờ 6s rồi thử lại
+        // Nếu dính lỗi 429 Quota/Rate Limit và còn lượt thử -> chờ 4s rồi thử lại
         if ((response.status === 429 || message.toLowerCase().includes('quota')) && retries > 0) {
-          console.warn(`[GeminiService] Rate limit 429 hit on ${modelName}. Retrying in 6s... (${retries} left)`);
-          await new Promise((res) => setTimeout(res, 6000));
+          console.warn(`[GeminiService] Rate limit 429 hit on ${modelName}. Retrying in 4s... (${retries} left)`);
+          await new Promise((res) => setTimeout(res, 4000));
           return await executeWithModel(modelName, retries - 1);
         }
 
@@ -213,7 +233,7 @@ async function callGeminiDirect(payload: any): Promise<any> {
       return JSON.parse(textOutput.trim());
     } catch (err: any) {
       if (retries > 0 && err.message?.includes('429')) {
-        await new Promise((res) => setTimeout(res, 6000));
+        await new Promise((res) => setTimeout(res, 4000));
         return await executeWithModel(modelName, retries - 1);
       }
       throw err;
@@ -241,7 +261,8 @@ async function executeTask<T>(
   endpoint: string,
   serverPayload: any,
   directPayloadCreator: () => any,
-  transformDirectResponse: (res: any) => T
+  transformDirectResponse: (res: any) => T,
+  preferredModel?: string
 ): Promise<T> {
   const isWebPreview = window.location.port === '3000' || window.location.hostname.includes('run.app');
   
@@ -255,7 +276,7 @@ async function executeTask<T>(
       const res = await fetch(endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify(serverPayload),
+        body: JSON.stringify({ ...serverPayload, preferredModel }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -270,7 +291,7 @@ async function executeTask<T>(
   // Fallback / Standalone direct execution
   console.log(`[GeminiService] Executing direct REST API call...`);
   const directPayload = directPayloadCreator();
-  const directResult = await callGeminiDirect(directPayload);
+  const directResult = await callGeminiDirect(directPayload, preferredModel);
   return transformDirectResponse(directResult);
 }
 
