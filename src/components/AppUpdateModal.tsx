@@ -47,6 +47,32 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
         setStatusMessage('Đang tải tệp APK trực tiếp về bộ nhớ máy...');
         setDownloadProgress(25);
 
+        // Thiết lập trình mô phỏng tăng tiến trình mượt mà (interval) song song
+        let progressVal = 25;
+        const progressInterval = setInterval(() => {
+          // Tăng ngẫu nhiên từ 1% đến 3% mỗi 150ms để tạo chuyển động liên tục, mượt mà
+          const step = Math.floor(Math.random() * 3) + 1;
+          progressVal = Math.min(progressVal + step, 82); // Giới hạn mô phỏng tối đa 82% để chờ tiến trình thực tế
+          setDownloadProgress(progressVal);
+        }, 150);
+
+        // Thiết lập bộ lắng nghe đo lường thực tế từ Capacitor Filesystem
+        let filesystemListener: any = null;
+        try {
+          filesystemListener = await Filesystem.addListener('progress' as any, (progress: any) => {
+            const bytes = progress.bytes || progress.bytesWritten || 0;
+            const total = progress.chunk || progress.contentLength || 0;
+            if (total > 0) {
+              const realPercent = Math.round((bytes / total) * 100);
+              // Đảm bảo không bị giật lùi tiến trình
+              progressVal = Math.max(progressVal, Math.min(realPercent, 84));
+              setDownloadProgress(progressVal);
+            }
+          });
+        } catch (listenerErr) {
+          console.warn('Không đăng ký được downloadProgress listener:', listenerErr);
+        }
+
         let savedUri = '';
         try {
           const downloadRes = await Filesystem.downloadFile({
@@ -55,21 +81,46 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
             directory: Directory.Cache,
             progress: true,
           });
+
+          // Dọn dẹp bộ đếm & listener ngay khi tải xong
+          clearInterval(progressInterval);
+          if (filesystemListener) {
+            filesystemListener.remove();
+          }
+
           if (downloadRes.path) {
             savedUri = downloadRes.path;
           } else {
             const uriRes = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
             savedUri = uriRes.uri;
           }
-          setDownloadProgress(85);
+          setDownloadProgress(88);
         } catch (downloadErr) {
+          clearInterval(progressInterval);
+          if (filesystemListener) {
+            filesystemListener.remove();
+          }
+
           console.warn('Filesystem.downloadFile failed, trying fetch fallback:', downloadErr);
+          setStatusMessage('Đang chuyển hướng tải qua kênh dự phòng...');
           setDownloadProgress(40);
+
+          let fetchProgressVal = 40;
+          const fetchInterval = setInterval(() => {
+            const step = Math.floor(Math.random() * 2) + 1;
+            fetchProgressVal = Math.min(fetchProgressVal + step, 68);
+            setDownloadProgress(fetchProgressVal);
+          }, 180);
+
           const response = await fetch(targetLink, { redirect: 'follow' });
-          if (!response.ok) throw new Error('Không thể tải file APK từ máy chủ.');
+          if (!response.ok) {
+            clearInterval(fetchInterval);
+            throw new Error('Không thể tải file APK từ máy chủ.');
+          }
           const blob = await response.blob();
 
-          setDownloadProgress(70);
+          clearInterval(fetchInterval);
+          setDownloadProgress(75);
           setStatusMessage('Đang lưu tệp cài đặt...');
 
           const reader = new FileReader();
