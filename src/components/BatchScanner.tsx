@@ -185,7 +185,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             await new Promise((res) => setTimeout(res, 1200 * attempt));
           }
 
-          const res = await scanImages(chunk);
+          const res = await scanImages(chunk, existingBooks);
           if (res && Array.isArray(res.books)) {
             rawBooks = res.books;
             success = true;

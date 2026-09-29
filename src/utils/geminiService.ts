@@ -310,12 +310,15 @@ BẮT BUỘC CHỈ CHỌN DUY NHẤT 1 THỂ LOẠI TIÊU BIỂU NHẤT (KHÔNG 
 `;
 
 /**
- * 1. AI Vision: Batch scanning of book images to extract metadata
+ * 1. AI Vision: Batch scanning of book images to extract metadata (with context grounding)
  */
-export async function scanImages(images: string[]): Promise<{ success: boolean; count: number; books: any[] }> {
+export async function scanImages(
+  images: string[],
+  existingBooks: BookRecord[] = []
+): Promise<{ success: boolean; count: number; books: any[] }> {
   return executeTask(
     '/api/books/scan-images',
-    { images },
+    { images, existingBooks },
     () => {
       const parts: any[] = images.map((imgBase64) => {
         const cleanBase64 = imgBase64.replace(/^data:image\/[a-zA-Z0-9.+]+;base64,/, '');
@@ -327,9 +330,30 @@ export async function scanImages(images: string[]): Promise<{ success: boolean; 
         };
       });
 
+      // Xây dựng danh bạ sách hiện có để làm mốc đối chiếu tránh hallucination
+      let referenceText = '';
+      if (existingBooks && existingBooks.length > 0) {
+        const refTitles = existingBooks
+          .map((b) => `- ${b.title} | Tác giả: ${b.author || 'Khuyết danh'}`)
+          .slice(0, 800)
+          .join('\n');
+        referenceText = `DANH SÁCH SÁCH THƯ VIỆN HIỆN CÓ CỦA NGƯỜI DÙNG (Hãy đối chiếu từ vựng, sửa lỗi nhận diện chữ gáy sách mờ về các tựa sách này):\n${refTitles}`;
+      }
+
       parts.push({
         text: `Bạn là chuyên gia phân loại thư viện sách tiếng Việt và quốc tế.
 Hãy đọc kỹ tất cả văn bản trong các ảnh này (chứa gáy sách, bìa sách hoặc trang xi-nhê phụ) và bóc tách danh sách các cuốn sách riêng biệt xuất hiện trong ảnh.
+
+QUY TẮC NHẬN DIỆN VÀ HƯỚNG ĐỌC SÁCH LINH HOẠT (BẮT BUỘC):
+- Các cuốn sách trong ảnh có thể được xếp ĐỨNG, NẰM NGANG, HOẶC CHỒNG LÊN NHAU. Hãy xoay hướng đọc linh hoạt (trái, phải, ngược, xuôi) để bóc tách TOÀN BỘ các cuốn sách, tuyệt đối không bỏ sót bất kỳ quyển sách nào nằm ngang!
+
+QUY TẮC ĐỐI CHIẾU SỬA LỖI THÔNG MINH (BẮT BUỘC TRÁNH HALLUCINATION):
+- So sánh văn bản bóc tách được với danh sách sách hiện có bên dưới.
+- Nếu gáy sách là "Đề Thám" (tác giả "E.Maliverney") và khớp gần đúng với sách tham khảo có sẵn ("Đề Thám - Thời Kỳ Huy Hoàng" của Maliverney), bạn phải lấy thông tin chuẩn này. TUYỆT ĐỐI KHÔNG nhận diện sai lệch sang tác phẩm khác của tác giả khác (ví dụ: TUYỆT ĐỐI không nhận diện nhầm "Đề Thám" thành "Dế mèn phiêu lưu ký" của Tô Hoài).
+- TRÁNH LỖI GÁN NHẦM TÁC GIẢ LIỀN KỀ: Nếu một gáy sách KHÔNG in tên tác giả (hoặc chỉ ghi "Tập truyện", "Tuyển tập", ví dụ cuốn "Bê Trầm" hay "Bè Trầm" của NXB Đồng Nai), hãy đối chiếu tên sách với danh sách tham khảo có sẵn để lấy đúng tác giả của nó (ở đây là "Bảo Ninh"). TUYỆT ĐỐI KHÔNG được lấy bừa tên tác giả của cuốn sách ngay bên cạnh (ví dụ gáy sách "Ba người khác" của "Tô Hoài" đặt kế bên) để gán cho cuốn sách này!
+
+${referenceText}
+
 Đối với mỗi cuốn sách, trích xuất chuẩn xác các trường:
 - title: Tên sách (BẮT BUỘC: Đối với sách tiếng Việt thì ghi tên tiếng Việt chuẩn có dấu. Đối với sách NGOẠI VĂN như tiếng Trung, Nhật, Hàn, Anh, Pháp...: BẮT BUỘC GIỮ NGUYÊN TÊN CHỮ TƯỢNG HÌNH/CHỮ GỐC IN TRÊN BÌA SÁCH kèm theo tên dịch tiếng Việt trong ngoặc đơn, ví dụ: "活着 (Phải Sống)", "Norwegian Wood (Rừng Na Uy)", "Atomic Habits (Thay Đổi Tí Hon Bất Phá Bản Thân)". TUYỆT ĐỐI KHÔNG dùng phiên âm Alphabet/Pinyin như KHÔNG viết "Huozhe (Phải Sống)").
 - author: Tác giả (BẮT BUỘC: Dịch hoặc dùng tên Hán-Việt/phiên dịch tiếng Việt chuẩn nếu có, ví dụ: "Dư Hoa" thay vì "余华" hay "Yu Hua", "Khổng Tử", "Haruki Murakami", "Plato". Nếu không rõ ghi "Khuyết danh")
