@@ -69,14 +69,26 @@ function markModelCooldown(model: string, durationMs: number) {
   modelCooldownMap.set(model, Date.now() + durationMs);
 }
 
+let serverRotationCounter = 0;
+const DUAL_SERVER_ENGINES = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'];
+
 function getAvailableModels(preferredModel?: string): string[] {
-  const healthy = ALL_MODELS.filter((m) => !isModelInCooldown(m));
-  const cooling = ALL_MODELS.filter((m) => isModelInCooldown(m));
-  let ordered = [...healthy, ...cooling];
+  const currentIdx = serverRotationCounter++;
+  const primaryEngine = DUAL_SERVER_ENGINES[currentIdx % DUAL_SERVER_ENGINES.length];
+  const secondaryEngine = DUAL_SERVER_ENGINES[(currentIdx + 1) % DUAL_SERVER_ENGINES.length];
+
+  let initialOrder: string[];
   if (preferredModel) {
-    ordered = [preferredModel, ...ordered.filter((m) => m !== preferredModel)];
+    const fallbackEngine = preferredModel === 'gemini-3.1-flash-lite' ? 'gemini-3.5-flash-lite' : 'gemini-3.1-flash-lite';
+    initialOrder = [preferredModel, fallbackEngine, 'gemini-3.8-flash'];
+  } else {
+    initialOrder = [primaryEngine, secondaryEngine, 'gemini-3.8-flash'];
   }
-  return ordered;
+
+  // Filter healthy models first, cooling models last
+  const healthy = initialOrder.filter((m) => !isModelInCooldown(m));
+  const cooling = initialOrder.filter((m) => isModelInCooldown(m));
+  return [...healthy, ...cooling];
 }
 
 async function generateContentWithFallback(params: { contents: any; config?: any; apiKey?: string; preferredModel?: string }) {
@@ -86,9 +98,9 @@ async function generateContentWithFallback(params: { contents: any; config?: any
   let lastError: any = null;
   for (const modelName of modelsToTry) {
     try {
-      // Throttle per model to keep within RPM limits (~2.5s between calls to the same model)
+      // Throttle per model to keep strictly within RPM 15 limits (~4.2s per model)
       const lastCall = lastCallTimestamps.get(modelName) || 0;
-      const waitTime = Math.max(0, 2500 - (Date.now() - lastCall));
+      const waitTime = Math.max(0, 4200 - (Date.now() - lastCall));
       if (waitTime > 0) {
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
@@ -240,16 +252,18 @@ Trả về mảng JSON chứa các sách bóc tách được.`,
     };
 
     let allExtractedBooks: any[] = [];
+    const preferredModel = req.body?.preferredModel as string | undefined;
 
-    // Nếu gửi từ 2 ảnh trở lên, chia song song 2 luồng Engine
-    if (images.length >= 2) {
+    if (preferredModel) {
+      allExtractedBooks = await processImageChunk(images, preferredModel);
+    } else if (images.length >= 2) {
+      // Nếu gửi từ 2 ảnh trở lên, chia đều song song 2 luồng Engine: 3.1 Lite & 3.5 Lite
       const mid = Math.ceil(images.length / 2);
       const chunkA = images.slice(0, mid);
       const chunkB = images.slice(mid);
 
-      const available = getAvailableModels();
-      const engineA = available[0] || 'gemini-3.8-flash';
-      const engineB = available.find((m) => m !== engineA && !isModelInCooldown(m)) || available[1] || 'gemini-3.1-flash-lite';
+      const engineA = 'gemini-3.1-flash-lite';
+      const engineB = 'gemini-3.5-flash-lite';
 
       console.log(`[Server AI] Executing parallel multi-engine scan: ${chunkA.length} images on ${engineA}, ${chunkB.length} images on ${engineB}`);
       const [resA, resB] = await Promise.all([
@@ -274,7 +288,7 @@ Trả về mảng JSON chứa các sách bóc tách được.`,
 // API: Enrich single book info with Google / Gemini search grounding
 app.post('/api/books/enrich', async (req, res) => {
   try {
-    const { title, author, publisher } = req.body;
+    const { title, author, publisher, preferredModel } = req.body;
     if (!title) {
       return res.status(400).json({ error: 'Tên sách là bắt buộc để làm giàu dữ liệu.' });
     }
@@ -296,6 +310,7 @@ Trả về thông tin chuẩn nhất:
     const response = await generateContentWithFallback({
       contents: prompt,
       apiKey,
+      preferredModel,
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -327,14 +342,14 @@ Trả về thông tin chuẩn nhất:
 // API: Batch Normalize book metadata using Dual Engine Parallel Acceleration
 app.post('/api/books/batch-normalize', async (req, res) => {
   try {
-    const { books } = req.body;
+    const { books, preferredModel } = req.body;
     if (!books || !Array.isArray(books) || books.length === 0) {
       return res.status(400).json({ error: 'Không có danh sách sách để chuẩn hóa.' });
     }
 
     const apiKey = (req.headers['x-gemini-api-key'] || req.body?.apiKey) as string | undefined;
 
-    const processNormalizeChunk = async (chunkBooks: any[], preferredModel?: string) => {
+    const processNormalizeChunk = async (chunkBooks: any[], modelChoice?: string) => {
       const prompt = `Bạn là biên tập viên thư viện sách chuyên nghiệp. 
 Hãy sửa lỗi chính tả, sửa tiếng Việt không dấu thành có dấu chuẩn xác, viết hoa chữ cái đầu đúng quy tắc tiếng Việt/quốc tế cho danh sách các cuốn sách sau đây. 
 Nếu thông tin tác giả chưa đúng hoặc thiếu dấu, hãy tự động sửa lại chính xác (ví dụ: "nguyen nhat anh" -> "Nguyễn Nhật Ánh"). 
@@ -349,7 +364,7 @@ Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ ngu
       const response = await generateContentWithFallback({
         contents: prompt,
         apiKey,
-        preferredModel,
+        preferredModel: modelChoice,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -376,15 +391,17 @@ Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ ngu
 
     let normalizedResults: any[] = [];
 
-    // Nếu từ 4 sách trở lên, chia song song 2 luồng Engine
-    if (books.length >= 4) {
+    if (preferredModel) {
+      // Nếu client chỉ định cụ thể model (ví dụ phân luồng worker)
+      normalizedResults = await processNormalizeChunk(books, preferredModel);
+    } else if (books.length >= 2) {
+      // Chia đều 2 luồng Engine: 1 luồng Gemini 3.1 Flash Lite & 1 luồng Gemini 3.5 Flash Lite
       const mid = Math.ceil(books.length / 2);
       const chunkA = books.slice(0, mid);
       const chunkB = books.slice(mid);
 
-      const available = getAvailableModels();
-      const engineA = available[0] || 'gemini-3.8-flash';
-      const engineB = available.find((m) => m !== engineA && !isModelInCooldown(m)) || available[1] || 'gemini-3.1-flash-lite';
+      const engineA = 'gemini-3.1-flash-lite';
+      const engineB = 'gemini-3.5-flash-lite';
 
       console.log(`[Server AI] Executing parallel batch normalize: ${chunkA.length} books on ${engineA}, ${chunkB.length} books on ${engineB}`);
       const [resA, resB] = await Promise.all([

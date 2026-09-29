@@ -217,18 +217,38 @@ export default function App() {
         const data = await batchNormalize(batch);
 
         if (data.success && Array.isArray(data.normalized)) {
-          const updatedList: BookRecord[] = data.normalized.map((normItem: any) => {
-            const orig = batch.find((b) => b.id === normItem.id);
-            return {
-              ...orig,
-              title: normItem.title,
-              author: normItem.author,
-              publisher: normItem.publisher,
-              category: normItem.category,
-              is_ai_normalized: true,
-              updated_at: Date.now(),
-            } as BookRecord;
-          });
+          const updatedList: BookRecord[] = data.normalized
+            .map((normItem: any) => {
+              const orig = batch.find((b) => b.id === normItem.id);
+              if (!orig) return null;
+
+              const normTitleTrim = String(normItem.title || '').trim();
+              const origTitleTrim = (orig.title || '').trim();
+              const normAuthorTrim = String(normItem.author || '').trim();
+              const origAuthorTrim = (orig.author || '').trim();
+
+              const titleMeaningfullyChanged = Boolean(
+                normTitleTrim && origTitleTrim && normTitleTrim.toLowerCase() !== origTitleTrim.toLowerCase()
+              );
+              const authorMeaningfullyChanged = Boolean(
+                normAuthorTrim && origAuthorTrim && normAuthorTrim.toLowerCase() !== origAuthorTrim.toLowerCase()
+              );
+
+              // Tự động chuẩn hóa viết hoa viết thường, nhưng giữ nguyên nếu AI đổi sang tên/tác giả khác
+              const resolvedTitle = titleMeaningfullyChanged ? orig.title : (normTitleTrim || orig.title);
+              const resolvedAuthor = authorMeaningfullyChanged ? orig.author : (normAuthorTrim || orig.author);
+
+              return {
+                ...orig,
+                title: resolvedTitle,
+                author: resolvedAuthor,
+                publisher: normItem.publisher || orig?.publisher || '',
+                category: normItem.category || orig?.category || 'Chung', // Làm giàu thể loại tự động
+                is_ai_normalized: true,
+                updated_at: Date.now(),
+              } as BookRecord;
+            })
+            .filter(Boolean) as BookRecord[];
 
           await handleBatchUpdateBooks(updatedList);
           console.log(`[AutoNormalize] Đã tự động chuẩn hóa thành công ${updatedList.length} cuốn sách ngầm!`);

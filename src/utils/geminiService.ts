@@ -172,9 +172,31 @@ function markDirectModelCooldown(model: string, durationMs: number) {
   directCooldownMap.set(model, Date.now() + durationMs);
 }
 
+let directRotationCounter = 0;
+const DUAL_DIRECT_ENGINES = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"];
+
+function getRotatedDirectModels(preferredModel?: string): string[] {
+  const currentIdx = directRotationCounter++;
+  const primaryEngine = DUAL_DIRECT_ENGINES[currentIdx % DUAL_DIRECT_ENGINES.length];
+  const secondaryEngine = DUAL_DIRECT_ENGINES[(currentIdx + 1) % DUAL_DIRECT_ENGINES.length];
+
+  let initialOrder: string[];
+  if (preferredModel) {
+    const fallbackEngine = preferredModel === 'gemini-3.1-flash-lite' ? 'gemini-3.5-flash-lite' : 'gemini-3.1-flash-lite';
+    initialOrder = [preferredModel, fallbackEngine, 'gemini-3.8-flash'];
+  } else {
+    initialOrder = [primaryEngine, secondaryEngine, 'gemini-3.8-flash'];
+  }
+
+  // Filter healthy models first, cooling models last so we never hammer a cooling model
+  const healthy = initialOrder.filter((m) => !isDirectModelInCooldown(m));
+  const cooling = initialOrder.filter((m) => isDirectModelInCooldown(m));
+  return [...healthy, ...cooling];
+}
+
 /**
- * Direct fetch helper with Multi Engine load balancer (Gemini 3.8 Flash + Gemini 3.1 Flash Lite + Gemini 3.5 Flash Lite),
- * rate limit throttle (RPM 15 guard per engine), 429 cooldown retry, and model failover
+ * Direct fetch helper with Multi Engine load balancer (Gemini 3.1 Flash Lite + Gemini 3.5 Flash Lite + Gemini 3.8 Flash),
+ * rate limit throttle (RPM 15 guard per engine: min 4.2s), instant failover on 429/quota to prevent overloading
  */
 async function callGeminiDirect(payload: any, preferredModel?: string): Promise<any> {
   const apiKey = getGeminiApiKey();
@@ -182,65 +204,48 @@ async function callGeminiDirect(payload: any, preferredModel?: string): Promise<
     throw new Error("Không tìm thấy Gemini API Key. Hãy khai báo API Key hoặc cấu hình trong ứng dụng.");
   }
 
-  const healthy = ALL_DIRECT_MODELS.filter((m) => !isDirectModelInCooldown(m));
-  const cooling = ALL_DIRECT_MODELS.filter((m) => isDirectModelInCooldown(m));
-  let modelsToTry = [...healthy, ...cooling];
+  const modelsToTry = getRotatedDirectModels(preferredModel);
 
-  if (preferredModel) {
-    modelsToTry = [preferredModel, ...modelsToTry.filter(m => m !== preferredModel)];
-  }
-
-  const executeWithModel = async (modelName: string, retries = 1): Promise<any> => {
-    // Throttle per engine (~2.5s between calls to the same model)
+  const executeWithModel = async (modelName: string): Promise<any> => {
+    // Throttle per engine to keep strictly within RPM 15 limits (~4.2s per model)
     const lastCall = directLastCallTimestamps.get(modelName) || 0;
-    const waitTime = Math.max(0, 2500 - (Date.now() - lastCall));
+    const waitTime = Math.max(0, 4200 - (Date.now() - lastCall));
     if (waitTime > 0) {
       await new Promise((resolve) => setTimeout(resolve, waitTime));
     }
     directLastCallTimestamps.set(modelName, Date.now());
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-    try {
-      console.log(`[GeminiService Multi-Engine] Calling model ${modelName}...`);
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+    console.log(`[GeminiService Multi-Engine] Calling model ${modelName}...`);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-      if (!response.ok) {
-        const errorDetails = await response.json().catch(() => ({}));
-        const message = errorDetails?.error?.message || `HTTP ${response.status}`;
-        const isQuota = response.status === 429 || message.toLowerCase().includes('quota') || message.toLowerCase().includes('resource_exhausted');
-        
-        if (isQuota) {
-          const isDaily = message.toLowerCase().includes('day') || message.includes('500');
-          const cdMs = isDaily ? 15 * 60 * 1000 : 8000;
-          markDirectModelCooldown(modelName, cdMs);
-          console.warn(`[GeminiService] Rate limit / Quota hit on ${modelName}. Cooling down for ${cdMs / 1000}s.`);
-        }
-
-        if (isQuota && retries > 0) {
-          await new Promise((res) => setTimeout(res, 3000));
-          return await executeWithModel(modelName, retries - 1);
-        }
-
-        throw new Error(`Google API Error (${modelName}): ${message}`);
+    if (!response.ok) {
+      const errorDetails = await response.json().catch(() => ({}));
+      const message = errorDetails?.error?.message || `HTTP ${response.status}`;
+      const isQuota = response.status === 429 || response.status === 503 || message.toLowerCase().includes('quota') || message.toLowerCase().includes('resource_exhausted');
+      
+      if (isQuota) {
+        const isDaily = message.toLowerCase().includes('day') || message.includes('500');
+        const cdMs = isDaily ? 15 * 60 * 1000 : 12000;
+        markDirectModelCooldown(modelName, cdMs);
+        console.warn(`[GeminiService] Rate limit / Quota hit on ${modelName}. Cooling down for ${cdMs / 1000}s. Chuyển ngay sang engine khác...`);
+        // Bỏ qua thử lại model này để tránh quá tải, quăng lỗi ngay để loop fallback sang model dự phòng (3.5 Lite hoặc 3.8 Flash)
+        throw new Error(`Google API Quota Error (${modelName}): ${message}`);
       }
 
-      const data = await response.json();
-      const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!textOutput) {
-        throw new Error(`Phản hồi trống từ Gemini API (${modelName}).`);
-      }
-      return JSON.parse(textOutput.trim());
-    } catch (err: any) {
-      if (retries > 0 && (err.message?.includes('429') || err.message?.includes('quota'))) {
-        await new Promise((res) => setTimeout(res, 3000));
-        return await executeWithModel(modelName, retries - 1);
-      }
-      throw err;
+      throw new Error(`Google API Error (${modelName}): ${message}`);
     }
+
+    const data = await response.json();
+    const textOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!textOutput) {
+      throw new Error(`Phản hồi trống từ Gemini API (${modelName}).`);
+    }
+    return JSON.parse(textOutput.trim());
   };
 
   let lastErr: any = null;
@@ -317,15 +322,61 @@ BẮT BUỘC CHỈ CHỌN DUY NHẤT 1 THỂ LOẠI TIÊU BIỂU NHẤT (KHÔNG 
 `;
 
 /**
- * 1. AI Vision: Batch scanning of book images to extract metadata (with context grounding)
+ * 1. AI Vision: Batch scanning of book images to extract metadata (Dual-Engine Parallel Load Balancing)
  */
 export async function scanImages(
   images: string[],
-  existingBooks: BookRecord[] = []
+  existingBooks: BookRecord[] = [],
+  preferredModel?: string
 ): Promise<{ success: boolean; count: number; books: any[] }> {
+  // Nếu có từ 2 ảnh trở lên và không chỉ định model cụ thể -> tự động chia song song 2 Engine để phân tải
+  if (images.length >= 2 && !preferredModel) {
+    const mid = Math.ceil(images.length / 2);
+    const chunkA = images.slice(0, mid);
+    const chunkB = images.slice(mid);
+
+    console.log(`[GeminiService] Tự động phân tải song song 2 Engine cho OCR: ${chunkA.length} ảnh (3.1 Lite) & ${chunkB.length} ảnh (3.5 Lite)...`);
+    const [resA, resB] = await Promise.allSettled([
+      scanImages(chunkA, existingBooks, 'gemini-3.1-flash-lite'),
+      scanImages(chunkB, existingBooks, 'gemini-3.5-flash-lite'),
+    ]);
+
+    const booksA = resA.status === 'fulfilled' && resA.value?.success && Array.isArray(resA.value.books) ? resA.value.books : [];
+    const booksB = resB.status === 'fulfilled' && resB.value?.success && Array.isArray(resB.value.books) ? resB.value.books : [];
+
+    // Tự động cứu vãn lô bị lỗi trên Engine còn lại
+    let recoveryBooks: any[] = [];
+    if (booksA.length === 0 && chunkA.length > 0) {
+      console.warn('[GeminiService OCR] Chunk A thất bại trên 3.1 Lite, tự động chuyển tải sang 3.5 Lite...');
+      try {
+        const rec = await scanImages(chunkA, existingBooks, 'gemini-3.5-flash-lite');
+        if (rec.success && Array.isArray(rec.books)) recoveryBooks.push(...rec.books);
+      } catch (e) {
+        console.error('Lỗi cứu vãn OCR chunk A:', e);
+      }
+    }
+    if (booksB.length === 0 && chunkB.length > 0) {
+      console.warn('[GeminiService OCR] Chunk B thất bại trên 3.5 Lite, tự động chuyển tải sang 3.1 Lite...');
+      try {
+        const rec = await scanImages(chunkB, existingBooks, 'gemini-3.1-flash-lite');
+        if (rec.success && Array.isArray(rec.books)) recoveryBooks.push(...rec.books);
+      } catch (e) {
+        console.error('Lỗi cứu vãn OCR chunk B:', e);
+      }
+    }
+
+    const combined = [...booksA, ...booksB, ...recoveryBooks];
+
+    return {
+      success: true,
+      count: combined.length,
+      books: combined,
+    };
+  }
+
   return executeTask(
     '/api/books/scan-images',
-    { images, existingBooks },
+    { images, existingBooks, preferredModel },
     () => {
       const parts: any[] = images.map((imgBase64) => {
         const cleanBase64 = imgBase64.replace(/^data:image\/[a-zA-Z0-9.+]+;base64,/, '');
@@ -399,7 +450,8 @@ Trả về mảng JSON chứa các sách bóc tách được.`,
       success: true,
       count: Array.isArray(directResult) ? directResult.length : 0,
       books: directResult || [],
-    })
+    }),
+    preferredModel
   );
 }
 
@@ -409,11 +461,12 @@ Trả về mảng JSON chứa các sách bóc tách được.`,
 export async function enrichBook(
   title: string,
   author: string,
-  publisher: string
+  publisher: string,
+  preferredModel?: string
 ): Promise<{ success: boolean; enriched: any }> {
   return executeTask(
     '/api/books/enrich',
-    { title, author, publisher },
+    { title, author, publisher, preferredModel },
     () => {
       const prompt = `Hãy tra cứu và chuẩn hóa thông tin chi tiết chính xác của cuốn sách tiếng Việt/quốc tế sau:
 Tên hiện tại: "${title}"
@@ -462,11 +515,58 @@ Trả về thông tin chuẩn nhất:
 
 /**
  * 3. Batch Normalization: Auto spell check, capitalize, verify categories in background
+ * Supports specifying preferredModel ('gemini-3.1-flash-lite' or 'gemini-3.5-flash-lite') for parallel dual-engine acceleration
  */
-export async function batchNormalize(books: BookRecord[]): Promise<{ success: boolean; normalized: any[] }> {
+export async function batchNormalize(
+  books: BookRecord[],
+  preferredModel?: string
+): Promise<{ success: boolean; normalized: any[] }> {
+  // Nếu có từ 2 cuốn trở lên và chưa chỉ định model cụ thể -> tự động chia song song 2 Engine 3.1 và 3.5 để phân tải 50/50
+  if (books.length >= 2 && !preferredModel) {
+    const mid = Math.ceil(books.length / 2);
+    const chunkA = books.slice(0, mid);
+    const chunkB = books.slice(mid);
+
+    console.log(`[GeminiService] Tự động phân tải song song 2 Engine cho Chuẩn hóa: ${chunkA.length} cuốn (3.1 Lite) & ${chunkB.length} cuốn (3.5 Lite)...`);
+    const [resA, resB] = await Promise.allSettled([
+      batchNormalize(chunkA, 'gemini-3.1-flash-lite'),
+      batchNormalize(chunkB, 'gemini-3.5-flash-lite'),
+    ]);
+
+    const normA = resA.status === 'fulfilled' && resA.value?.success && Array.isArray(resA.value.normalized) ? resA.value.normalized : [];
+    const normB = resB.status === 'fulfilled' && resB.value?.success && Array.isArray(resB.value.normalized) ? resB.value.normalized : [];
+
+    // Tự động cứu vãn lô bị lỗi trên Engine còn lại
+    let recoveryNorm: any[] = [];
+    if (normA.length === 0 && chunkA.length > 0) {
+      console.warn('[GeminiService Chuẩn hóa] Chunk A thất bại trên 3.1 Lite, tự động chuyển tải sang 3.5 Lite...');
+      try {
+        const rec = await batchNormalize(chunkA, 'gemini-3.5-flash-lite');
+        if (rec.success && Array.isArray(rec.normalized)) recoveryNorm.push(...rec.normalized);
+      } catch (e) {
+        console.error('Lỗi cứu vãn chuẩn hóa chunk A:', e);
+      }
+    }
+    if (normB.length === 0 && chunkB.length > 0) {
+      console.warn('[GeminiService Chuẩn hóa] Chunk B thất bại trên 3.5 Lite, tự động chuyển tải sang 3.1 Lite...');
+      try {
+        const rec = await batchNormalize(chunkB, 'gemini-3.1-flash-lite');
+        if (rec.success && Array.isArray(rec.normalized)) recoveryNorm.push(...rec.normalized);
+      } catch (e) {
+        console.error('Lỗi cứu vãn chuẩn hóa chunk B:', e);
+      }
+    }
+
+    const combined = [...normA, ...normB, ...recoveryNorm];
+    return {
+      success: true,
+      normalized: combined,
+    };
+  }
+
   return executeTask(
     '/api/books/batch-normalize',
-    { books },
+    { books, preferredModel },
     () => {
       const prompt = `Bạn là biên tập viên thư viện sách chuyên nghiệp. 
 Hãy sửa lỗi chính tả, sửa tiếng Việt không dấu thành có dấu chuẩn xác, viết hoa chữ cái đầu đúng quy tắc tiếng Việt/quốc tế cho danh sách các cuốn sách sau đây. 
@@ -516,6 +616,7 @@ Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ ngu
           is_ai_normalized: true,
         })),
       };
-    }
+    },
+    preferredModel
   );
 }

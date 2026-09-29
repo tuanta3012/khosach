@@ -1,11 +1,39 @@
 import React, { useState, useRef } from 'react';
-import { X, Settings as SettingsIcon, Check, RefreshCw, ArrowUpCircle, Sparkles, Pause, Loader2, CopyCheck } from 'lucide-react';
+import {
+  X,
+  Settings as SettingsIcon,
+  Check,
+  RefreshCw,
+  ArrowUpCircle,
+  Sparkles,
+  Pause,
+  Loader2,
+  CopyCheck,
+  CheckSquare,
+  Square,
+  ArrowRight,
+  CheckCheck,
+  AlertCircle,
+} from 'lucide-react';
 import { LibrarySettings, BookRecord } from '../types';
 import { useToast } from '../context/ToastContext';
 import { CURRENT_APP_VERSION } from '../version';
 import { batchNormalize } from '../utils/geminiService';
 import { deduplicateBookList, groupDuplicateBooks, groupDuplicateBooksAsync, DuplicateGroup } from '../utils/fuzzyMatcher';
 import { saveAllLocalBooks } from '../utils/localBooksStorage';
+
+export interface TitleAuthorProposal {
+  bookId: string;
+  originalTitle: string;
+  proposedTitle: string;
+  titleChanged: boolean;
+  originalAuthor: string;
+  proposedAuthor: string;
+  authorChanged: boolean;
+  category: string;
+  publisher?: string;
+  selected: boolean;
+}
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -42,6 +70,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[] | null>(null);
   const [selectedKeepIds, setSelectedKeepIds] = useState<Record<string, string[]>>({});
 
+  // States cho duyệt đề xuất thay đổi Tên sách & Tác giả sau khi chạy xong hoặc bấm tạm dừng
+  const [reviewProposals, setReviewProposals] = useState<TitleAuthorProposal[] | null>(null);
+  const pendingReviewAccumulatorRef = useRef<TitleAuthorProposal[]>([]);
+  const [potentialChangesCount, setPotentialChangesCount] = useState(0);
+
   // States cho chuẩn hóa bằng AI
   const [isNormalizing, setIsNormalizing] = useState(false);
   const [currentBatchText, setCurrentBatchText] = useState('');
@@ -59,58 +92,194 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
     setIsNormalizing(true);
     stopNormalizingRef.current = false;
+    pendingReviewAccumulatorRef.current = [];
+    setPotentialChangesCount(0);
     let localPending = [...pendingBooks];
     let currentProcessed = 0;
 
-    showToast(`Bắt đầu chuẩn hóa ${localPending.length} cuốn sách...`, 'info');
+    showToast(`Bắt đầu chuẩn hóa thể loại cho ${localPending.length} cuốn sách...`, 'info');
+
+    const BATCH_SIZE = 8;
 
     while (localPending.length > 0 && !stopNormalizingRef.current) {
-      const batch = localPending.slice(0, 8);
-      const titlesStr = batch.map((b) => `"${b.title}"`).join(', ');
-      setCurrentBatchText(`Đang xử lý: ${titlesStr}`);
+      const currentBatch = localPending.slice(0, BATCH_SIZE);
+      setCurrentBatchText(
+        `Đang xử lý song song 2 Engine: ${currentBatch.length} cuốn (3.1 Lite & 3.5 Lite)...`
+      );
 
+      let successfulNormalizedItems: any[] = [];
       try {
-        const data = await batchNormalize(batch);
-
-        if (data.success && Array.isArray(data.normalized)) {
-          const updatedList: BookRecord[] = data.normalized.map((normItem: any) => {
-            const orig = batch.find((b) => b.id === normItem.id);
-            return {
-              ...orig,
-              title: normItem.title,
-              author: normItem.author,
-              publisher: normItem.publisher,
-              category: normItem.category,
-              is_ai_normalized: true,
-              updated_at: Date.now(),
-            } as BookRecord;
-          });
-
-          await onBatchUpdateBooks(updatedList);
-          currentProcessed += batch.length;
-          setProcessedCount(currentProcessed);
+        const res = await batchNormalize(currentBatch);
+        if (res?.success && Array.isArray(res.normalized)) {
+          successfulNormalizedItems = res.normalized;
         }
       } catch (err: any) {
-        console.error('Lỗi khi chuẩn hóa lô:', err);
+        console.error('Lỗi khi chuẩn hóa lô song song:', err);
       }
 
-      localPending = localPending.slice(batch.length);
+      if (successfulNormalizedItems.length > 0) {
+        const safeUpdatedList: BookRecord[] = [];
+
+        successfulNormalizedItems.forEach((normItem: any) => {
+          const orig = currentBatch.find((b) => b.id === normItem.id);
+          if (!orig) return;
+
+          const normTitleTrim = String(normItem.title || '').trim();
+          const origTitleTrim = (orig.title || '').trim();
+          const normAuthorTrim = String(normItem.author || '').trim();
+          const origAuthorTrim = (orig.author || '').trim();
+
+          // Sửa viết thường viết hoa KHÔNG tính là đổi tên sách/tác giả:
+          // Chỉ coi là đổi tên khi nội dung khác nhau ngay cả khi so sánh chữ thường (case-insensitive)
+          const titleMeaningfullyChanged = Boolean(
+            normTitleTrim && origTitleTrim && normTitleTrim.toLowerCase() !== origTitleTrim.toLowerCase()
+          );
+          const authorMeaningfullyChanged = Boolean(
+            normAuthorTrim && origAuthorTrim && normAuthorTrim.toLowerCase() !== origAuthorTrim.toLowerCase()
+          );
+
+          const enrichedCategory = normItem.category || orig.category || 'Chung';
+          const enrichedPublisher = normItem.publisher || orig.publisher || '';
+
+          // Tên sách và tác giả:
+          // Nếu đổi tên thực sự -> giữ nguyên tên gốc chờ người dùng duyệt
+          // Nếu chỉ sửa viết thường viết hoa -> tự động áp dụng bản viết hoa chuẩn
+          const resolvedTitle = titleMeaningfullyChanged 
+            ? orig.title 
+            : (normTitleTrim || orig.title);
+
+          const resolvedAuthor = authorMeaningfullyChanged 
+            ? orig.author 
+            : (normAuthorTrim || orig.author);
+
+          // 1. Tự động áp dụng thể loại, NXB, và sửa viết hoa/thường ngay mà không cần duyệt theo yêu cầu
+          safeUpdatedList.push({
+            ...orig,
+            title: resolvedTitle,
+            author: resolvedAuthor,
+            publisher: enrichedPublisher,
+            category: enrichedCategory, // Thể loại được tự động làm giàu không cần duyệt
+            is_ai_normalized: true,
+            updated_at: Date.now(),
+          });
+
+          // 2. Chỉ hiện list duyệt nếu thay đổi tên của tên sách, tác giả nhưng KHÔNG bao gồm sửa viết thường viết hoa
+          if (titleMeaningfullyChanged || authorMeaningfullyChanged) {
+            pendingReviewAccumulatorRef.current.push({
+              bookId: orig.id,
+              originalTitle: orig.title,
+              proposedTitle: normTitleTrim,
+              titleChanged: titleMeaningfullyChanged,
+              originalAuthor: orig.author,
+              proposedAuthor: normAuthorTrim,
+              authorChanged: authorMeaningfullyChanged,
+              category: enrichedCategory,
+              publisher: enrichedPublisher,
+              selected: true,
+            });
+            setPotentialChangesCount(pendingReviewAccumulatorRef.current.length);
+          }
+        });
+
+        if (safeUpdatedList.length > 0) {
+          await onBatchUpdateBooks(safeUpdatedList);
+          currentProcessed += safeUpdatedList.length;
+          setProcessedCount(currentProcessed);
+        }
+      }
+
+      localPending = localPending.slice(currentBatch.length);
     }
 
     setIsNormalizing(false);
     setCurrentBatchText('');
     setProcessedCount(0);
 
-    if (stopNormalizingRef.current) {
-      showToast('Đã dừng chuẩn hóa AI!', 'info');
+    const proposals = pendingReviewAccumulatorRef.current;
+    if (proposals.length > 0) {
+      setReviewProposals([...proposals]);
+      const statusPrefix = stopNormalizingRef.current ? 'Đã tạm dừng!' : 'Đã làm giàu thể loại xong!';
+      showToast(
+        `${statusPrefix} Có ${proposals.length} cuốn AI đề xuất đổi Tên/Tác giả chờ bạn duyệt.`,
+        'info'
+      );
     } else {
-      showToast('Toàn bộ kho sách đã được chuẩn hóa thành công!', 'success');
+      if (stopNormalizingRef.current) {
+        showToast('Đã dừng chuẩn hóa AI! Không có đề xuất đổi tên nào cần duyệt.', 'info');
+      } else {
+        showToast('Toàn bộ kho sách đã được chuẩn hóa thể loại thành công!', 'success');
+      }
     }
   };
 
   const handleStopNormalize = () => {
     stopNormalizingRef.current = true;
-    setCurrentBatchText('Đang hoàn thành lô rồi dừng...');
+    setCurrentBatchText('Đang hoàn thành lô rồi dừng để duyệt...');
+  };
+
+  const toggleProposalSelect = (index: number) => {
+    setReviewProposals((prev) => {
+      if (!prev) return null;
+      const copy = [...prev];
+      copy[index] = { ...copy[index], selected: !copy[index].selected };
+      return copy;
+    });
+  };
+
+  const toggleSelectAllProposals = () => {
+    setReviewProposals((prev) => {
+      if (!prev) return null;
+      const allSelected = prev.every((p) => p.selected);
+      return prev.map((p) => ({ ...p, selected: !allSelected }));
+    });
+  };
+
+  const handleApplyApprovedProposals = async () => {
+    if (!reviewProposals || !onBatchUpdateBooks) return;
+    setIsSaving(true);
+    try {
+      const selectedOnes = reviewProposals.filter((p) => p.selected);
+      if (selectedOnes.length === 0) {
+        showToast('Bạn chưa chọn cuốn nào để áp dụng thay đổi.', 'info');
+        setIsSaving(false);
+        return;
+      }
+
+      const updatedList: BookRecord[] = selectedOnes.map((p) => {
+        const orig = books.find((b) => b.id === p.bookId);
+        return {
+          ...orig,
+          id: p.bookId,
+          title: p.titleChanged ? p.proposedTitle : (orig?.title || p.originalTitle),
+          author: p.authorChanged ? p.proposedAuthor : (orig?.author || p.originalAuthor),
+          category: p.category || orig?.category || 'Chung',
+          publisher: p.publisher || orig?.publisher || '',
+          is_ai_normalized: true,
+          updated_at: Date.now(),
+        } as BookRecord;
+      });
+
+      await onBatchUpdateBooks(updatedList);
+      showToast(
+        `Đã duyệt và áp dụng tên & tác giả cho ${selectedOnes.length} cuốn sách thành công!`,
+        'success'
+      );
+      setReviewProposals(null);
+      setPotentialChangesCount(0);
+    } catch (err: any) {
+      showToast(`Lỗi khi áp dụng thay đổi: ${err.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDismissAllProposals = () => {
+    setReviewProposals(null);
+    setPotentialChangesCount(0);
+    showToast(
+      'Đã giữ nguyên toàn bộ tên sách & tác giả gốc của bạn. Thể loại đã làm giàu vẫn được lưu trữ!',
+      'info'
+    );
   };
 
   const handleResetAiStatus = async () => {
@@ -240,7 +409,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        {!duplicateGroups ? (
+        {reviewProposals ? (
+          <div className="px-4 py-3 bg-purple-50 border-b border-purple-100 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-purple-600 shrink-0" />
+              <div>
+                <h3 className="text-xs sm:text-sm font-bold text-purple-950 leading-tight">
+                  Duyệt Đổi Tên &amp; Tác Giả (<strong className="text-purple-700 font-extrabold">{reviewProposals.length}</strong> cuốn)
+                </h3>
+                <p className="text-[10px] text-slate-500 mt-0.5">Thể loại đã làm giàu xong. Chọn cuốn bạn đồng ý đổi tên/tác giả:</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setReviewProposals(null)}
+              className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 hover:bg-purple-200/50 active:scale-95 transition"
+              aria-label="Đóng"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        ) : !duplicateGroups ? (
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl bg-slate-200 text-slate-700 flex items-center justify-center shrink-0">
@@ -281,7 +469,127 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         )}
 
         {/* Content & Footer */}
-        {duplicateGroups ? (
+        {reviewProposals ? (
+          <div className="flex flex-col flex-1 overflow-hidden">
+            {/* Thanh công cụ chọn tất cả */}
+            <div className="px-4 py-2 bg-slate-100/70 border-b border-slate-200 flex items-center justify-between text-xs shrink-0">
+              <span className="text-slate-600 font-medium text-[11px]">
+                Đã chọn: <strong className="text-purple-700 font-bold">{reviewProposals.filter((p) => p.selected).length}</strong>/{reviewProposals.length} cuốn
+              </span>
+              <button
+                type="button"
+                onClick={toggleSelectAllProposals}
+                className="text-[11px] font-bold text-purple-700 hover:text-purple-900 transition flex items-center gap-1 active:scale-95"
+              >
+                <CheckCheck className="w-3.5 h-3.5" />
+                <span>
+                  {reviewProposals.every((p) => p.selected) ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                </span>
+              </button>
+            </div>
+
+            {/* Danh sách các đề xuất */}
+            <div className="p-3.5 space-y-2.5 overflow-y-auto flex-1 bg-slate-50">
+              {reviewProposals.map((proposal, idx) => {
+                return (
+                  <div
+                    key={proposal.bookId}
+                    onClick={() => toggleProposalSelect(idx)}
+                    className={`p-3 rounded-2xl border transition-all cursor-pointer select-none space-y-2 ${
+                      proposal.selected
+                        ? 'bg-purple-50/60 border-purple-300 shadow-2xs'
+                        : 'bg-white border-slate-200/80 opacity-70 hover:opacity-100'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <div className="pt-0.5 shrink-0">
+                        {proposal.selected ? (
+                          <CheckSquare className="w-4.5 h-4.5 text-purple-600" />
+                        ) : (
+                          <Square className="w-4.5 h-4.5 text-slate-400" />
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-w-0 space-y-1.5 text-xs">
+                        {/* So sánh Tên sách */}
+                        <div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                            Tên sách:
+                          </div>
+                          {proposal.titleChanged ? (
+                            <div className="space-y-0.5">
+                              <div className="text-slate-500 line-through text-[11px]">
+                                {proposal.originalTitle}
+                              </div>
+                              <div className="text-purple-950 font-bold flex items-center gap-1">
+                                <ArrowRight className="w-3 h-3 text-purple-600 shrink-0" />
+                                <span>{proposal.proposedTitle}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-slate-800 font-semibold">{proposal.originalTitle}</div>
+                          )}
+                        </div>
+
+                        {/* So sánh Tác giả */}
+                        {proposal.authorChanged && (
+                          <div className="pt-1 border-t border-purple-100/60">
+                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                              Tác giả:
+                            </div>
+                            <div className="space-y-0.5">
+                              <div className="text-slate-500 line-through text-[11px]">
+                                {proposal.originalAuthor || 'Chưa rõ'}
+                              </div>
+                              <div className="text-purple-950 font-bold flex items-center gap-1">
+                                <ArrowRight className="w-3 h-3 text-purple-600 shrink-0" />
+                                <span>{proposal.proposedAuthor}</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Thể loại đã được làm giàu */}
+                        <div className="pt-1 flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[9px] bg-purple-100 text-purple-800 font-bold px-2 py-0.5 rounded-md">
+                            Thể loại: {proposal.category}
+                          </span>
+                          {proposal.publisher && (
+                            <span className="text-[9px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md">
+                              NXB: {proposal.publisher}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer duyệt đề xuất */}
+            <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleDismissAllProposals}
+                className="px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200/60 rounded-xl transition active:scale-95"
+              >
+                Bỏ qua (Giữ tên cũ)
+              </button>
+              <button
+                type="button"
+                onClick={handleApplyApprovedProposals}
+                disabled={isSaving || reviewProposals.filter((p) => p.selected).length === 0}
+                className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 rounded-xl shadow-xs transition disabled:opacity-50 active:scale-95"
+              >
+                <Check className="w-4 h-4" />
+                <span>
+                  Áp dụng ({reviewProposals.filter((p) => p.selected).length} cuốn)
+                </span>
+              </button>
+            </div>
+          </div>
+        ) : duplicateGroups ? (
           <div className="flex flex-col flex-1 overflow-hidden">
             {/* List các nhóm trùng */}
             <div className="p-4 space-y-3.5 overflow-y-auto flex-1 bg-slate-50">
@@ -491,20 +799,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               </div>
 
-              {/* Thanh tiến trình */}
-              <div className="w-full bg-slate-200/60 rounded-full h-1.5 overflow-hidden">
-                <div
-                  className="bg-purple-600 h-full rounded-full transition-all duration-300"
-                  style={{ width: `${totalBooks > 0 ? (normalizedCount / totalBooks) * 100 : 0}%` }}
-                />
+              {/* Thanh tiến trình & Thông tin mức độ ảnh hưởng (số trường hợp có khả năng thay đổi) */}
+              <div className="space-y-1.5 pt-0.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-1.5 text-slate-600 font-medium">
+                    <span>Tiến độ:</span>
+                    <span className="font-mono text-purple-800 font-bold">
+                      {totalBooks > 0 ? Math.round((normalizedCount / totalBooks) * 100) : 0}%
+                    </span>
+                  </div>
+
+                  {/* Số trường hợp có khả năng thay đổi: Dấu chấm than + số */}
+                  {potentialChangesCount > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs"
+                      title={`${potentialChangesCount} cuốn AI đề xuất đổi tên hoặc tác giả`}
+                    >
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <span>!{potentialChangesCount}</span>
+                    </span>
+                  )}
+                </div>
+
+                <div className="w-full bg-slate-200/70 rounded-full h-2 overflow-hidden shadow-inner">
+                  <div
+                    className="bg-purple-600 h-full rounded-full transition-all duration-300"
+                    style={{ width: `${totalBooks > 0 ? (normalizedCount / totalBooks) * 100 : 0}%` }}
+                  />
+                </div>
               </div>
 
               {isNormalizing && (
-                <div className="p-2 bg-white/80 border border-purple-100 rounded-xl">
+                <div className="p-2.5 bg-white/90 border border-purple-100 rounded-xl space-y-1">
                   <div className="flex items-center gap-1.5 text-[10px] font-bold text-purple-900">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-600 shrink-0" />
                     <span className="truncate">{currentBatchText || 'Đang xử lý...'}</span>
                   </div>
+                  {potentialChangesCount > 0 && (
+                    <div className="flex items-center gap-1.5 text-[10.5px] font-medium text-amber-800 bg-amber-50/90 p-1.5 rounded-lg border border-amber-200/70">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <span>Phát hiện <strong>!{potentialChangesCount}</strong> cuốn AI đề xuất đổi tên/tác giả (sẽ duyệt sau khi hoàn tất hoặc bấm tạm dừng).</span>
+                    </div>
+                  )}
                 </div>
               )}
 
