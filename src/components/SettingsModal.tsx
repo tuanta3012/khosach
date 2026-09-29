@@ -4,7 +4,7 @@ import { LibrarySettings, BookRecord } from '../types';
 import { useToast } from '../context/ToastContext';
 import { CURRENT_APP_VERSION } from '../version';
 import { batchNormalize } from '../utils/geminiService';
-import { deduplicateBookList, groupDuplicateBooks, DuplicateGroup } from '../utils/fuzzyMatcher';
+import { deduplicateBookList, groupDuplicateBooks, groupDuplicateBooksAsync, DuplicateGroup } from '../utils/fuzzyMatcher';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -33,10 +33,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [isDeduplicating, setIsDeduplicating] = useState(false);
+  const [dedupProgress, setDedupProgress] = useState<{ percent: number; current: number; total: number } | null>(null);
 
   // States cho xử lý trùng lặp chọn lọc thủ công
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[] | null>(null);
-  const [selectedKeepIds, setSelectedKeepIds] = useState<Record<string, string>>({});
+  const [selectedKeepIds, setSelectedKeepIds] = useState<Record<string, string[]>>({});
 
   // States cho chuẩn hóa bằng AI
   const [isNormalizing, setIsNormalizing] = useState(false);
@@ -122,13 +123,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleManualDeduplicate = async () => {
     if (!books || books.length === 0) return;
     setIsDeduplicating(true);
+    setDedupProgress({ percent: 0, current: 0, total: books.length });
     try {
-      const groups = groupDuplicateBooks(books);
+      const groups = await groupDuplicateBooksAsync(books, (percent, current, total) => {
+        setDedupProgress({ percent, current, total });
+      });
       if (groups.length > 0) {
-        // Mặc định chọn giữ lại cuốn đầu tiên trong từng nhóm trùng lặp
-        const selections: Record<string, string> = {};
+        // Mặc định chọn giữ lại cuốn đầu tiên trong từng nhóm trùng lặp (người dùng có thể tích chọn thêm nhiều cuốn để giữ lại)
+        const selections: Record<string, string[]> = {};
         groups.forEach((g) => {
-          selections[g.id] = g.books[0].id;
+          selections[g.id] = [g.books[0].id];
         });
         setDuplicateGroups(groups);
         setSelectedKeepIds(selections);
@@ -139,26 +143,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       showToast(`Lỗi khi quét sách trùng: ${err.message}`, 'error');
     } finally {
       setIsDeduplicating(false);
+      setDedupProgress(null);
     }
   };
 
   const handleConfirmKeepDuplicates = async () => {
     if (!duplicateGroups || !onBatchUpdateBooks) return;
+
+    // Kiểm tra nếu có nhóm nào bị bỏ chọn toàn bộ cuốn
+    const emptyGroup = duplicateGroups.find((g) => (selectedKeepIds[g.id] || []).length === 0);
+    if (emptyGroup) {
+      showToast('Mỗi nhóm cần giữ lại ít nhất 1 cuốn sách để tránh làm mất sách!', 'warning');
+      return;
+    }
+
     setIsSaving(true);
     try {
       const idsToDelete = new Set<string>();
       duplicateGroups.forEach((group) => {
-        const keepId = selectedKeepIds[group.id];
+        const keepIds = new Set(selectedKeepIds[group.id] || []);
         group.books.forEach((book) => {
-          if (book.id !== keepId) {
+          // Nếu cuốn sách không được tích chọn giữ lại -> xóa khỏi kho
+          if (!keepIds.has(book.id)) {
             idsToDelete.add(book.id);
           }
         });
       });
 
+      if (idsToDelete.size === 0) {
+        showToast('Bạn đã chọn giữ lại toàn bộ sách, không có cuốn nào bị xóa.', 'info');
+        setDuplicateGroups(null);
+        return;
+      }
+
       const updatedBooks = books.filter((b) => !idsToDelete.has(b.id));
       await onBatchUpdateBooks(updatedBooks);
-      showToast(`Đã dọn dẹp sách trùng lặp thành công! Chỉ giữ lại những cuốn đã được chọn.`, 'success');
+      showToast(`Đã dọn dẹp thành công! Đã xóa ${idsToDelete.size} cuốn trùng và giữ lại các cuốn đã chọn.`, 'success');
       setDuplicateGroups(null);
     } catch (err: any) {
       showToast(`Lỗi khi gộp dọn sách trùng: ${err.message}`, 'error');
@@ -208,24 +228,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-slate-200 text-slate-700 flex items-center justify-center shrink-0">
-              <SettingsIcon className="w-4.5 h-4.5" />
+        {!duplicateGroups ? (
+          <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-slate-200 text-slate-700 flex items-center justify-center shrink-0">
+                <SettingsIcon className="w-4.5 h-4.5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 leading-tight">Cấu Hình Kho Sách</h3>
+                <p className="text-[10px] text-slate-500">Chuẩn hóa &amp; Tùy chọn hệ thống</p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 leading-tight">Cấu Hình Kho Sách</h3>
-              <p className="text-[10px] text-slate-500">Chuẩn hóa &amp; Tùy chọn hệ thống</p>
-            </div>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 active:scale-95 transition"
+              aria-label="Đóng"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 active:scale-95 transition"
-            aria-label="Đóng"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+        ) : (
+          <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
+              <h3 className="text-xs sm:text-sm font-bold text-slate-800">
+                Phát hiện <strong className="text-emerald-700 font-extrabold">{duplicateGroups.length}</strong> nhóm sách trùng
+              </h3>
+            </div>
+            <button
+              onClick={() => setDuplicateGroups(null)}
+              className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 active:scale-95 transition"
+              aria-label="Đóng"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         {/* Content & Footer */}
         {duplicateGroups ? (
@@ -233,15 +271,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* List các nhóm trùng */}
             <div className="p-4 space-y-3.5 overflow-y-auto flex-1 bg-slate-50">
               {duplicateGroups.map((group) => {
-                const keepId = selectedKeepIds[group.id];
+                const groupKeepIds = selectedKeepIds[group.id] || [];
                 return (
                   <div key={group.id} className="bg-white border border-slate-200/80 rounded-2xl p-2.5 shadow-2xs space-y-2">
                     {group.books.map((book) => {
-                      const isSelected = keepId === book.id;
+                      const isSelected = groupKeepIds.includes(book.id);
                       return (
                         <div
                           key={book.id}
-                          onClick={() => setSelectedKeepIds((prev) => ({ ...prev, [group.id]: book.id }))}
+                          onClick={() => {
+                            setSelectedKeepIds((prev) => {
+                              const currentList = prev[group.id] || [];
+                              const exists = currentList.includes(book.id);
+                              const updated = exists
+                                ? currentList.filter((id) => id !== book.id)
+                                : [...currentList, book.id];
+                              return { ...prev, [group.id]: updated };
+                            });
+                          }}
                           className={`flex items-start gap-2.5 p-2 rounded-xl border transition cursor-pointer select-none active:scale-[0.99] ${
                             isSelected
                               ? 'border-emerald-500 bg-emerald-50/40'
@@ -250,13 +297,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         >
                           <div className="mt-0.5 shrink-0">
                             <div
-                              className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center transition ${
+                              className={`w-4 h-4 rounded-md border flex items-center justify-center transition ${
                                 isSelected
-                                  ? 'border-emerald-500 bg-emerald-500'
-                                  : 'border-slate-300 bg-white'
+                                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
+                                  : 'border-slate-300 bg-white hover:border-slate-400'
                               }`}
                             >
-                              {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                              {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
                             </div>
                           </div>
 
@@ -319,17 +366,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Dọn dẹp sách trùng lặp
                 </span>
                 <span className="text-[10px] text-emerald-800 block mt-0.5">
-                  Quét toàn bộ {totalBooks} cuốn &amp; tự động gộp sách trùng
+                  Quét toàn bộ {totalBooks} cuốn &amp; đối chiếu thông minh
                 </span>
               </div>
               <button
                 type="button"
                 onClick={handleManualDeduplicate}
                 disabled={isDeduplicating}
-                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition shadow-xs disabled:opacity-50 whitespace-nowrap active:scale-95"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition shadow-xs disabled:opacity-50 whitespace-nowrap active:scale-95 shrink-0"
               >
-                <RefreshCw className={`w-3 h-3 ${isDeduplicating ? 'animate-spin' : ''}`} />
-                <span>Lọc trùng ngay</span>
+                <RefreshCw className={`w-3.5 h-3.5 ${isDeduplicating ? 'animate-spin' : ''}`} />
+                <span>{isDeduplicating ? (dedupProgress ? `Quét ${dedupProgress.percent}%` : 'Đang quét...') : 'Lọc trùng ngay'}</span>
               </button>
             </div>
           )}

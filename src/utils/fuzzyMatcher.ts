@@ -80,8 +80,103 @@ export function stringSimilarity(str1: string, str2: string): number {
 }
 
 /**
+ * Chuẩn hóa số tập thành chuỗi định danh duy nhất (ví dụ: "Tập 1", "Tập I", "Vol 1" -> "1")
+ */
+export function canonicalizeVolume(rawVol: string): string {
+  if (!rawVol) return '';
+  const v = rawVol.toLowerCase().trim();
+
+  const romanMap: Record<string, string> = {
+    i: '1',
+    ii: '2',
+    iii: '3',
+    iv: '4',
+    v: '5',
+    vi: '6',
+    vii: '7',
+    viii: '8',
+    ix: '9',
+    x: '10',
+    xi: '11',
+    xii: '12',
+    xiii: '13',
+    xiv: '14',
+    xv: '15',
+  };
+  if (romanMap[v]) return romanMap[v];
+
+  const wordMap: Record<string, string> = {
+    mot: '1',
+    nhat: '1',
+    hai: '2',
+    nhi: '2',
+    ba: '3',
+    tam: '3',
+    bon: '4',
+    tu: '4',
+    nam: '5',
+    ngu: '5',
+    sau: '6',
+    luc: '6',
+    bay: '7',
+    that: '7',
+    bat: '8',
+    chin: '9',
+    cuu: '9',
+    muoi: '10',
+  };
+  if (wordMap[v]) return wordMap[v];
+
+  if (/^\d+$/.test(v)) {
+    return String(parseInt(v, 10));
+  }
+
+  if (v === 'thuong' || v === 'ha' || v === 'trung') {
+    return v;
+  }
+
+  return v;
+}
+
+/**
+ * Trích xuất thông tin tập (Tập 1, Tập 2, Vol, Phần, Quyển...) và tiêu đề sạch không chứa số tập
+ */
+export function extractVolumeInfo(rawTitle: string): { volume: string | null; cleanTitle: string } {
+  if (!rawTitle) return { volume: null, cleanTitle: '' };
+
+  const norm = removeVietnameseTones(rawTitle).toLowerCase().trim();
+  const standardized = norm.replace(/[–—−]/g, '-');
+
+  let rawVol: string | null = null;
+  let clean = rawTitle;
+
+  // 1. Khớp các từ khóa tập phổ biến: tap, vol, quyen, phan, part, bo, hoi
+  const keywordRegex = /\b(?:tap|vol(?:ume)?|quyen|phan|part|bo|hoi)\s*(?:so\s*)?([0-9]+|[ivxlcdm]+|thuong|trung|ha|mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b/i;
+  const matchKeyword = standardized.match(keywordRegex);
+
+  if (matchKeyword) {
+    rawVol = matchKeyword[1];
+    const origKeywordRegex = /(?:[-–—\s,(:/[]+)?\b(?:t[aậ]p|vol(?:ume)?|quy[eể]n|ph[aầ]n|part|b[oộ]|h[oồ]i)\s*(?:s[oố]\s*)?(?:[0-9]+|[ivxlcdm]+|th[uư][oợ]ng|trung|h[aạ]|m[oộ]t|hai|ba|b[oố]n|n[aă]m|s[aá]u|b[aả]y|t[aá]m|ch[ií]n|m[uư][oờ]i)\b[\)\]]?/i;
+    clean = clean.replace(origKeywordRegex, '').trim();
+  } else {
+    // 2. Khớp các ký hiệu viết tắt ở cuối tiêu đề: ví dụ " - T1", " - T2", "T.1", "T.2", "Q.1", hoặc " - 1", " - 2", " #1", " #2", "(1)", "(2)"
+    const shorthandRegex = /(?:[-–—\s,(:/[]+)(?:t|q|v)?\.?\s*#?\s*([0-9]+|[ivxlcdm]+)\s*[\)\]]?$/i;
+    const matchShorthand = standardized.match(shorthandRegex);
+    if (matchShorthand) {
+      rawVol = matchShorthand[1];
+      clean = clean.replace(/(?:[-–—\s,(:/[]+)(?:t|q|v)?\.?\s*#?\s*(?:[0-9]+|[ivxlcdm]+)\s*[\)\]]?$/i, '').trim();
+    }
+  }
+
+  clean = clean.replace(/[-–—\s,(:/[\]]+$/, '').trim();
+  const volume = rawVol ? canonicalizeVolume(rawVol) : null;
+  return { volume, cleanTitle: clean || rawTitle };
+}
+
+/**
  * Kiểm tra xem 1 bản ghi sách mới có bị trùng với kho sách hiện tại hay không
  * Sử dụng Fuzzy Matching thông minh trên Tên sách (title) và Tác giả (author)
+ * BẢO VỆ CHỐNG NHẬN DIỆN SAI CÁC BỘ SÁCH NHIỀU TẬP (Tập 1, Tập 2, Vol 1, Vol 2...)
  */
 export function checkDuplicateBook(
   item: { title: string; author?: string },
@@ -90,18 +185,38 @@ export function checkDuplicateBook(
 ): { isDuplicate: boolean; matchedBook?: BookRecord; score: number } {
   if (!item.title) return { isDuplicate: false, score: 0 };
 
+  const volItem = extractVolumeInfo(item.title);
   const normTitle = normalizeForComparison(item.title);
-  const normTitleClean = normalizeForComparison(item.title.replace(/\(.*?\)/g, ''));
+  const normTitleClean = normalizeForComparison(volItem.cleanTitle.replace(/\(.*?\)/g, ''));
   const normAuthor = normalizeForComparison(item.author || '');
 
   let bestMatch: BookRecord | undefined = undefined;
   let highestScore = 0;
 
   for (const book of existingBooks) {
-    const bookTitleNorm = normalizeForComparison(book.title);
-    const bookTitleClean = normalizeForComparison(book.title.replace(/\(.*?\)/g, ''));
+    if (!book.title) continue;
 
-    // So sánh full title lẫn title đã lọc bỏ ngoặc
+    const volBook = extractVolumeInfo(book.title);
+
+    // BẢO VỆ SÁCH NHIỀU TẬP (Multi-volume Series Protection):
+    // 1. Nếu cả 2 cuốn đều có chỉ số tập và KHÁC NHAU (ví dụ Tập 1 vs Tập 2, Thượng vs Hạ) -> Tuyệt đối KHÔNG TRÙNG!
+    if (volItem.volume && volBook.volume && volItem.volume !== volBook.volume) {
+      continue;
+    }
+
+    // 2. Nếu một cuốn là tập tiếp theo (Tập 2, 3, 4... hoặc Hạ/Trung) trong khi cuốn kia không ghi số tập -> Tuyệt đối KHÔNG TRÙNG!
+    const isContinuingVol = (v: string | null) => v !== null && v !== '1' && v !== 'thuong';
+    if (
+      (isContinuingVol(volItem.volume) && !volBook.volume) ||
+      (isContinuingVol(volBook.volume) && !volItem.volume)
+    ) {
+      continue;
+    }
+
+    const bookTitleNorm = normalizeForComparison(book.title);
+    const bookTitleClean = normalizeForComparison(volBook.cleanTitle.replace(/\(.*?\)/g, ''));
+
+    // So sánh full title lẫn clean title (đã lọc số tập và ngoặc đơn)
     const titleScore1 = stringSimilarity(normTitle, bookTitleNorm);
     const titleScore2 = stringSimilarity(normTitleClean, bookTitleClean);
     const titleScore3 = stringSimilarity(normTitle, bookTitleClean);
@@ -224,7 +339,7 @@ export interface DuplicateGroup {
 }
 
 /**
- * Phân nhóm tất cả các sách trùng lặp để hiển thị cho người dùng lựa chọn cuốn muốn giữ lại
+ * Phân nhóm tất cả các sách trùng lặp để hiển thị cho người dùng lựa chọn cuốn muốn giữ lại (đồng bộ)
  */
 export function groupDuplicateBooks(books: BookRecord[]): DuplicateGroup[] {
   const groups: DuplicateGroup[] = [];
@@ -259,6 +374,65 @@ export function groupDuplicateBooks(books: BookRecord[]): DuplicateGroup[] {
         books: dupBooks,
       });
     }
+  }
+
+  return groups;
+}
+
+/**
+ * Phân nhóm tất cả các sách trùng lặp bất đồng bộ có báo cáo tiến độ % (Non-blocking Progressive Scanner)
+ * Nhường quyền xử lý cho UI Event Loop để giao diện không bị giật lag, hiển thị tiến trình mượt mà
+ */
+export async function groupDuplicateBooksAsync(
+  books: BookRecord[],
+  onProgress?: (percent: number, current: number, total: number) => void
+): Promise<DuplicateGroup[]> {
+  const groups: DuplicateGroup[] = [];
+  const visited = new Set<string>();
+  const total = books.length;
+
+  for (let i = 0; i < total; i++) {
+    // Nhường quyền cho giao diện React sau mỗi 8 cuốn để cập nhật thanh tiến trình và % mượt mà
+    if (i % 8 === 0 || i === total - 1) {
+      const percent = Math.min(100, Math.round(((i + 1) / total) * 100));
+      if (onProgress) {
+        onProgress(percent, i + 1, total);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const book = books[i];
+    if (visited.has(book.id)) continue;
+
+    const dupBooks: BookRecord[] = [book];
+
+    for (let j = i + 1; j < total; j++) {
+      const other = books[j];
+      if (visited.has(other.id)) continue;
+
+      const { isDuplicate } = checkDuplicateBook(
+        { title: book.title, author: book.author },
+        [other],
+        0.75
+      );
+
+      if (isDuplicate) {
+        dupBooks.push(other);
+        visited.add(other.id);
+      }
+    }
+
+    if (dupBooks.length > 1) {
+      visited.add(book.id);
+      groups.push({
+        id: `group_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 5)}`,
+        books: dupBooks,
+      });
+    }
+  }
+
+  if (onProgress) {
+    onProgress(100, total, total);
   }
 
   return groups;

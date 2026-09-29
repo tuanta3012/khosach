@@ -77,50 +77,94 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
       const authorWords = normAuthor.split(/\s+/).filter(Boolean);
 
       let score = 0;
+      let matchedWordsCount = 0;
 
-      // 1. Khớp chính xác hoàn toàn tiêu đề
-      if (normTitle === normQuery) {
-        score += 500;
-      } 
-      // 2. Tiêu đề bắt đầu bằng cụm từ tìm kiếm
-      else if (normTitle.startsWith(normQuery)) {
-        score += 300;
-      } 
-      // 3. Khớp cụm từ tìm kiếm đầy đủ theo ranh giới từ
-      else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normTitle)) {
-        score += 200;
-      } 
-      // 4. Khớp cụm từ tìm kiếm đầy đủ dạng substring
-      else if (normTitle.includes(normQuery)) {
-        const hasWordBoundaryMatch = titleWords.some(w => w.startsWith(queryWords[0]));
-        if (hasWordBoundaryMatch) {
-          score += 150;
-        } else {
-          score += 30;
+      // Đếm số lượng từ khóa tìm kiếm xuất hiện trong tựa sách, tác giả, nhà xuất bản hoặc thể loại
+      for (const qw of queryWords) {
+        const inTitle = titleWords.includes(qw) || normTitle.includes(qw);
+        const inAuthor = authorWords.includes(qw) || normAuthor.includes(qw);
+        const inPublisher = normPublisher.includes(qw);
+        const inCat = normCat.includes(qw);
+        if (inTitle || inAuthor || inPublisher || inCat) {
+          matchedWordsCount++;
         }
       }
 
-      // 5. Khớp từng từ đơn lẻ
+      // 1. Khớp chính xác hoàn toàn tác giả (Exact Author Match) -> Ưu tiên tuyệt đối
+      if (normAuthor === normQuery) {
+        score += 5000;
+      }
+      // 2. Khớp chính xác hoàn toàn tiêu đề (Exact Title Match) -> Ưu tiên cực cao
+      else if (normTitle === normQuery) {
+        score += 4000;
+      }
+      // 3. Tác giả bắt đầu bằng cụm từ tìm kiếm (Author starts with query)
+      else if (normAuthor.startsWith(normQuery)) {
+        score += 2000;
+      }
+      // 4. Tiêu đề bắt đầu bằng cụm từ tìm kiếm (Title starts with query)
+      else if (normTitle.startsWith(normQuery)) {
+        score += 1800;
+      }
+      // 5. Khớp cụm từ tìm kiếm đầy đủ theo ranh giới từ trong Tác giả
+      else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normAuthor)) {
+        score += 1500;
+      }
+      // 6. Khớp cụm từ tìm kiếm đầy đủ theo ranh giới từ trong Tiêu đề
+      else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normTitle)) {
+        score += 1300;
+      }
+      // 7. Khớp cụm từ tìm kiếm đầy đủ dạng substring trong Tác giả
+      else if (normAuthor.includes(normQuery)) {
+        score += 1000;
+      }
+      // 8. Khớp cụm từ tìm kiếm đầy đủ dạng substring trong Tiêu đề
+      else if (normTitle.includes(normQuery)) {
+        score += 900;
+      }
+
+      // 9. Điểm số khớp từng từ đơn lẻ (để tích lũy điểm khi gõ dài)
       for (const qw of queryWords) {
-        const isWordMatchTitle = titleWords.some(tw => tw === qw);
-        const isPrefixMatchTitle = qw.length >= 4 && titleWords.some(tw => tw.startsWith(qw));
+        const isWordMatchTitle = titleWords.includes(qw);
+        const isPrefixMatchTitle = qw.length >= 3 && titleWords.some(tw => tw.startsWith(qw));
 
         if (isWordMatchTitle) {
           score += 100;
         } else if (isPrefixMatchTitle) {
+          score += 50;
+        }
+
+        const isWordMatchAuthor = authorWords.includes(qw);
+        const isPrefixMatchAuthor = qw.length >= 3 && authorWords.some(aw => aw.startsWith(qw));
+        if (isWordMatchAuthor) {
+          score += 120; // Ưu tiên khớp từ tác giả hơn
+        } else if (isPrefixMatchAuthor) {
           score += 60;
         }
 
-        const isWordMatchAuthor = authorWords.some(aw => aw === qw);
-        const isPrefixMatchAuthor = qw.length >= 4 && authorWords.some(aw => aw.startsWith(qw));
-        if (isWordMatchAuthor) {
-          score += 80;
-        } else if (isPrefixMatchAuthor) {
-          score += 40;
-        }
-
         if (normPublisher.includes(qw)) score += 20;
-        if (normCat.includes(qw)) score += 15;
+        if (normCat.includes(qw)) score += 10;
+      }
+
+      // PHẠT NẶNG/THƯỞNG LỚN CHO ĐỘ PHỦ TỪ KHÓA (Phrase Grouping & Cohesive Lock)
+      if (queryWords.length > 1) {
+        const containsExactPhrase = 
+          normTitle.includes(normQuery) || 
+          normAuthor.includes(normQuery) ||
+          normPublisher.includes(normQuery) ||
+          normCat.includes(normQuery);
+
+        const matchesAllWords = matchedWordsCount === queryWords.length;
+
+        if (containsExactPhrase) {
+          score += 3000; // Thưởng cực lớn khi khóa nhóm từ đứng liền nhau
+        } else if (matchesAllWords) {
+          score += 600; // Khớp đủ toàn bộ từ nhưng không liền nhau
+        } else {
+          // BẮT BUỘC KHÓA NHÓM TỪ: Nếu gõ nhiều từ khóa mà không khớp cụm từ liền nhau
+          // và không khớp đầy đủ 100% tất cả các từ, loại hoàn toàn khỏi kết quả tìm kiếm!
+          score = 0;
+        }
       }
 
       if (score > 0) {

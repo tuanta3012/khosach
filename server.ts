@@ -162,24 +162,37 @@ app.post('/api/books/scan-images', async (req, res) => {
         });
       }
 
+      const existingReference = Array.isArray(existingBooks) && existingBooks.length > 0
+        ? existingBooks.slice(0, 1000).map((b: any) => `- "${b.title}" của ${b.author || 'Khuyết danh'} (${b.category || 'Chung'})`).join('\n')
+        : 'Chưa có sách nào.';
+
       parts.push({
         text: `Bạn là chuyên gia phân loại và bóc tách thư viện sách chuyên nghiệp đẳng cấp quốc tế.
 Nhiệm vụ của bạn là rà soát cực kỳ tỉ mỉ bức ảnh chụp kệ sách từ TRÁI SANG PHẢI để trích xuất TOÀN BỘ các cuốn sách xuất hiện, không bỏ sót bất kỳ quyển nào.
 
-QUY TẮC PHÁT HIỆN THỊ GIÁC QUAN TRỌNG (BẮT BUỘC):
-1. QUÉT KỸ RÌA NGOÀI CÙNG (CỰC KỲ DỄ BỎ SÓT): Phải quét cẩn thận từ gáy sách ngoài cùng bên trái (sát mép lề trái ảnh, ví dụ cuốn "Hồi ký Phóng viên chiến trường" gáy trắng) đến gáy sách ngoài cùng bên phải. Tuyệt đối không được bỏ qua các cuốn ở rìa ngoài cùng do nhầm lẫn với viền gỗ của tủ kệ.
-2. XOAY HƯỚNG ĐỌC ĐA CHIỀU: Các cuốn sách có thể xếp ĐỨNG, NẰM NGANG, HOẶC CHỒNG LÊN NHAU. Hãy tự động xoay góc nhìn trong trí óc (trái, phải, ngược, xuôi) để bóc tách toàn bộ sách nằm ngang ở phía trên hoặc xếp lệch.
-3. NHẬN DIỆN CHỮ VIẾT TAY / CHỮ VẼ NGHỆ THUẬT: Một số cuốn sử dụng font chữ viết tay hoặc vẽ nét mảnh cách điệu đen trắng (ví dụ gáy cuốn "Quyền lực bà bồng" chữ đen viết tay nguệch ngoạc). Bạn phải quan sát kỹ từng nét để suy luận từ vựng chính xác, không được bỏ qua!
-4. ĐỐI CHIẾU TRI THỨC VÀ TRÁNH LỖI GÁN TÁC GIẢ BÊN CẠNH:
-   - Nếu gáy sách bị khuyết tác giả (chỉ ghi tên sách, ví dụ cuốn "Bê Trầm"), hãy dùng tri thức của bạn để điền đúng tác giả (Bảo Ninh). Tuyệt đối không gán nhầm tên tác giả của cuốn sách bên cạnh (ví dụ gáy sách "Ba người khác" của "Tô Hoài" đứng kề bên) cho nó!
-   - Tuyệt đối không được đoán mò hoặc nhận diện sai lệch sang tác phẩm khác của tác giả khác (ví dụ: Không nhận diện nhầm "Đề Thám" của "E. Maliverney" thành "Dế mèn phiêu lưu ký" của Tô Hoài).
+DANH SÁCH SÁCH THAM KHẢO TRONG THƯ VIỆN NGƯỜI DÙNG (DÙNG ĐỂ ĐỐI CHIẾU SỬA LỖI):
+${existingReference}
 
-Đối với mỗi cuốn sách, trích xuất chuẩn xác các trường:
-- title: Tên sách (BẮT BUỘC ghi tiếng Việt chuẩn có dấu. Đối với sách Ngoại văn, giữ nguyên tên gốc chữ tượng hình/gốc kèm dịch trong ngoặc đơn, ví dụ: "活着 (Phải Sống)")
-- author: Tác giả (Tên chuẩn chữ phiên âm tiếng Việt hoặc tên gốc, ví dụ: "Bảo Ninh", "E. Maliverney", "Haruki Murakami")
+QUY TẮC PHÁT HIỆN THỊ GIÁC QUAN TRỌNG (BẮT BUỘC):
+1. QUÉT SÁT RÌA MÉP ẢNH (CỰC KỲ QUAN TRỌNG - KHÔNG ĐƯỢC BỎ SÓT): 
+   - Hãy rà soát cực kỳ cẩn thận từ quyển sách ngoài cùng bên trái (sát mép lề trái ảnh, ví dụ: "Hồi ký Phóng viên chiến trường" gáy màu sáng) cho đến quyển sách ngoài cùng bên phải (sát mép lề phải ảnh, ví dụ: "Quyền lực bà bồng" chữ đen nguệch ngoạc). 
+   - Tuyệt đối không bỏ qua sách ở rìa ngoài cùng tủ kệ chỉ vì ảnh hơi mờ hoặc nhầm lẫn với khung gỗ.
+2. PHÁT HIỆN SÁCH NẰM NGANG / ĐÈ LÊN NHAU: 
+   - Ở nhiều kệ sách, có các quyển sách xếp NẰM NGANG chồng lên nhau, hoặc nhét phía trên các quyển sách đứng thẳng. Bạn PHẢI quét sạch chúng, xoay góc nhìn chữ gáy sách ngang 90 độ để bóc tách chính xác tên sách và tác giả.
+3. NHẬN DIỆN PHÔNG CHỮ VIẾT TAY / CHỮ VẼ NGHỆ THUẬT: 
+   - Một số quyển có tên sách viết bằng nét mảnh, chữ viết tay nguệch ngoạc (ví dụ: gáy cuốn "Quyền lực bà bồng" chữ viết tay đen trên nền sáng) hoặc font chữ vẽ hoa văn kiểu cách. Bạn PHẢI quan sát kỹ từng nét để suy luận và đọc chuẩn xác, tuyệt đối không được bỏ sót!
+4. ĐỐI CHIẾU TRI THỨC VÀ TRÁNH LỖI GÁN NHẦM TÁC GIẢ BÊN CẠNH:
+   - Hãy so sánh kỹ văn bản bạn đọc được với "DANH SÁCH SÁCH THAM KHẢO TRONG THƯ VIỆN" ở trên. 
+   - Nếu gáy sách bị mờ nét hoặc nhận diện nhầm (ví dụ: quét ra "Bê trạm" nhưng thư viện có sẵn "Bè Trầm" của Bảo Ninh) thì PHẢI tự động khớp và sửa lại chính xác thành tên đúng trong thư viện là "Bè Trầm" và gán tác giả Bảo Ninh.
+   - Nếu gáy sách không in tác giả (ví dụ: gáy chỉ ghi "Bè Trầm" hay "Bê Trầm"), hãy dựa vào danh sách tham khảo hoặc tri thức của bạn để điền đúng tác giả là "Bảo Ninh". TUYỆT ĐỐI không được gán nhầm tên tác giả của quyển sách đứng liền kề bên cạnh (ví dụ gáy sách "Ba người khác" của "Tô Hoài" xếp sát cạnh).
+   - TUYỆT ĐỐI không được đoán mò hoặc tự ý thay thế sang tác phẩm khác của tác giả khác (ví dụ: không nhận diện nhầm "Đề Thám" của "E. Maliverney" thành "Dế mèn phiêu lưu ký" của "Tô Hoài").
+
+Đối với mỗi cuốn sách trích xuất được, trả về đúng các trường:
+- title: Tên sách chuẩn tiếng Việt có dấu. (Sách Ngoại văn giữ nguyên tên gốc chữ tượng hình/gốc kèm tên dịch trong ngoặc đơn, ví dụ: "活着 (Phải Sống)")
+- author: Tác giả chuẩn (ví dụ: "Bảo Ninh", "E. Maliverney", "Tô Hoài")
 - publisher: Nhà xuất bản / Công ty phát hành
-- publish_year: Năm xuất bản (số nguyên 4 chữ số hoặc null)
-- category: Thể loại sách tiếng Việt (ví dụ: Văn học, Kinh tế - Đầu tư, Lịch sử, Kỹ năng sống, Tâm lý học, Khoa học, Triết học, Thiếu nhi...)
+- publish_year: Năm xuất bản (số nguyên hoặc null)
+- category: Thể loại sách tiếng Việt đúng chuyên mục
 
 Trả về mảng JSON chứa các sách bóc tách được.`,
       });
