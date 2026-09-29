@@ -13,7 +13,7 @@ export const DEFAULT_CATEGORIES = Array.from(
 export const DEFAULT_SETTINGS: LibrarySettings = {
   autoEnrichEnabled: true,
   categoriesList: DEFAULT_CATEGORIES,
-  autoNormalizeEnabled: true,
+  autoNormalizeEnabled: false,
 };
 
 /**
@@ -92,6 +92,17 @@ export function deleteLocalBook(id: string): BookRecord[] {
 }
 
 /**
+ * 4b. XÓA HÀNG LOẠT CUỐN SÁCH THEO DANH SÁCH ID (Dùng khi lọc trùng hoặc dọn dẹp)
+ */
+export function batchDeleteLocalBooks(idsToDelete: string[]): BookRecord[] {
+  const current = loadLocalBooks();
+  const deleteSet = new Set(idsToDelete);
+  const updated = current.filter((b) => !deleteSet.has(b.id));
+  saveAllLocalBooks(updated);
+  return updated;
+}
+
+/**
  * 5. LƯU HÀNG LOẠT SÁCH (BATCH UPSERT)
  */
 export function batchUpsertLocalBooks(newOrUpdatedBooks: BookRecord[]): BookRecord[] {
@@ -144,7 +155,7 @@ export function loadLocalSettings(): LibrarySettings {
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
-        autoNormalizeEnabled: parsed.autoNormalizeEnabled ?? true,
+        autoNormalizeEnabled: parsed.autoNormalizeEnabled ?? false,
         categoriesList: parsed.categoriesList || DEFAULT_CATEGORIES,
       };
     }

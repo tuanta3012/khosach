@@ -8,6 +8,7 @@ import {
   saveAllLocalBooks,
   upsertLocalBook,
   deleteLocalBook,
+  batchDeleteLocalBooks,
   batchUpsertLocalBooks,
   resetLocalToMasterBooks,
   loadLocalSettings,
@@ -280,6 +281,13 @@ export default function App() {
     syncWithDrive(updatedBooks, 'MUTATION').catch(() => {});
   };
 
+  // Xóa hàng loạt cuốn sách theo danh sách ID (dùng khi lọc dọn dẹp sách trùng lặp)
+  const handleBatchDeleteBooks = async (idsToDelete: string[]) => {
+    const updatedBooks = batchDeleteLocalBooks(idsToDelete);
+    setBooks(updatedBooks);
+    syncWithDrive(updatedBooks, 'MUTATION').catch(() => {});
+  };
+
   // Xóa 1 cuốn sách
   const handleDeleteBook = async (id: string) => {
     const updatedBooks = deleteLocalBook(id);
@@ -424,6 +432,7 @@ export default function App() {
         onCheckUpdates={handleManualCheckUpdates}
         books={books}
         onBatchUpdateBooks={handleBatchUpdateBooks}
+        onBatchDeleteBooks={handleBatchDeleteBooks}
         isAutoNormalizing={isAutoNormalizing}
       />
 

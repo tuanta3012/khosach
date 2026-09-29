@@ -156,8 +156,6 @@ export function getGeminiApiKey(): string {
 
 const ALL_DIRECT_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash"];
 const directCooldownMap = new Map<string, number>();
-// Initialize 30-min cooldown for gemini-3.8-flash due to daily token quota exhaustion (25M tokens limit)
-directCooldownMap.set('gemini-3.8-flash', Date.now() + 30 * 60 * 1000);
 const directLastCallTimestamps = new Map<string, number>();
 
 function isDirectModelInCooldown(model: string): boolean {

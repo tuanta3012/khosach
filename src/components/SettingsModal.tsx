@@ -5,6 +5,7 @@ import { useToast } from '../context/ToastContext';
 import { CURRENT_APP_VERSION } from '../version';
 import { batchNormalize } from '../utils/geminiService';
 import { deduplicateBookList, groupDuplicateBooks, groupDuplicateBooksAsync, DuplicateGroup } from '../utils/fuzzyMatcher';
+import { saveAllLocalBooks } from '../utils/localBooksStorage';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -15,6 +16,7 @@ interface SettingsModalProps {
   onCheckUpdates?: () => void;
   books?: BookRecord[];
   onBatchUpdateBooks?: (updatedBooksList: BookRecord[]) => Promise<void>;
+  onBatchDeleteBooks?: (idsToDelete: string[]) => Promise<void>;
   isAutoNormalizing?: boolean;
 }
 
@@ -27,6 +29,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onCheckUpdates,
   books = [],
   onBatchUpdateBooks,
+  onBatchDeleteBooks,
   isAutoNormalizing = false,
 }) => {
   const { showToast } = useToast();
@@ -148,7 +151,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleConfirmKeepDuplicates = async () => {
-    if (!duplicateGroups || !onBatchUpdateBooks) return;
+    if (!duplicateGroups) return;
 
     // Kiểm tra nếu có nhóm nào bị bỏ chọn toàn bộ cuốn
     const emptyGroup = duplicateGroups.find((g) => (selectedKeepIds[g.id] || []).length === 0);
@@ -176,8 +179,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         return;
       }
 
-      const updatedBooks = books.filter((b) => !idsToDelete.has(b.id));
-      await onBatchUpdateBooks(updatedBooks);
+      const deleteIdsList = Array.from(idsToDelete);
+      if (onBatchDeleteBooks) {
+        await onBatchDeleteBooks(deleteIdsList);
+      } else {
+        const remainingBooks = books.filter((b) => !idsToDelete.has(b.id));
+        saveAllLocalBooks(remainingBooks);
+        if (onBatchUpdateBooks) {
+          await onBatchUpdateBooks(remainingBooks);
+        }
+      }
+
       showToast(`Đã dọn dẹp thành công! Đã xóa ${idsToDelete.size} cuốn trùng và giữ lại các cuốn đã chọn.`, 'success');
       setDuplicateGroups(null);
     } catch (err: any) {
