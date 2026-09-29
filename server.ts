@@ -178,6 +178,8 @@ Hãy đọc kỹ tất cả văn bản trong các ảnh này (chứa gáy sách,
 
 QUY TẮC NHẬN DIỆN VÀ HƯỚNG ĐỌC SÁCH LINH HOẠT (BẮT BUỘC):
 - Các cuốn sách trong ảnh có thể được xếp ĐỨNG, NẰM NGANG, HOẶC CHỒNG LÊN NHAU. Hãy xoay hướng đọc linh hoạt (trái, phải, ngược, xuôi) để bóc tách TOÀN BỘ các cuốn sách, tuyệt đối không bỏ sót bất kỳ quyển sách nào nằm ngang!
+- QUÉT KỸ RÌA NGOÀI CÙNG (CỰC KỲ QUAN TRỌNG): Hãy quét cẩn thận từ gáy sách ngoài cùng bên trái (sát mép viền ảnh) đến gáy sách ngoài cùng bên phải. Nhiều cuốn sách ở sát lề (ví dụ cuốn "Hồi ký Phóng viên chiến trường" sát lề trái, gáy trắng) dễ bị bỏ sót do AI lầm tưởng là viền gỗ kệ sách hoặc viền ảnh. Bạn phải đọc kỹ và bóc tách hết!
+- NHẬN DIỆN FONT CHỮ VIẾT TAY / CHỮ VẼ NGHỆ THUẬT: Nhiều gáy sách sử dụng font chữ vẽ tay nguệch ngoạc giống nét viết nháp bằng bút dạ hoặc bút chì (ví dụ cuốn "Quyền lực bà bồng" gáy trắng, chữ đen viết tay). Bạn phải căng mắt đọc cẩn thận để suy luận ra chữ, tuyệt đối không được coi đây là hình vẽ nguệch ngoạc trang trí hay nét vẽ bậy mà bỏ qua!
 
 QUY TẮC ĐỐI CHIẾU SỬA LỖI THÔNG MINH (BẮT BUỘC TRÁNH HALLUCINATION):
 - So sánh văn bản bóc tách được với danh sách sách hiện có bên dưới.
