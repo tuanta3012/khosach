@@ -4,7 +4,7 @@ import { LibrarySettings, BookRecord } from '../types';
 import { useToast } from '../context/ToastContext';
 import { CURRENT_APP_VERSION } from '../version';
 import { batchNormalize } from '../utils/geminiService';
-import { deduplicateBookList } from '../utils/fuzzyMatcher';
+import { deduplicateBookList, groupDuplicateBooks, DuplicateGroup } from '../utils/fuzzyMatcher';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -33,6 +33,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [isDeduplicating, setIsDeduplicating] = useState(false);
+
+  // States cho xử lý trùng lặp chọn lọc thủ công
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[] | null>(null);
+  const [selectedKeepIds, setSelectedKeepIds] = useState<Record<string, string>>({});
 
   // States cho chuẩn hóa bằng AI
   const [isNormalizing, setIsNormalizing] = useState(false);
@@ -119,17 +123,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (!books || books.length === 0) return;
     setIsDeduplicating(true);
     try {
-      const { cleanBooks, mergedCount } = deduplicateBookList(books);
-      if (mergedCount > 0 && onBatchUpdateBooks) {
-        await onBatchUpdateBooks(cleanBooks);
-        showToast(`Đã tự động gộp & dọn dẹp thành công ${mergedCount} cuốn sách trùng lặp! Kho sách sạch sẽ hoàn toàn.`, 'success');
+      const groups = groupDuplicateBooks(books);
+      if (groups.length > 0) {
+        // Mặc định chọn giữ lại cuốn đầu tiên trong từng nhóm trùng lặp
+        const selections: Record<string, string> = {};
+        groups.forEach((g) => {
+          selections[g.id] = g.books[0].id;
+        });
+        setDuplicateGroups(groups);
+        setSelectedKeepIds(selections);
       } else {
         showToast('Kho sách hoàn toàn sạch sẽ, không tìm thấy cuốn nào bị trùng!', 'success');
       }
     } catch (err: any) {
-      showToast(`Lỗi khi dọn dẹp sách trùng: ${err.message}`, 'error');
+      showToast(`Lỗi khi quét sách trùng: ${err.message}`, 'error');
     } finally {
       setIsDeduplicating(false);
+    }
+  };
+
+  const handleConfirmKeepDuplicates = async () => {
+    if (!duplicateGroups || !onBatchUpdateBooks) return;
+    setIsSaving(true);
+    try {
+      const idsToDelete = new Set<string>();
+      duplicateGroups.forEach((group) => {
+        const keepId = selectedKeepIds[group.id];
+        group.books.forEach((book) => {
+          if (book.id !== keepId) {
+            idsToDelete.add(book.id);
+          }
+        });
+      });
+
+      const updatedBooks = books.filter((b) => !idsToDelete.has(b.id));
+      await onBatchUpdateBooks(updatedBooks);
+      showToast(`Đã dọn dẹp sách trùng lặp thành công! Chỉ giữ lại những cuốn đã được chọn.`, 'success');
+      setDuplicateGroups(null);
+    } catch (err: any) {
+      showToast(`Lỗi khi gộp dọn sách trùng: ${err.message}`, 'error');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -193,8 +227,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
 
-        {/* Content */}
-        <div className="p-4 space-y-3.5 overflow-y-auto flex-1">
+        {/* Content & Footer */}
+        {duplicateGroups ? (
+          <div className="flex flex-col flex-1 overflow-hidden">
+            {/* List các nhóm trùng */}
+            <div className="p-4 space-y-3.5 overflow-y-auto flex-1 bg-slate-50">
+              {duplicateGroups.map((group) => {
+                const keepId = selectedKeepIds[group.id];
+                return (
+                  <div key={group.id} className="bg-white border border-slate-200/80 rounded-2xl p-2.5 shadow-2xs space-y-2">
+                    {group.books.map((book) => {
+                      const isSelected = keepId === book.id;
+                      return (
+                        <div
+                          key={book.id}
+                          onClick={() => setSelectedKeepIds((prev) => ({ ...prev, [group.id]: book.id }))}
+                          className={`flex items-start gap-2.5 p-2 rounded-xl border transition cursor-pointer select-none active:scale-[0.99] ${
+                            isSelected
+                              ? 'border-emerald-500 bg-emerald-50/40'
+                              : 'border-slate-100 hover:border-slate-200 bg-slate-50/20'
+                          }`}
+                        >
+                          <div className="mt-0.5 shrink-0">
+                            <div
+                              className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center transition ${
+                                isSelected
+                                  ? 'border-emerald-500 bg-emerald-500'
+                                  : 'border-slate-300 bg-white'
+                              }`}
+                            >
+                              {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                            </div>
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="font-bold text-slate-800 text-xs leading-snug break-words">
+                              {book.title}
+                            </div>
+                            <div className="text-slate-500 text-[10px] mt-0.5">
+                              Tác giả: <strong className="text-slate-700">{book.author || 'Khuyết danh'}</strong>
+                            </div>
+                            {(book.publisher || book.category) && (
+                              <div className="text-slate-400 text-[9px] mt-0.5 flex items-center gap-1.5">
+                                {book.publisher && <span>NXB: {book.publisher}</span>}
+                                {book.category && (
+                                  <span className="bg-slate-100 px-1 py-0.2 rounded-sm text-slate-500">
+                                    {book.category}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Confirm & Cancel Buttons */}
+            <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setDuplicateGroups(null)}
+                className="flex-1 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200/60 rounded-xl transition active:scale-95 whitespace-nowrap"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmKeepDuplicates}
+                disabled={isSaving}
+                className="flex-[2] flex items-center justify-center gap-1.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition disabled:opacity-50 active:scale-95 whitespace-nowrap"
+              >
+                {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                Xác nhận giữ lại
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Content */}
+            <div className="p-4 space-y-3.5 overflow-y-auto flex-1">
           {/* 1. Tự động dọn dẹp sách trùng lặp */}
           {onBatchUpdateBooks && (
             <div className="p-3 bg-emerald-50/70 rounded-2xl border border-emerald-100 flex items-center justify-between gap-3">
@@ -395,6 +510,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <span>Lưu Cấu Hình</span>
           </button>
         </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -217,3 +217,49 @@ export function deduplicateBookList(books: BookRecord[]): { cleanBooks: BookReco
 
   return { cleanBooks: result, mergedCount };
 }
+
+export interface DuplicateGroup {
+  id: string;
+  books: BookRecord[];
+}
+
+/**
+ * Phân nhóm tất cả các sách trùng lặp để hiển thị cho người dùng lựa chọn cuốn muốn giữ lại
+ */
+export function groupDuplicateBooks(books: BookRecord[]): DuplicateGroup[] {
+  const groups: DuplicateGroup[] = [];
+  const visited = new Set<string>();
+
+  for (let i = 0; i < books.length; i++) {
+    const book = books[i];
+    if (visited.has(book.id)) continue;
+
+    const dupBooks: BookRecord[] = [book];
+    
+    for (let j = i + 1; j < books.length; j++) {
+      const other = books[j];
+      if (visited.has(other.id)) continue;
+
+      const { isDuplicate } = checkDuplicateBook(
+        { title: book.title, author: book.author },
+        [other],
+        0.75
+      );
+
+      if (isDuplicate) {
+        dupBooks.push(other);
+        visited.add(other.id);
+      }
+    }
+
+    if (dupBooks.length > 1) {
+      visited.add(book.id);
+      groups.push({
+        id: `group_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 5)}`,
+        books: dupBooks,
+      });
+    }
+  }
+
+  return groups;
+}
