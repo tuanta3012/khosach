@@ -96,7 +96,7 @@ export async function testGeminiApiKey(candidateKey: string): Promise<{ success:
 
   // Thử gọi trực tiếp Google Gemini REST API (hỗ trợ cả Mobile / Android APK)
   try {
-    const testModel = 'gemini-3.5-flash-lite';
+    const testModel = 'gemini-3.1-flash-lite';
     const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${encodeURIComponent(cleanKey)}`;
     let directResp = await fetch(testUrl, {
       method: 'POST',
@@ -107,8 +107,8 @@ export async function testGeminiApiKey(candidateKey: string): Promise<{ success:
     });
 
     if (!directResp.ok) {
-      // Fallback test model gemini-1.5-flash
-      const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      // Fallback test model gemini-3.5-flash-lite
+      const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${encodeURIComponent(cleanKey)}`;
       const fbResp = await fetch(fallbackUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -154,12 +154,29 @@ export function getGeminiApiKey(): string {
   return "";
 }
 
-let lastCallTimestamp35 = 0;
-let lastCallTimestamp31 = 0;
+const ALL_DIRECT_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash"];
+const directCooldownMap = new Map<string, number>();
+// Initialize 30-min cooldown for gemini-3.8-flash due to daily token quota exhaustion (25M tokens limit)
+directCooldownMap.set('gemini-3.8-flash', Date.now() + 30 * 60 * 1000);
+const directLastCallTimestamps = new Map<string, number>();
+
+function isDirectModelInCooldown(model: string): boolean {
+  const cd = directCooldownMap.get(model);
+  if (!cd) return false;
+  if (Date.now() > cd) {
+    directCooldownMap.delete(model);
+    return false;
+  }
+  return true;
+}
+
+function markDirectModelCooldown(model: string, durationMs: number) {
+  directCooldownMap.set(model, Date.now() + durationMs);
+}
 
 /**
- * Direct fetch helper with Dual Engine load balancer (Gemini 3.5 Flash Lite + Gemini 3.1 Flash Lite),
- * rate limit throttle (RPM 15 guard per engine), 429 retry, and model failover
+ * Direct fetch helper with Multi Engine load balancer (Gemini 3.8 Flash + Gemini 3.1 Flash Lite + Gemini 3.5 Flash Lite),
+ * rate limit throttle (RPM 15 guard per engine), 429 cooldown retry, and model failover
  */
 async function callGeminiDirect(payload: any, preferredModel?: string): Promise<any> {
   const apiKey = getGeminiApiKey();
@@ -167,40 +184,26 @@ async function callGeminiDirect(payload: any, preferredModel?: string): Promise<
     throw new Error("Không tìm thấy Gemini API Key. Hãy khai báo API Key hoặc cấu hình trong ứng dụng.");
   }
 
-  const now = Date.now();
-  const waitTime35 = Math.max(0, 2800 - (now - lastCallTimestamp35));
-  const waitTime31 = Math.max(0, 2800 - (now - lastCallTimestamp31));
-
-  let primaryModel = "gemini-3.5-flash-lite";
-  let modelsToTry = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite"
-  ];
+  const healthy = ALL_DIRECT_MODELS.filter((m) => !isDirectModelInCooldown(m));
+  const cooling = ALL_DIRECT_MODELS.filter((m) => isDirectModelInCooldown(m));
+  let modelsToTry = [...healthy, ...cooling];
 
   if (preferredModel) {
-    primaryModel = preferredModel;
     modelsToTry = [preferredModel, ...modelsToTry.filter(m => m !== preferredModel)];
-  } else if (waitTime31 < waitTime35) {
-    primaryModel = "gemini-3.1-flash-lite";
-    modelsToTry = [
-      "gemini-3.1-flash-lite",
-      "gemini-3.5-flash-lite"
-    ];
   }
 
-  // Throttle per engine
-  if (primaryModel === "gemini-3.5-flash-lite") {
-    if (waitTime35 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime35));
-    lastCallTimestamp35 = Date.now();
-  } else if (primaryModel === "gemini-3.1-flash-lite") {
-    if (waitTime31 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime31));
-    lastCallTimestamp31 = Date.now();
-  }
+  const executeWithModel = async (modelName: string, retries = 1): Promise<any> => {
+    // Throttle per engine (~2.5s between calls to the same model)
+    const lastCall = directLastCallTimestamps.get(modelName) || 0;
+    const waitTime = Math.max(0, 2500 - (Date.now() - lastCall));
+    if (waitTime > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
+    }
+    directLastCallTimestamps.set(modelName, Date.now());
 
-  const executeWithModel = async (modelName: string, retries = 2): Promise<any> => {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
     try {
-      console.log(`[GeminiService Dual-Engine] Calling model ${modelName}...`);
+      console.log(`[GeminiService Multi-Engine] Calling model ${modelName}...`);
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -210,11 +213,17 @@ async function callGeminiDirect(payload: any, preferredModel?: string): Promise<
       if (!response.ok) {
         const errorDetails = await response.json().catch(() => ({}));
         const message = errorDetails?.error?.message || `HTTP ${response.status}`;
+        const isQuota = response.status === 429 || message.toLowerCase().includes('quota') || message.toLowerCase().includes('resource_exhausted');
         
-        // Nếu dính lỗi 429 Quota/Rate Limit và còn lượt thử -> chờ 4s rồi thử lại
-        if ((response.status === 429 || message.toLowerCase().includes('quota')) && retries > 0) {
-          console.warn(`[GeminiService] Rate limit 429 hit on ${modelName}. Retrying in 4s... (${retries} left)`);
-          await new Promise((res) => setTimeout(res, 4000));
+        if (isQuota) {
+          const isDaily = message.toLowerCase().includes('day') || message.includes('500');
+          const cdMs = isDaily ? 15 * 60 * 1000 : 8000;
+          markDirectModelCooldown(modelName, cdMs);
+          console.warn(`[GeminiService] Rate limit / Quota hit on ${modelName}. Cooling down for ${cdMs / 1000}s.`);
+        }
+
+        if (isQuota && retries > 0) {
+          await new Promise((res) => setTimeout(res, 3000));
           return await executeWithModel(modelName, retries - 1);
         }
 
@@ -228,8 +237,8 @@ async function callGeminiDirect(payload: any, preferredModel?: string): Promise<
       }
       return JSON.parse(textOutput.trim());
     } catch (err: any) {
-      if (retries > 0 && err.message?.includes('429')) {
-        await new Promise((res) => setTimeout(res, 4000));
+      if (retries > 0 && (err.message?.includes('429') || err.message?.includes('quota'))) {
+        await new Promise((res) => setTimeout(res, 3000));
         return await executeWithModel(modelName, retries - 1);
       }
       throw err;
@@ -331,7 +340,7 @@ export async function scanImages(
       });
 
       const existingReference = Array.isArray(existingBooks) && existingBooks.length > 0
-        ? existingBooks.slice(0, 1000).map((b: any) => `- "${b.title}" của ${b.author || 'Khuyết danh'} (${b.category || 'Chung'})`).join('\n')
+        ? existingBooks.slice(0, 60).map((b: any) => `"${b.title}" (${b.author || 'Khuyết danh'})`).join(', ')
         : 'Chưa có sách nào.';
 
       parts.push({

@@ -51,59 +51,76 @@ function sanitizeSingleCategory(rawCategory: string): string {
   return first || 'Chung';
 }
 
-let lastCallTimestamp35 = 0;
-let lastCallTimestamp31 = 0;
+const ALL_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+const modelCooldownMap = new Map<string, number>();
+// Initialize 30-min cooldown for gemini-3.8-flash due to daily token quota exhaustion (25M tokens limit)
+modelCooldownMap.set('gemini-3.8-flash', Date.now() + 30 * 60 * 1000);
+const lastCallTimestamps = new Map<string, number>();
+
+function isModelInCooldown(model: string): boolean {
+  const cd = modelCooldownMap.get(model);
+  if (!cd) return false;
+  if (Date.now() > cd) {
+    modelCooldownMap.delete(model);
+    return false;
+  }
+  return true;
+}
+
+function markModelCooldown(model: string, durationMs: number) {
+  modelCooldownMap.set(model, Date.now() + durationMs);
+}
+
+function getAvailableModels(preferredModel?: string): string[] {
+  const healthy = ALL_MODELS.filter((m) => !isModelInCooldown(m));
+  const cooling = ALL_MODELS.filter((m) => isModelInCooldown(m));
+  let ordered = [...healthy, ...cooling];
+  if (preferredModel) {
+    ordered = [preferredModel, ...ordered.filter((m) => m !== preferredModel)];
+  }
+  return ordered;
+}
 
 async function generateContentWithFallback(params: { contents: any; config?: any; apiKey?: string; preferredModel?: string }) {
   const aiClient = getAiClient(params.apiKey);
-  const now = Date.now();
-
-  // Đánh giá thời gian chờ cho từng model pool (Target ~15 RPM = ~2.8s throttle per model pool)
-  const waitTime35 = Math.max(0, 2800 - (now - lastCallTimestamp35));
-  const waitTime31 = Math.max(0, 2800 - (now - lastCallTimestamp31));
-
-  let primaryModel = 'gemini-3.5-flash-lite';
-  let modelsToTry = [
-    'gemini-3.5-flash-lite',
-    'gemini-3.1-flash-lite',
-  ];
-
-  if (params.preferredModel) {
-    primaryModel = params.preferredModel;
-    modelsToTry = [params.preferredModel, ...modelsToTry.filter((m) => m !== params.preferredModel)];
-  } else if (waitTime31 < waitTime35) {
-    primaryModel = 'gemini-3.1-flash-lite';
-    modelsToTry = [
-      'gemini-3.1-flash-lite',
-      'gemini-3.5-flash-lite',
-    ];
-  }
-
-  // Cập nhật timestamp cho model được chọn làm primary để đảm bảo RPM < 15 (~3.5s per request)
-  if (primaryModel === 'gemini-3.5-flash-lite') {
-    if (waitTime35 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime35));
-    lastCallTimestamp35 = Date.now();
-  } else if (primaryModel === 'gemini-3.1-flash-lite') {
-    if (waitTime31 > 0) await new Promise((resolve) => setTimeout(resolve, waitTime31));
-    lastCallTimestamp31 = Date.now();
-  }
+  const modelsToTry = getAvailableModels(params.preferredModel);
 
   let lastError: any = null;
   for (const modelName of modelsToTry) {
     try {
-      console.log(`[Server AI Dual-Engine] Requesting model: ${modelName}`);
-      return await aiClient.models.generateContent({
+      // Throttle per model to keep within RPM limits (~2.5s between calls to the same model)
+      const lastCall = lastCallTimestamps.get(modelName) || 0;
+      const waitTime = Math.max(0, 2500 - (Date.now() - lastCall));
+      if (waitTime > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      }
+      lastCallTimestamps.set(modelName, Date.now());
+
+      console.log(`[Server AI Multi-Engine] Requesting model: ${modelName}`);
+      const res = await aiClient.models.generateContent({
         model: modelName,
         contents: params.contents,
         config: params.config,
       });
+      return res;
     } catch (err: any) {
-      console.warn(`[Server AI Dual-Engine] Model ${modelName} failed (${err.message || err}).`);
+      console.warn(`[Server AI Multi-Engine] Model ${modelName} failed (${err.message || err}).`);
       lastError = err;
+
+      // Handle 429 quota exhaustion, 503 high demand, and rate limiting
+      const errMsg = (err.message || String(err)).toLowerCase();
+      const isQuotaOrLimit = err.status === 429 || err.status === 503 || errMsg.includes('429') || errMsg.includes('503') || errMsg.includes('quota') || errMsg.includes('resource_exhausted') || errMsg.includes('high demand');
+
+      if (isQuotaOrLimit) {
+        const isDailyOrExhausted = errMsg.includes('day') || errMsg.includes('500') || errMsg.includes('tokens_per_model') || errMsg.includes('25000000') || errMsg.includes('high demand');
+        const cdMs = isDailyOrExhausted ? 30 * 60 * 1000 : 8000;
+        markModelCooldown(modelName, cdMs);
+        console.warn(`[Server AI Multi-Engine] ${modelName} cooldown for ${cdMs / 1000}s. Trying next available model...`);
+      }
     }
   }
 
-  throw lastError || new Error("Cả 2 model (3.5-flash-lite, 3.1-flash-lite) đều tạm thời gián đoạn.");
+  throw lastError || new Error("Tất cả các AI models đều tạm thời gián đoạn.");
 }
 
 // API: Kiểm tra tính hợp lệ của Gemini API Key (Có Tự động Fallback sang các Model dự phòng)
@@ -163,7 +180,7 @@ app.post('/api/books/scan-images', async (req, res) => {
       }
 
       const existingReference = Array.isArray(existingBooks) && existingBooks.length > 0
-        ? existingBooks.slice(0, 1000).map((b: any) => `- "${b.title}" của ${b.author || 'Khuyết danh'} (${b.category || 'Chung'})`).join('\n')
+        ? existingBooks.slice(0, 60).map((b: any) => `"${b.title}" (${b.author || 'Khuyết danh'})`).join(', ')
         : 'Chưa có sách nào.';
 
       parts.push({
@@ -226,16 +243,20 @@ Trả về mảng JSON chứa các sách bóc tách được.`,
 
     let allExtractedBooks: any[] = [];
 
-    // Nếu gửi từ 2 ảnh trở lên, chia song song 2 luồng Engine 3.5 & Engine 3.1
+    // Nếu gửi từ 2 ảnh trở lên, chia song song 2 luồng Engine
     if (images.length >= 2) {
       const mid = Math.ceil(images.length / 2);
       const chunkA = images.slice(0, mid);
       const chunkB = images.slice(mid);
 
-      console.log(`[Server AI] Executing parallel dual-engine scan: ${chunkA.length} images on Engine A, ${chunkB.length} images on Engine B`);
+      const available = getAvailableModels();
+      const engineA = available[0] || 'gemini-3.8-flash';
+      const engineB = available.find((m) => m !== engineA && !isModelInCooldown(m)) || available[1] || 'gemini-3.1-flash-lite';
+
+      console.log(`[Server AI] Executing parallel multi-engine scan: ${chunkA.length} images on ${engineA}, ${chunkB.length} images on ${engineB}`);
       const [resA, resB] = await Promise.all([
-        processImageChunk(chunkA, 'gemini-3.5-flash-lite').catch(() => []),
-        processImageChunk(chunkB, 'gemini-3.1-flash-lite').catch(() => []),
+        processImageChunk(chunkA, engineA).catch(() => processImageChunk(chunkA, engineB)).catch(() => []),
+        processImageChunk(chunkB, engineB).catch(() => processImageChunk(chunkB, engineA)).catch(() => []),
       ]);
       allExtractedBooks = [...(resA || []), ...(resB || [])];
     } else {
@@ -357,16 +378,20 @@ Hãy trả về một mảng JSON mới có cấu trúc tương ứng, giữ ngu
 
     let normalizedResults: any[] = [];
 
-    // Nếu từ 4 sách trở lên, chia song song 2 luồng Engine 3.5 & Engine 3.1
+    // Nếu từ 4 sách trở lên, chia song song 2 luồng Engine
     if (books.length >= 4) {
       const mid = Math.ceil(books.length / 2);
       const chunkA = books.slice(0, mid);
       const chunkB = books.slice(mid);
 
-      console.log(`[Server AI] Executing parallel batch normalize: ${chunkA.length} books on Engine A, ${chunkB.length} books on Engine B`);
+      const available = getAvailableModels();
+      const engineA = available[0] || 'gemini-3.8-flash';
+      const engineB = available.find((m) => m !== engineA && !isModelInCooldown(m)) || available[1] || 'gemini-3.1-flash-lite';
+
+      console.log(`[Server AI] Executing parallel batch normalize: ${chunkA.length} books on ${engineA}, ${chunkB.length} books on ${engineB}`);
       const [resA, resB] = await Promise.all([
-        processNormalizeChunk(chunkA, 'gemini-3.5-flash-lite').catch(() => []),
-        processNormalizeChunk(chunkB, 'gemini-3.1-flash-lite').catch(() => []),
+        processNormalizeChunk(chunkA, engineA).catch(() => processNormalizeChunk(chunkA, engineB)).catch(() => []),
+        processNormalizeChunk(chunkB, engineB).catch(() => processNormalizeChunk(chunkB, engineA)).catch(() => []),
       ]);
       normalizedResults = [...(resA || []), ...(resB || [])];
     } else {

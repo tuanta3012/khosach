@@ -26,7 +26,7 @@ export function normalizeForComparison(raw: string): string {
   if (!raw) return '';
   const noDau = removeVietnameseTones(raw);
   // Giữ nguyên các ký tự chữ cái Unicode (\p{L}), số (\p{N}) và khoảng trắng
-  return noDau.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+  return noDau.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -63,15 +63,6 @@ export function stringSimilarity(str1: string, str2: string): number {
   if (!s1 || !s2) return 0.0;
   if (s1 === s2) return 1.0;
 
-  // Kiểm tra nếu 1 chuỗi chứa chuỗi còn lại (ví dụ tên dịch kèm ngoặc)
-  if (s1.includes(s2) || s2.includes(s1)) {
-    const minLen = Math.min(s1.length, s2.length);
-    const maxLen = Math.max(s1.length, s2.length);
-    if (minLen >= 2 && minLen / maxLen >= 0.35) {
-      return 0.88;
-    }
-  }
-
   const maxLen = Math.max(s1.length, s2.length);
   if (maxLen === 0) return 1.0;
 
@@ -86,6 +77,7 @@ export function canonicalizeVolume(rawVol: string): string {
   if (!rawVol) return '';
   const v = rawVol.toLowerCase().trim();
 
+  // Roman numerals: I -> 1, II -> 2, etc. (chỉ xét từ 1 đến 20)
   const romanMap: Record<string, string> = {
     i: '1',
     ii: '2',
@@ -102,6 +94,11 @@ export function canonicalizeVolume(rawVol: string): string {
     xiii: '13',
     xiv: '14',
     xv: '15',
+    xvi: '16',
+    xvii: '17',
+    xviii: '18',
+    xix: '19',
+    xx: '20',
   };
   if (romanMap[v]) return romanMap[v];
 
@@ -127,8 +124,12 @@ export function canonicalizeVolume(rawVol: string): string {
   };
   if (wordMap[v]) return wordMap[v];
 
+  // Nếu là số: loại bỏ số 0 ở đầu (01 -> 1)
   if (/^\d+$/.test(v)) {
-    return String(parseInt(v, 10));
+    const num = parseInt(v, 10);
+    // Nếu là năm (>= 1800) -> KHÔNG PHẢI SỐ TẬP!
+    if (num >= 1800) return '';
+    return String(num);
   }
 
   if (v === 'thuong' || v === 'ha' || v === 'trung') {
@@ -139,135 +140,401 @@ export function canonicalizeVolume(rawVol: string): string {
 }
 
 /**
- * Trích xuất thông tin tập (Tập 1, Tập 2, Vol, Phần, Quyển...) và tiêu đề sạch không chứa số tập
+ * Bóc tách thông tin tập, ấn bản, và tên sách gốc sạch sẽ
  */
-export function extractVolumeInfo(rawTitle: string): { volume: string | null; cleanTitle: string } {
-  if (!rawTitle) return { volume: null, cleanTitle: '' };
+export function extractBookMetadata(rawTitle: string): {
+  cleanTitle: string;
+  volume: string | null;
+  seriesPrefix: string | null;
+  seriesSubtitle: string | null;
+  editionNote: string | null;
+} {
+  if (!rawTitle) {
+    return { cleanTitle: '', volume: null, seriesPrefix: null, seriesSubtitle: null, editionNote: null };
+  }
 
-  const norm = removeVietnameseTones(rawTitle).toLowerCase().trim();
-  const standardized = norm.replace(/[–—−]/g, '-');
+  let title = rawTitle.trim();
+  let volume: string | null = null;
+  let editionNote: string | null = null;
 
-  let rawVol: string | null = null;
-  let clean = rawTitle;
+  // 1. Bóc tách và loại bỏ các ghi chú tái bản / năm xuất bản / định dạng bìa trong ngoặc đơn hoặc ngoặc vuông
+  // Ví dụ: (Tái bản 2023), (2021), [Bìa cứng], (NXB Kim Đồng), (Bản dịch mới), (Bộ 3 cuốn)
+  const editionRegex = /[\(\[]\s*(?:tái bản|tai ban|nxb|in lần|in lan|năm|nam|bìa|bia|khổ|kho|bản dịch|ban dich|trọn bộ|tron bo|boxset|đặc biệt|dac biet|kèm|kem|\d{4})[^)\]]*[\)\]]/gi;
+  const editionMatches = title.match(editionRegex);
+  if (editionMatches) {
+    editionNote = editionMatches.join(' ');
+    title = title.replace(editionRegex, ' ').trim();
+  }
 
-  // 1. Khớp các từ khóa tập phổ biến: tap, vol, quyen, phan, part, bo, hoi
-  const keywordRegex = /\b(?:tap|vol(?:ume)?|quyen|phan|part|bo|hoi)\s*(?:so\s*)?([0-9]+|[ivxlcdm]+|thuong|trung|ha|mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b/i;
-  const matchKeyword = standardized.match(keywordRegex);
+  // Loại bỏ các năm xuất bản đứng lẻ ở cuối tiêu đề: ví dụ " - 2022", " 2020", " [2021]"
+  title = title.replace(/(?:[-–—\s,]+)\b(19\d\d|20\d\d)\b\s*$/g, '').trim();
+
+  // Chuẩn hóa dấu gạch ngang
+  const normTitle = removeVietnameseTones(title).toLowerCase().replace(/[–—−]/g, '-');
+
+  // 2. Nhận diện từ khóa tập rõ ràng: tập, vol, volume, quyển, phần, cuốn, part, book, hồi, bộ
+  // Ví dụ: "Tập 1", "Tập I", "Vol. 2", "Phần 3", "Quyển Thượng", "Tập một"
+  const keywordRegex = /\b(?:tap|vol(?:ume)?|quyen|phan|cuon|part|book|hoi|bo)\s*(?:so\s*)?([0-9]+|[ivxlcdm]+|thuong|trung|ha|mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b/i;
+  const matchKeyword = normTitle.match(keywordRegex);
 
   if (matchKeyword) {
-    rawVol = matchKeyword[1];
-    const origKeywordRegex = /(?:[-–—\s,(:/[]+)?\b(?:t[aậ]p|vol(?:ume)?|quy[eể]n|ph[aầ]n|part|b[oộ]|h[oồ]i)\s*(?:s[oố]\s*)?(?:[0-9]+|[ivxlcdm]+|th[uư][oợ]ng|trung|h[aạ]|m[oộ]t|hai|ba|b[oố]n|n[aă]m|s[aá]u|b[aả]y|t[aá]m|ch[ií]n|m[uư][oờ]i)\b[\)\]]?/i;
-    clean = clean.replace(origKeywordRegex, '').trim();
+    const rawVol = matchKeyword[1];
+    const canon = canonicalizeVolume(rawVol);
+    if (canon) {
+      volume = canon;
+      // Xóa phần tập ra khỏi title
+      const origKeywordRegex = /(?:[-–—\s,(:/[]+)?\b(?:t[aậ]p|vol(?:ume)?|quy[eể]n|ph[aầ]n|cu[oố]n|part|book|h[oồ]i|b[oộ])\s*(?:s[oố]\s*)?(?:[0-9]+|[ivxlcdm]+|th[uư][oợ]ng|trung|h[aạ]|m[oộ]t|hai|ba|b[oố]n|n[aă]m|s[aá]u|b[aả]y|t[aá]m|ch[ií]n|m[uư][oờ]i)\b[\)\]]?/i;
+      title = title.replace(origKeywordRegex, ' ').trim();
+    }
   } else {
-    // 2. Khớp các ký hiệu viết tắt ở cuối tiêu đề: ví dụ " - T1", " - T2", "T.1", "T.2", "Q.1", hoặc " - 1", " - 2", " #1", " #2", "(1)", "(2)"
-    const shorthandRegex = /(?:[-–—\s,(:/[]+)(?:t|q|v)?\.?\s*#?\s*([0-9]+|[ivxlcdm]+)\s*[\)\]]?$/i;
-    const matchShorthand = standardized.match(shorthandRegex);
+    // 3. Nhận diện ký hiệu viết tắt ở cuối tiêu đề: ví dụ " - T1", " - T.2", " - Q1", " #1", " - 1", " - 2"
+    // Chú ý: [0-9]{1,2} chỉ lấy số từ 1 đến 99, TUYỆT ĐỐI không lấy năm 2023!
+    const shorthandRegex = /(?:[-–—\s,(:/[]+)(?:t|q|v)?\.?\s*#?\s*([0-9]{1,2}|[ivxlcdm]{1,5})\s*[\)\]]?$/i;
+    const matchShorthand = normTitle.match(shorthandRegex);
     if (matchShorthand) {
-      rawVol = matchShorthand[1];
-      clean = clean.replace(/(?:[-–—\s,(:/[]+)(?:t|q|v)?\.?\s*#?\s*(?:[0-9]+|[ivxlcdm]+)\s*[\)\]]?$/i, '').trim();
+      const rawVol = matchShorthand[1];
+      const canon = canonicalizeVolume(rawVol);
+      if (canon) {
+        volume = canon;
+        title = title.replace(/(?:[-–—\s,(:/[]+)(?:t|q|v)?\.?\s*#?\s*(?:[0-9]{1,2}|[ivxlcdm]{1,5})\s*[\)\]]?$/i, ' ').trim();
+      }
     }
   }
 
-  clean = clean.replace(/[-–—\s,(:/[\]]+$/, '').trim();
-  const volume = rawVol ? canonicalizeVolume(rawVol) : null;
-  return { volume, cleanTitle: clean || rawTitle };
+  // Dọn dẹp dấu câu thừa ở cuối tiêu đề sau khi bóc tách tập
+  title = title.replace(/[-–—\s,(:/[\]]+$/, '').replace(/^[-–—\s,(:/[\]]+/, '').trim();
+
+  // 4. Phân tích Series Prefix & Subtitle:
+  // Ví dụ: "Harry Potter và Hòn đá Phù thủy", "Chúa tể những chiếc nhẫn: Hai tòa tháp", "Sapiens - Lược sử loài người"
+  let seriesPrefix: string | null = null;
+  let seriesSubtitle: string | null = null;
+
+  // Dấu phân cách: " - ", ": ", " – ", " — "
+  const separatorMatch = title.match(/^(.*?)\s*[-–—:]\s*(.*)$/);
+  if (separatorMatch && separatorMatch[1].trim().length >= 3 && separatorMatch[2].trim().length >= 2) {
+    seriesPrefix = separatorMatch[1].trim();
+    seriesSubtitle = separatorMatch[2].trim();
+  }
+
+  return {
+    cleanTitle: title || rawTitle.trim(),
+    volume,
+    seriesPrefix,
+    seriesSubtitle,
+    editionNote,
+  };
 }
 
 /**
- * Kiểm tra xem 1 bản ghi sách mới có bị trùng với kho sách hiện tại hay không
- * Sử dụng Fuzzy Matching thông minh trên Tên sách (title) và Tác giả (author)
- * BẢO VỆ CHỐNG NHẬN DIỆN SAI CÁC BỘ SÁCH NHIỀU TẬP (Tập 1, Tập 2, Vol 1, Vol 2...)
+ * Tương thích ngược: Trích xuất thông tin tập (Tập 1, Tập 2, Vol, Phần, Quyển...)
  */
-export function checkDuplicateBook(
-  item: { title: string; author?: string },
-  existingBooks: BookRecord[],
-  threshold = 0.75
-): { isDuplicate: boolean; matchedBook?: BookRecord; score: number } {
-  if (!item.title) return { isDuplicate: false, score: 0 };
+export function extractVolumeInfo(rawTitle: string): { volume: string | null; cleanTitle: string } {
+  const meta = extractBookMetadata(rawTitle);
+  return { volume: meta.volume, cleanTitle: meta.cleanTitle };
+}
 
-  const volItem = extractVolumeInfo(item.title);
-  const normTitle = normalizeForComparison(item.title);
-  const normTitleClean = normalizeForComparison(volItem.cleanTitle.replace(/\(.*?\)/g, ''));
-  const normAuthor = normalizeForComparison(item.author || '');
+/**
+ * So sánh 2 tên tác giả xem có phải cùng 1 người hay tương thích không
+ */
+export function areAuthorsCompatible(
+  author1?: string,
+  author2?: string
+): { compatible: boolean; confidence: number; isKnownDifferent: boolean } {
+  const a1 = normalizeForComparison(author1 || '');
+  const a2 = normalizeForComparison(author2 || '');
 
-  let bestMatch: BookRecord | undefined = undefined;
-  let highestScore = 0;
+  // Nếu một trong 2 chưa có tác giả hoặc là khuyết danh -> Tương thích (không coi là khác tác giả)
+  const isAnonymous1 = !a1 || a1 === 'khuyet danh' || a1 === 'chua ro' || a1 === 'nhieu tac gia';
+  const isAnonymous2 = !a2 || a2 === 'khuyet danh' || a2 === 'chua ro' || a2 === 'nhieu tac gia';
 
-  for (const book of existingBooks) {
-    if (!book.title) continue;
+  if (isAnonymous1 || isAnonymous2) {
+    return { compatible: true, confidence: 0.5, isKnownDifferent: false };
+  }
 
-    const volBook = extractVolumeInfo(book.title);
+  // Tên giống hệt nhau
+  if (a1 === a2) {
+    return { compatible: true, confidence: 1.0, isKnownDifferent: false };
+  }
 
-    // BẢO VỆ SÁCH NHIỀU TẬP (Multi-volume Series Protection):
-    // 1. Nếu cả 2 cuốn đều có chỉ số tập và KHÁC NHAU (ví dụ Tập 1 vs Tập 2, Thượng vs Hạ) -> Tuyệt đối KHÔNG TRÙNG!
-    if (volItem.volume && volBook.volume && volItem.volume !== volBook.volume) {
-      continue;
+  // Kiểm tra tên viết tắt / họ tên: ví dụ "j k rowling" vs "rowling" hoặc "dale carnegie" vs "d carnegie"
+  const words1 = a1.split(/\s+/);
+  const words2 = a2.split(/\s+/);
+
+  const lastName1 = words1[words1.length - 1];
+  const lastName2 = words2[words2.length - 1];
+  const firstName1 = words1[0];
+  const firstName2 = words2[0];
+
+  if (lastName1 === lastName2 && (firstName1 === firstName2 || words1.length === 1 || words2.length === 1)) {
+    return { compatible: true, confidence: 0.85, isKnownDifferent: false };
+  }
+
+  const sim = stringSimilarity(a1, a2);
+  if (sim >= 0.70) {
+    return { compatible: true, confidence: sim, isKnownDifferent: false };
+  }
+
+  // Rõ ràng là 2 tác giả khác nhau (ví dụ: Trần Trọng Kim vs Đào Duy Anh, Murakami vs Dale Carnegie)
+  return { compatible: false, confidence: sim, isKnownDifferent: true };
+}
+
+/**
+ * Thuật toán kiểm tra trùng lặp sách thông minh chuẩn xác cao (High-Precision Smart Deduplicator)
+ */
+export function isTrueDuplicate(
+  bookA: { title: string; author?: string; publisher?: string },
+  bookB: { title: string; author?: string; publisher?: string }
+): { isDuplicate: boolean; score: number; reason: string } {
+  if (!bookA.title || !bookB.title) {
+    return { isDuplicate: false, score: 0, reason: 'Thiếu tên sách' };
+  }
+
+  // 1. KIỂM TRA TÁC GIẢ: Nếu cả 2 cuốn đều có tác giả và là 2 tác giả KHÁC HẲN NHAU -> TUYỆT ĐỐI KHÔNG TRÙNG!
+  const authorCheck = areAuthorsCompatible(bookA.author, bookB.author);
+  if (authorCheck.isKnownDifferent) {
+    return {
+      isDuplicate: false,
+      score: 0,
+      reason: `Khác tác giả: "${bookA.author}" vs "${bookB.author}"`,
+    };
+  }
+
+  // 2. BÓC TÁCH METADATA (TẬP, NĂM, PHỤ ĐỀ)
+  const metaA = extractBookMetadata(bookA.title);
+  const metaB = extractBookMetadata(bookB.title);
+
+  // 3. BẢO VỆ SÁCH NHIỀU TẬP (Multi-volume Series Protection):
+  // - Nếu cả 2 cuốn đều có số tập và số tập KHÁC NHAU (Tập 1 vs Tập 2, Thượng vs Hạ, I vs II) -> TUYỆT ĐỐI KHÔNG TRÙNG!
+  if (metaA.volume && metaB.volume && metaA.volume !== metaB.volume) {
+    return {
+      isDuplicate: false,
+      score: 0,
+      reason: `Khác tập: Tập ${metaA.volume} vs Tập ${metaB.volume}`,
+    };
+  }
+
+  // - Nếu một cuốn là tập 2 trở lên (hoặc Trung/Hạ) và cuốn kia là tập 1 hoặc không ghi số tập -> TUYỆT ĐỐI KHÔNG TRÙNG!
+  const isLaterVol = (v: string | null) => v !== null && v !== '1' && v !== 'thuong';
+  if ((isLaterVol(metaA.volume) && !metaB.volume) || (isLaterVol(metaB.volume) && !metaA.volume)) {
+    return {
+      isDuplicate: false,
+      score: 0,
+      reason: `Một cuốn là phần tiếp theo (${metaA.volume || metaB.volume}), cuốn kia không ghi tập`,
+    };
+  }
+
+  // 4. KIỂM TRA CÙNG SERIES NHƯNG KHÁC TỰA CON / PHỤ ĐỀ
+  // Ví dụ:
+  // "Harry Potter và Hòn đá Phù thủy" vs "Harry Potter và Phòng chứa Bí mật"
+  // "Lịch sử văn minh: Ấn Độ" vs "Lịch sử văn minh: Ả Rập"
+  // "Chúa tể những chiếc nhẫn: Đoàn hộ nhẫn" vs "Chúa tể những chiếc nhẫn: Hai tòa tháp"
+  const normCleanA = normalizeForComparison(metaA.cleanTitle);
+  const normCleanB = normalizeForComparison(metaB.cleanTitle);
+
+  // Kiểm tra nếu có phân cách "Series: Subtitle" hoặc "Series - Subtitle"
+  if (metaA.seriesPrefix && metaB.seriesPrefix) {
+    const prefixSim = stringSimilarity(metaA.seriesPrefix, metaB.seriesPrefix);
+    if (prefixSim >= 0.85) {
+      if (metaA.seriesSubtitle && metaB.seriesSubtitle) {
+        const subSim = stringSimilarity(metaA.seriesSubtitle, metaB.seriesSubtitle);
+        if (subSim < 0.6) {
+          return {
+            isDuplicate: false,
+            score: 0,
+            reason: `Cùng bộ "${metaA.seriesPrefix}" nhưng khác tựa con: "${metaA.seriesSubtitle}" vs "${metaB.seriesSubtitle}"`,
+          };
+        }
+      }
     }
+  }
 
-    // 2. Nếu một cuốn là tập tiếp theo (Tập 2, 3, 4... hoặc Hạ/Trung) trong khi cuốn kia không ghi số tập -> Tuyệt đối KHÔNG TRÙNG!
-    const isContinuingVol = (v: string | null) => v !== null && v !== '1' && v !== 'thuong';
-    if (
-      (isContinuingVol(volItem.volume) && !volBook.volume) ||
-      (isContinuingVol(volBook.volume) && !volItem.volume)
-    ) {
-      continue;
+  // Kiểm tra trường hợp Harry Potter hoặc series có tiền tố dài chung (> 12 ký tự)
+  const wordsA = normCleanA.split(' ');
+  const wordsB = normCleanB.split(' ');
+
+  let commonPrefixWords = 0;
+  while (
+    commonPrefixWords < wordsA.length &&
+    commonPrefixWords < wordsB.length &&
+    wordsA[commonPrefixWords] === wordsB[commonPrefixWords]
+  ) {
+    commonPrefixWords++;
+  }
+
+  if (commonPrefixWords >= 2) {
+    const restA = wordsA.slice(commonPrefixWords).join(' ');
+    const restB = wordsB.slice(commonPrefixWords).join(' ');
+    if (restA.length >= 4 && restB.length >= 4) {
+      const restSim = stringSimilarity(restA, restB);
+      if (restSim < 0.5) {
+        return {
+          isDuplicate: false,
+          score: 0,
+          reason: `Cùng tựa đề tiền tố nhưng nội dung sau khác biệt: "${restA}" vs "${restB}"`,
+        };
+      }
     }
+  }
 
-    const bookTitleNorm = normalizeForComparison(book.title);
-    const bookTitleClean = normalizeForComparison(volBook.cleanTitle.replace(/\(.*?\)/g, ''));
+  // 5. BẪY CHUỖI CON (SUBSTRING TRAP):
+  // "Kinh tế học" vs "Kinh tế học vi mô"
+  // "Tâm lý học" vs "Tâm lý học tội phạm"
+  if (normCleanA !== normCleanB) {
+    const isSubstring = normCleanA.includes(normCleanB) || normCleanB.includes(normCleanA);
+    if (isSubstring) {
+      const shortStr = normCleanA.length < normCleanB.length ? normCleanA : normCleanB;
+      const longStr = normCleanA.length < normCleanB.length ? normCleanB : normCleanA;
 
-    // So sánh full title lẫn clean title (đã lọc số tập và ngoặc đơn)
-    const titleScore1 = stringSimilarity(normTitle, bookTitleNorm);
-    const titleScore2 = stringSimilarity(normTitleClean, bookTitleClean);
-    const titleScore3 = stringSimilarity(normTitle, bookTitleClean);
-    const titleScore4 = stringSimilarity(normTitleClean, bookTitleNorm);
+      const diffWords = longStr.replace(shortStr, '').trim().split(/\s+/).filter(Boolean);
+      const stopWords = new Set(['tap', 'quyen', 'phan', 'cuon', 'vol', 'nxb', 'ban', 'sach', 'nam', 'in']);
+      const meaningfulDiffWords = diffWords.filter((w) => !stopWords.has(w) && w.length >= 2);
 
-    // Bổ sung so sánh phần tiếng Việt trong ngoặc đơn nếu có
-    const matchInParen1 = item.title.match(/\((.*?)\)/);
-    const matchInParen2 = book.title.match(/\((.*?)\)/);
-    let parenScore = 0;
-    if (matchInParen1 && matchInParen2) {
-      parenScore = stringSimilarity(matchInParen1[1], matchInParen2[1]);
-    } else if (matchInParen1) {
-      parenScore = stringSimilarity(matchInParen1[1], book.title);
-    } else if (matchInParen2) {
-      parenScore = stringSimilarity(item.title, matchInParen2[1]);
+      if (meaningfulDiffWords.length >= 1) {
+        return {
+          isDuplicate: false,
+          score: 0,
+          reason: `Tiêu đề khác biệt từ ngữ trọng yếu: "${meaningfulDiffWords.join(' ')}"`,
+        };
+      }
     }
+  }
 
-    const titleScore = Math.max(titleScore1, titleScore2, titleScore3, titleScore4, parenScore);
+  // 6. SO SÁNH ĐỘ TƯƠNG ĐỒNG THỰC SỰ TRÊN CLEAN TITLE
+  const titleSim = stringSimilarity(normCleanA, normCleanB);
 
-    let totalScore = titleScore;
+  // So sánh thêm tên gốc nếu có ngoặc đơn song ngữ: ví dụ "Nhà Giả Kim (The Alchemist)" vs "Nhà Giả Kim"
+  const rawSim = stringSimilarity(
+    normalizeForComparison(bookA.title),
+    normalizeForComparison(bookB.title)
+  );
 
-    if (normAuthor && book.author) {
-      const bookAuthorNorm = normalizeForComparison(book.author);
-      const isMissingAuthor =
-        normAuthor === 'khuyet danh' ||
-        normAuthor === 'chua ro' ||
-        bookAuthorNorm === 'khuyet danh' ||
-        bookAuthorNorm === 'chua ro';
+  const bestTitleScore = Math.max(titleSim, rawSim);
 
-      if (isMissingAuthor) {
-        totalScore = titleScore;
-      } else {
-        const authorScore = stringSimilarity(normAuthor, bookAuthorNorm);
-        if (authorScore >= 0.8) {
-          totalScore = titleScore * 0.6 + authorScore * 0.4;
-        } else {
-          totalScore = titleScore * 0.8 + authorScore * 0.2;
+  // 1. Clean Title giống hệt nhau sau khi chuẩn hóa (100%) -> TRÙNG
+  if (normCleanA === normCleanB && normCleanA.length > 0) {
+    return {
+      isDuplicate: true,
+      score: 100,
+      reason: 'Tên sách hoàn toàn trùng khớp',
+    };
+  }
+
+  // 2. Trùng tên chính sau khi lược bỏ toàn bộ phần trong ngoặc đơn/ngoặc vuông (như phụ đề song ngữ)
+  // Ví dụ: "Nhà Giả Kim (The Alchemist)" vs "Nhà Giả Kim"
+  const noParensA = normalizeForComparison(metaA.cleanTitle.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, ''));
+  const noParensB = normalizeForComparison(metaB.cleanTitle.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, ''));
+  if (noParensA && noParensB && noParensA === noParensB) {
+    return {
+      isDuplicate: true,
+      score: 98,
+      reason: 'Trùng tên chính (khác biệt phụ đề trong ngoặc)',
+    };
+  }
+
+  // Kiểm tra tên trong ngoặc khớp tên cuốn kia (ví dụ: "The Alchemist" vs "Nhà Giả Kim (The Alchemist)")
+  const parenMatchA = metaA.cleanTitle.match(/\((.*?)\)/)?.[1];
+  const parenMatchB = metaB.cleanTitle.match(/\((.*?)\)/)?.[1];
+  if (parenMatchA && normalizeForComparison(parenMatchA) === normCleanB) {
+    return {
+      isDuplicate: true,
+      score: 95,
+      reason: 'Trùng tên tiếng nước ngoài trong ngoặc',
+    };
+  }
+  if (parenMatchB && normalizeForComparison(parenMatchB) === normCleanA) {
+    return {
+      isDuplicate: true,
+      score: 95,
+      reason: 'Trùng tên tiếng nước ngoài trong ngoặc',
+    };
+  }
+
+  // 3. KIỂM TRA CHÍNH TẢ CẤP ĐỘ TỪ (Strict Word-Level Integrity):
+  // BẢO VỆ CHỐNG TRÙNG NHẦM: "Không gia đình" vs "Trong gia đình" (Hector Malot)
+  // Trong tiếng Việt, các từ ngắn (< 6 ký tự như "không" vs "trong", "đỏ" vs "đen", "đất" vs "cát")
+  // là các TỪ HOÀN TOÀN KHÁC NHAU VỀ NGHĨA. Tuyệt đối không được coi là lỗi chính tả!
+  const tokensA = normCleanA.split(/\s+/).filter(Boolean);
+  const tokensB = normCleanB.split(/\s+/).filter(Boolean);
+
+  if (tokensA.length === tokensB.length && tokensA.length > 0) {
+    let diffWordCount = 0;
+    let diffA = '';
+    let diffB = '';
+
+    for (let i = 0; i < tokensA.length; i++) {
+      const wA = tokensA[i];
+      const wB = tokensB[i];
+
+      if (wA !== wB) {
+        // Chỉ chấp nhận là lỗi gõ / lỗi OCR nếu từ đó là từ dài (>= 6 ký tự) và chỉ sai khác tối đa 1 ký tự
+        const isMinorTypoInLongWord = wA.length >= 6 && wB.length >= 6 && levenshteinDistance(wA, wB) <= 1;
+        if (!isMinorTypoInLongWord) {
+          diffWordCount++;
+          diffA = wA;
+          diffB = wB;
         }
       }
     }
 
-    if (totalScore > highestScore) {
-      highestScore = totalScore;
-      bestMatch = book;
+    // Nếu chỉ có đúng 1 từ dài có lỗi chính tả 1 ký tự (ví dụ tên riêng nước ngoài), các từ khác giống hệt 100%
+    if (diffWordCount === 0 && tokensA.length >= 2) {
+      return {
+        isDuplicate: true,
+        score: 90,
+        reason: 'Trùng tên sách (sai khác 1 ký tự gõ nhầm ở từ dài)',
+      };
+    } else if (diffWordCount > 0) {
+      return {
+        isDuplicate: false,
+        score: Math.round(titleSim * 100),
+        reason: `Khác biệt từ ngữ: "${diffA}" vs "${diffB}"`,
+      };
     }
   }
 
   return {
-    isDuplicate: highestScore >= threshold,
-    matchedBook: highestScore >= threshold ? bestMatch : undefined,
-    score: Math.round(highestScore * 100),
+    isDuplicate: false,
+    score: Math.round(bestTitleScore * 100),
+    reason: `Độ tương đồng không đủ điều kiện trùng (${Math.round(bestTitleScore * 100)}%)`,
+  };
+}
+
+/**
+ * Kiểm tra xem 1 bản ghi sách mới có bị trùng với kho sách hiện tại hay không
+ */
+export function checkDuplicateBook(
+  item: { title: string; author?: string; publisher?: string },
+  existingBooks: BookRecord[],
+  threshold = 0.75
+): { isDuplicate: boolean; matchedBook?: BookRecord; score: number; reason?: string } {
+  if (!item.title || !existingBooks || existingBooks.length === 0) {
+    return { isDuplicate: false, score: 0 };
+  }
+
+  let bestMatch: BookRecord | undefined = undefined;
+  let highestScore = 0;
+  let matchReason = '';
+
+  for (const book of existingBooks) {
+    if (!book.title) continue;
+
+    const res = isTrueDuplicate(
+      { title: item.title, author: item.author, publisher: item.publisher },
+      { title: book.title, author: book.author, publisher: book.publisher }
+    );
+
+    if (res.isDuplicate && res.score > highestScore) {
+      highestScore = res.score;
+      bestMatch = book;
+      matchReason = res.reason;
+    }
+  }
+
+  return {
+    isDuplicate: highestScore >= (threshold * 100),
+    matchedBook: highestScore >= (threshold * 100) ? bestMatch : undefined,
+    score: highestScore,
+    reason: matchReason,
   };
 }
 
@@ -280,16 +547,37 @@ export function flagDuplicateDrafts(
 ): DraftBookItem[] {
   return drafts.map((draft) => {
     const { isDuplicate, matchedBook, score } = checkDuplicateBook(
-      { title: draft.title, author: draft.author },
+      { title: draft.title, author: draft.author, publisher: draft.publisher },
       existingBooks
     );
     return {
       ...draft,
       isDuplicate,
-      duplicateMatchTitle: matchedBook ? `${matchedBook.title} (${matchedBook.author})` : undefined,
+      duplicateMatchTitle: matchedBook ? `${matchedBook.title} (${matchedBook.author || 'Khuyết danh'})` : undefined,
       confidence: score,
     };
   });
+}
+
+/**
+ * Tính điểm đầy đủ của bản ghi sách để ưu tiên giữ lại bản ghi có nhiều thông tin nhất
+ */
+export function calculateBookRichness(book: BookRecord): number {
+  let score = 0;
+  if (book.title && book.title.trim().length > 0) score += 5;
+  // Chuỗi có dấu tiếng Việt chuẩn được ưu tiên hơn chuỗi không dấu
+  if (/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(book.title)) score += 2;
+  if (book.author && book.author !== 'Khuyết danh' && book.author !== 'Chưa rõ') score += 4;
+  if (book.publisher && book.publisher.trim().length > 0) score += 3;
+  if (book.category && book.category !== 'Chung' && book.category.trim().length > 0) score += 2;
+  if (book.is_ai_normalized) score += 5;
+  return score;
+}
+
+export interface DuplicateGroup {
+  id: string;
+  books: BookRecord[];
+  reason?: string;
 }
 
 /**
@@ -303,7 +591,11 @@ export function deduplicateBookList(books: BookRecord[]): { cleanBooks: BookReco
     if (!book.title) continue;
 
     const matchIndex = result.findIndex((existing) => {
-      const { isDuplicate } = checkDuplicateBook({ title: book.title, author: book.author }, [existing], 0.75);
+      const { isDuplicate } = checkDuplicateBook(
+        { title: book.title, author: book.author, publisher: book.publisher },
+        [existing],
+        0.75
+      );
       return isDuplicate;
     });
 
@@ -312,16 +604,12 @@ export function deduplicateBookList(books: BookRecord[]): { cleanBooks: BookReco
     } else {
       mergedCount++;
       const existing = result[matchIndex];
-      // Ưu tiên chọn tên sách đầy đủ hơn (có chữ tượng hình / tên trong ngoặc đơn / dài hơn)
-      const prefersNewTitle =
-        (book.title.includes('(') && !existing.title.includes('(')) ||
-        (/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(book.title) && !/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(existing.title)) ||
-        book.title.length > existing.title.length;
-
+      // Giữ lại bản ghi đầy đủ hơn
+      const prefersNew = calculateBookRichness(book) > calculateBookRichness(existing);
       result[matchIndex] = {
         ...existing,
-        title: prefersNewTitle ? book.title : existing.title,
-        author: (book.author && book.author !== 'Khuyết danh') ? book.author : existing.author,
+        title: prefersNew ? book.title : existing.title,
+        author: (book.author && book.author !== 'Khuyết danh' && book.author !== 'Chưa rõ') ? book.author : existing.author,
         publisher: book.publisher || existing.publisher,
         category: (book.category && book.category !== 'Chung') ? book.category : existing.category,
         is_ai_normalized: existing.is_ai_normalized || book.is_ai_normalized,
@@ -333,45 +621,46 @@ export function deduplicateBookList(books: BookRecord[]): { cleanBooks: BookReco
   return { cleanBooks: result, mergedCount };
 }
 
-export interface DuplicateGroup {
-  id: string;
-  books: BookRecord[];
-}
-
 /**
  * Phân nhóm tất cả các sách trùng lặp để hiển thị cho người dùng lựa chọn cuốn muốn giữ lại (đồng bộ)
  */
 export function groupDuplicateBooks(books: BookRecord[]): DuplicateGroup[] {
   const groups: DuplicateGroup[] = [];
   const visited = new Set<string>();
+  const total = books.length;
 
-  for (let i = 0; i < books.length; i++) {
+  for (let i = 0; i < total; i++) {
     const book = books[i];
     if (visited.has(book.id)) continue;
 
     const dupBooks: BookRecord[] = [book];
-    
-    for (let j = i + 1; j < books.length; j++) {
+    let groupReason = '';
+
+    for (let j = i + 1; j < total; j++) {
       const other = books[j];
       if (visited.has(other.id)) continue;
 
-      const { isDuplicate } = checkDuplicateBook(
-        { title: book.title, author: book.author },
-        [other],
-        0.75
+      const res = isTrueDuplicate(
+        { title: book.title, author: book.author, publisher: book.publisher },
+        { title: other.title, author: other.author, publisher: other.publisher }
       );
 
-      if (isDuplicate) {
+      if (res.isDuplicate) {
         dupBooks.push(other);
         visited.add(other.id);
+        if (!groupReason) groupReason = res.reason;
       }
     }
 
     if (dupBooks.length > 1) {
       visited.add(book.id);
+      // Sắp xếp cuốn có thông tin đầy đủ nhất lên đầu
+      dupBooks.sort((a, b) => calculateBookRichness(b) - calculateBookRichness(a));
+
       groups.push({
         id: `group_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 5)}`,
         books: dupBooks,
+        reason: groupReason,
       });
     }
   }
@@ -392,7 +681,7 @@ export async function groupDuplicateBooksAsync(
   const total = books.length;
 
   for (let i = 0; i < total; i++) {
-    // Nhường quyền cho giao diện React sau mỗi 8 cuốn để cập nhật thanh tiến trình và % mượt mà
+    // Nhường quyền cho giao diện React sau mỗi 8 cuốn để cập nhật % mượt mà trên nút
     if (i % 8 === 0 || i === total - 1) {
       const percent = Math.min(100, Math.round(((i + 1) / total) * 100));
       if (onProgress) {
@@ -405,28 +694,33 @@ export async function groupDuplicateBooksAsync(
     if (visited.has(book.id)) continue;
 
     const dupBooks: BookRecord[] = [book];
+    let groupReason = '';
 
     for (let j = i + 1; j < total; j++) {
       const other = books[j];
       if (visited.has(other.id)) continue;
 
-      const { isDuplicate } = checkDuplicateBook(
-        { title: book.title, author: book.author },
-        [other],
-        0.75
+      const res = isTrueDuplicate(
+        { title: book.title, author: book.author, publisher: book.publisher },
+        { title: other.title, author: other.author, publisher: other.publisher }
       );
 
-      if (isDuplicate) {
+      if (res.isDuplicate) {
         dupBooks.push(other);
         visited.add(other.id);
+        if (!groupReason) groupReason = res.reason;
       }
     }
 
     if (dupBooks.length > 1) {
       visited.add(book.id);
+      // Sắp xếp cuốn có thông tin đầy đủ nhất lên đầu
+      dupBooks.sort((a, b) => calculateBookRichness(b) - calculateBookRichness(a));
+
       groups.push({
         id: `group_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 5)}`,
         books: dupBooks,
+        reason: groupReason,
       });
     }
   }

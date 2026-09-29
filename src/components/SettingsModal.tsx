@@ -251,9 +251,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
-              <h3 className="text-xs sm:text-sm font-bold text-slate-800">
-                Phát hiện <strong className="text-emerald-700 font-extrabold">{duplicateGroups.length}</strong> nhóm sách trùng
-              </h3>
+              <div>
+                <h3 className="text-xs sm:text-sm font-bold text-slate-800 leading-tight">
+                  Phát hiện <strong className="text-emerald-700 font-extrabold">{duplicateGroups.length}</strong> nhóm sách trùng
+                </h3>
+                <p className="text-[10px] text-slate-500 mt-0.5">Tích chọn các cuốn muốn giữ lại trong kho</p>
+              </div>
             </div>
             <button
               onClick={() => setDuplicateGroups(null)}
@@ -270,88 +273,141 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="flex flex-col flex-1 overflow-hidden">
             {/* List các nhóm trùng */}
             <div className="p-4 space-y-3.5 overflow-y-auto flex-1 bg-slate-50">
-              {duplicateGroups.map((group) => {
+              {duplicateGroups.map((group, groupIdx) => {
                 const groupKeepIds = selectedKeepIds[group.id] || [];
-                return (
-                  <div key={group.id} className="bg-white border border-slate-200/80 rounded-2xl p-2.5 shadow-2xs space-y-2">
-                    {group.books.map((book) => {
-                      const isSelected = groupKeepIds.includes(book.id);
-                      return (
-                        <div
-                          key={book.id}
-                          onClick={() => {
-                            setSelectedKeepIds((prev) => {
-                              const currentList = prev[group.id] || [];
-                              const exists = currentList.includes(book.id);
-                              const updated = exists
-                                ? currentList.filter((id) => id !== book.id)
-                                : [...currentList, book.id];
-                              return { ...prev, [group.id]: updated };
-                            });
-                          }}
-                          className={`flex items-start gap-2.5 p-2 rounded-xl border transition cursor-pointer select-none active:scale-[0.99] ${
-                            isSelected
-                              ? 'border-emerald-500 bg-emerald-50/40'
-                              : 'border-slate-100 hover:border-slate-200 bg-slate-50/20'
-                          }`}
-                        >
-                          <div className="mt-0.5 shrink-0">
-                            <div
-                              className={`w-4 h-4 rounded-md border flex items-center justify-center transition ${
-                                isSelected
-                                  ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
-                                  : 'border-slate-300 bg-white hover:border-slate-400'
-                              }`}
-                            >
-                              {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
-                            </div>
-                          </div>
+                const isAllSelected = group.books.length > 0 && group.books.every((b) => groupKeepIds.includes(b.id));
 
-                          <div className="min-w-0 flex-1">
-                            <div className="font-bold text-slate-800 text-xs leading-snug break-words">
-                              {book.title}
+                return (
+                  <div key={group.id} className="bg-white border border-slate-200/80 rounded-2xl p-3 shadow-2xs space-y-2.5">
+                    {/* Header từng nhóm */}
+                    <div className="flex items-center justify-between pb-1.5 border-b border-slate-100">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[11px] font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md">
+                          Nhóm #{groupIdx + 1}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-medium">
+                          ({group.books.length} cuốn)
+                        </span>
+                        {group.reason && (
+                          <span className="text-[9px] text-emerald-700 bg-emerald-50 border border-emerald-200/60 px-1.5 py-0.5 rounded">
+                            {group.reason}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allIds = group.books.map((b) => b.id);
+                          setSelectedKeepIds((prev) => ({
+                            ...prev,
+                            [group.id]: isAllSelected ? [group.books[0].id] : allIds,
+                          }));
+                        }}
+                        className="text-[10.5px] text-emerald-600 font-bold hover:text-emerald-700 transition active:scale-95 shrink-0 ml-2"
+                      >
+                        {isAllSelected ? 'Chỉ giữ 1 cuốn' : 'Giữ lại tất cả'}
+                      </button>
+                    </div>
+
+                    {/* Danh sách sách trong nhóm */}
+                    <div className="space-y-1.5">
+                      {group.books.map((book, bookIdx) => {
+                        const isSelected = groupKeepIds.includes(book.id);
+                        return (
+                          <div
+                            key={book.id}
+                            onClick={() => {
+                              setSelectedKeepIds((prev) => {
+                                const currentList = prev[group.id] || [];
+                                const exists = currentList.includes(book.id);
+                                const updated = exists
+                                  ? currentList.filter((id) => id !== book.id)
+                                  : [...currentList, book.id];
+                                return { ...prev, [group.id]: updated };
+                              });
+                            }}
+                            className={`flex items-start gap-2.5 p-2 rounded-xl border transition cursor-pointer select-none active:scale-[0.99] ${
+                              isSelected
+                                ? 'border-emerald-500 bg-emerald-50/40 shadow-xs'
+                                : 'border-slate-100 hover:border-slate-200 bg-slate-50/30 opacity-70'
+                            }`}
+                          >
+                            <div className="mt-0.5 shrink-0">
+                              <div
+                                className={`w-4 h-4 rounded-md border flex items-center justify-center transition ${
+                                  isSelected
+                                    ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
+                                    : 'border-slate-300 bg-white hover:border-slate-400'
+                                }`}
+                              >
+                                {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                              </div>
                             </div>
-                            <div className="text-slate-500 text-[10px] mt-0.5">
-                              Tác giả: <strong className="text-slate-700">{book.author || 'Khuyết danh'}</strong>
-                            </div>
-                            {(book.publisher || book.category) && (
-                              <div className="text-slate-400 text-[9px] mt-0.5 flex items-center gap-1.5">
-                                {book.publisher && <span>NXB: {book.publisher}</span>}
-                                {book.category && (
-                                  <span className="bg-slate-100 px-1 py-0.2 rounded-sm text-slate-500">
-                                    {book.category}
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <div className="font-bold text-slate-800 text-xs leading-snug break-words">
+                                  {book.title}
+                                </div>
+                                {bookIdx === 0 && (
+                                  <span className="shrink-0 text-[8.5px] font-semibold text-emerald-700 bg-emerald-100/70 px-1.5 py-0.2 rounded">
+                                    Ưu tiên
                                   </span>
                                 )}
                               </div>
-                            )}
+                              <div className="text-slate-500 text-[10px] mt-0.5">
+                                Tác giả: <strong className="text-slate-700">{book.author || 'Khuyết danh'}</strong>
+                              </div>
+                              {(book.publisher || book.category) && (
+                                <div className="text-slate-400 text-[9px] mt-0.5 flex items-center gap-1.5 flex-wrap">
+                                  {book.publisher && <span>NXB: {book.publisher}</span>}
+                                  {book.category && (
+                                    <span className="bg-slate-100 px-1 py-0.2 rounded text-slate-500">
+                                      {book.category}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               })}
             </div>
 
             {/* Confirm & Cancel Buttons */}
-            <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex gap-2.5 shrink-0">
-              <button
-                type="button"
-                onClick={() => setDuplicateGroups(null)}
-                className="flex-1 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200/60 rounded-xl transition active:scale-95 whitespace-nowrap"
-              >
-                Hủy bỏ
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmKeepDuplicates}
-                disabled={isSaving}
-                className="flex-[2] flex items-center justify-center gap-1.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition disabled:opacity-50 active:scale-95 whitespace-nowrap"
-              >
-                {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                Xác nhận giữ lại
-              </button>
-            </div>
+            {(() => {
+              const totalToDelete = duplicateGroups.reduce((acc, g) => {
+                const keepCount = (selectedKeepIds[g.id] || []).length;
+                return acc + Math.max(0, g.books.length - keepCount);
+              }, 0);
+
+              return (
+                <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex gap-2.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setDuplicateGroups(null)}
+                    className="flex-1 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200/60 rounded-xl transition active:scale-95 whitespace-nowrap"
+                  >
+                    Hủy bỏ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmKeepDuplicates}
+                    disabled={isSaving}
+                    className="flex-[2] flex items-center justify-center gap-1.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition disabled:opacity-50 active:scale-95 whitespace-nowrap"
+                  >
+                    {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                    {totalToDelete > 0
+                      ? `Xác nhận (Xóa ${totalToDelete} cuốn trùng)`
+                      : 'Giữ lại tất cả các cuốn'}
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         ) : (
           <>
