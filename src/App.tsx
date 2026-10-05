@@ -754,14 +754,26 @@ export default function App() {
 
   if (isModeSelectionOpen) {
     return (
-      <ModeSelectionModal
-        isOpen={true}
-        onSelectMode={handleSelectMode}
-        currentMode={appMode}
-        onClose={() => setIsModeSelectionOpen(false)}
-        canClose={Boolean(localStorage.getItem('app_mode_v2'))}
-        onCheckUpdates={!IS_BUILD_AAB ? handleManualCheckUpdates : undefined}
-      />
+      <>
+        <ModeSelectionModal
+          isOpen={true}
+          onSelectMode={handleSelectMode}
+          currentMode={appMode}
+          onClose={() => setIsModeSelectionOpen(false)}
+          canClose={Boolean(localStorage.getItem('app_mode_v2'))}
+          onCheckUpdates={!IS_BUILD_AAB ? handleManualCheckUpdates : undefined}
+        />
+        {!IS_BUILD_AAB && isUpdateModalOpen && (
+          <Suspense fallback={null}>
+            <AppUpdateModal
+              isOpen={isUpdateModalOpen}
+              currentVersion={CURRENT_APP_VERSION}
+              updateInfo={updateInfo}
+              onClose={closeUpdateModal}
+            />
+          </Suspense>
+        )}
+      </>
     );
   }
 

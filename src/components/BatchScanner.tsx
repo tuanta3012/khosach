@@ -676,11 +676,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 min-w-[170px]">
                       <input
                         type="text"
-                        autoComplete="off"
+                        name="nomatch_batch_title"
+                        autoComplete="new-password"
                         autoCorrect="off"
                         autoCapitalize="none"
                         spellCheck={false}
                         data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-form-type="other"
                         value={draft.title}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { title: e.target.value })}
                         className="w-full px-2 py-1 border border-slate-200 rounded-lg font-bold focus:outline-none transition text-xs shadow-2xs bg-white text-slate-900"
@@ -691,11 +694,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 min-w-[130px]">
                       <input
                         type="text"
-                        autoComplete="off"
+                        name="nomatch_batch_author"
+                        autoComplete="new-password"
                         autoCorrect="off"
                         autoCapitalize="none"
                         spellCheck={false}
                         data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-form-type="other"
                         value={draft.author}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { author: e.target.value })}
                         className="w-full px-2 py-1 border border-slate-200 rounded-lg focus:outline-none transition text-xs shadow-2xs bg-white text-slate-900"
@@ -706,11 +712,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 min-w-[110px]">
                       <input
                         type="text"
-                        autoComplete="off"
+                        name="nomatch_batch_category"
+                        autoComplete="new-password"
                         autoCorrect="off"
                         autoCapitalize="none"
                         spellCheck={false}
                         data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-form-type="other"
                         list="cat-suggestions"
                         value={draft.category || 'Chung'}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { category: e.target.value })}
@@ -727,11 +736,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 min-w-[100px]">
                       <input
                         type="text"
-                        autoComplete="off"
+                        name="nomatch_batch_publisher"
+                        autoComplete="new-password"
                         autoCorrect="off"
                         autoCapitalize="none"
                         spellCheck={false}
                         data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-form-type="other"
                         value={draft.publisher || ''}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { publisher: e.target.value })}
                         className="w-full px-2 py-1 border border-slate-200 rounded-lg focus:outline-none transition text-xs shadow-2xs bg-white text-slate-900"

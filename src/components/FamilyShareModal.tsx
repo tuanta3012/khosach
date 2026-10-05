@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   X, Users, UserPlus, Shield, Trash2, ExternalLink, Loader2, 
-  Mail, RefreshCw
+  Mail, RefreshCw, Eye, Edit3, Crown, LogOut, ChevronDown
 } from 'lucide-react';
 import { 
   FamilyMember, 
@@ -32,7 +32,8 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [emailInput, setEmailInput] = useState('');
-  const [roleInput, setRoleInput] = useState<'Editor' | 'Viewer'>('Editor');
+  const [roleInput, setRoleInput] = useState<'Editor' | 'Viewer'>('Viewer');
+  const [emailToRemoveConfirm, setEmailToRemoveConfirm] = useState<string | null>(null);
 
   const loadMembers = async () => {
     if (!spreadsheetInfo?.id) return;
@@ -76,7 +77,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
       await addFamilyMember(token, spreadsheetInfo.id, email, roleInput);
-      showToast(`✅ Đã cấp quyền ${roleInput === 'Editor' ? 'Chỉnh sửa' : 'Chỉ xem'} cho ${email}!`, 'success');
+      showToast(`✅ Đã cấp quyền ${roleInput === 'Editor' ? 'Được sửa' : 'Chỉ xem'} cho ${email}!`, 'success');
       setEmailInput('');
       await loadMembers();
     } catch (err: any) {
@@ -85,8 +86,6 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       setIsSubmitting(false);
     }
   };
-
-  const [emailToRemoveConfirm, setEmailToRemoveConfirm] = useState<string | null>(null);
 
   const handleRemoveMember = async (email: string) => {
     if (!spreadsheetInfo?.id) return;
@@ -104,213 +103,280 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
     }
   };
 
+  const getInitials = (email: string, name?: string) => {
+    if (name) return name.charAt(0).toUpperCase();
+    return email.charAt(0).toUpperCase();
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60">
       <div 
-        className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs transition-opacity"
+        className="absolute inset-0 backdrop-blur-xs transition-opacity"
         onClick={onClose}
       />
 
-      <div className="relative w-full max-w-lg bg-[#1c0e08] border border-[#452215] rounded-3xl p-5 sm:p-6 text-white shadow-2xl overflow-hidden flex flex-col space-y-4 max-h-[90vh]">
-        <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-amber-500 via-[#9e5628] to-amber-600" />
+      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-xl max-h-[92vh] sm:max-h-[96vh] flex flex-col overflow-hidden border border-slate-200">
+        
+        {/* Decoy input to trap browser autofill */}
+        <input 
+          type="text" 
+          name="prevent_autofill" 
+          id="prevent_autofill" 
+          defaultValue="" 
+          tabIndex={-1} 
+          aria-hidden="true"
+          className="hidden" 
+          style={{ display: 'none', position: 'absolute', opacity: 0, pointerEvents: 'none' }} 
+        />
 
-        {/* Header */}
-        <div className="flex items-center justify-between pb-2 border-b border-[#452215]">
+        {/* Header - Dark Theme */}
+        <div className="px-4 py-3 bg-[#2b170e] text-white flex items-center justify-between shrink-0 border-b border-[#452215]">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-[#9e5628] text-white shadow-xs">
-              <Users className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-extrabold text-white">
-                Chia Sẻ Tủ Sách Gia Đình
-              </h2>
-              <p className="text-xs text-amber-200/70">
-                Cho phép người thân cùng truy cập và quản lý kho sách chung
-              </p>
-            </div>
+            <Users className="w-5 h-5 text-emerald-400" />
+            <h2 className="text-base font-extrabold text-white tracking-tight">
+              Quản lý thành viên
+            </h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-amber-200/70 hover:text-white hover:bg-[#2b170e] rounded-xl transition"
+            className="p-1.5 rounded-full text-amber-200/80 hover:text-white hover:bg-[#381c12] transition"
+            aria-label="Đóng"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Google Sheet Link Info */}
-        {spreadsheetInfo && (
-          <div className="p-3 bg-[#2b170e] rounded-2xl border border-[#452215] flex items-center justify-between gap-2">
+        {/* Content Body - Light Theme (Scrollable inside) */}
+        <div className="flex-1 overflow-y-auto p-2.5 space-y-2 bg-slate-50/60">
+          
+          {/* Block 1: Tài khoản hiện tại (Admin Card) */}
+          <div className="p-2 bg-white rounded-xl border border-slate-200/90 shadow-3xs flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <span className="text-[10px] text-amber-200/60 uppercase font-bold tracking-wider block">
-                Google Sheet Đồng Bộ
-              </span>
-              <span className="text-xs font-bold text-white truncate block">
-                {spreadsheetInfo.name || 'Kho Sách Cá Nhân'}
+              <span className="text-xs text-slate-500 font-medium truncate block">
+                Tài khoản: <strong className="text-slate-900 font-semibold">{currentUser?.email || 'tuanta3012@gmail.com'}</strong>
               </span>
             </div>
-            {spreadsheetInfo.webViewLink && (
-              <a
-                href={spreadsheetInfo.webViewLink}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1 text-xs text-amber-300 font-bold bg-[#1c0e08] px-2.5 py-1.5 rounded-xl border border-[#452215] shrink-0 transition hover:bg-[#381c12]"
-              >
-                <span>Mở Sheet</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            )}
+            <div className="flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 rounded-lg text-xs font-bold shrink-0 border border-amber-200 shadow-2xs">
+              <span>👑 Admin</span>
+            </div>
           </div>
-        )}
 
-        {/* Form Add Member */}
-        <form onSubmit={handleAddMember} className="space-y-3 bg-[#2b170e]/80 p-3.5 rounded-2xl border border-[#452215]">
-          <span className="text-xs font-bold text-amber-200 flex items-center gap-1.5">
-            <UserPlus className="w-4 h-4 text-amber-400" />
-            Thêm người thân vào tủ sách
-          </span>
-
-          <div className="flex flex-col sm:flex-row gap-2">
-            <div className="relative flex-1">
-              <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="email"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                data-lpignore="true"
-                placeholder="Nhập địa chỉ Gmail..."
-                value={emailInput}
-                onChange={(e) => setEmailInput(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 bg-[#1c0e08] border border-[#452215] rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#9e5628]"
-                required
-              />
+          {/* Block 2: Thêm thành viên mới (Add Member Card) */}
+          <form onSubmit={handleAddMember} autoComplete="off" className="bg-white p-2.5 rounded-xl border border-slate-200/90 shadow-3xs space-y-2">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+              <UserPlus className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Thêm thành viên mới</span>
             </div>
 
-            <select
-              value={roleInput}
-              onChange={(e) => setRoleInput(e.target.value as any)}
-              className="bg-[#1c0e08] border border-[#452215] rounded-xl px-3 py-2 text-xs font-bold text-amber-200 focus:outline-none focus:border-[#9e5628]"
-            >
-              <option value="Editor">Chỉnh sửa</option>
-              <option value="Viewer">Chỉ xem</option>
-            </select>
+            <div className="space-y-1.5">
+              <div className="relative">
+                <Mail className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  name="x_f2"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-form-type="other"
+                  readOnly
+                  onFocus={(e) => e.target.removeAttribute('readonly')}
+                  placeholder="Nhập tài khoản liên kết"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  className="w-full pl-8 pr-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#9e5628] focus:bg-white transition font-mono"
+                  required
+                />
+              </div>
+            </div>
 
+            {/* Segmented Toggle Control */}
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setRoleInput('Viewer')}
+                className={`h-8 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border cursor-pointer ${
+                  roleInput === 'Viewer'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <span>👁️</span>
+                <span>Chỉ xem</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setRoleInput('Editor')}
+                className={`h-8 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border cursor-pointer ${
+                  roleInput === 'Editor'
+                    ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <span>✏️</span>
+                <span>Được sửa</span>
+              </button>
+            </div>
+
+            {/* Action Button */}
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-4 py-2 bg-[#9e5628] hover:bg-[#85451e] disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 shrink-0 active:scale-95 shadow-xs"
+              className="w-full h-8.5 bg-[#2b170e] hover:bg-[#381c12] disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-xs cursor-pointer"
             >
               {isSubmitting ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <>
-                  <UserPlus className="w-4 h-4" />
-                  <span>Cấp Quyền</span>
+                  <UserPlus className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Thêm & Cấp quyền</span>
                 </>
               )}
             </button>
-          </div>
-        </form>
+          </form>
 
-        {/* Members List */}
-        <div className="space-y-2 flex-1 overflow-y-auto pr-1">
-          <div className="flex items-center justify-between text-xs font-bold text-amber-200/80">
-            <span>Danh sách thành viên ({members.length})</span>
-            <button
-              type="button"
-              onClick={loadMembers}
-              disabled={isLoading}
-              className="text-amber-200/70 hover:text-white p-1 rounded-lg hover:bg-[#2b170e] transition"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-            </button>
-          </div>
+          {/* Block 3: Danh sách thành viên (Member List Card) */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs font-bold text-slate-800 px-1">
+              <div className="flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-emerald-600" />
+                <span>Thành viên ({members.length})</span>
+              </div>
+              <button
+                type="button"
+                onClick={loadMembers}
+                disabled={isLoading}
+                className="text-slate-500 hover:text-slate-800 p-1 rounded-lg hover:bg-slate-100 transition flex items-center gap-1 text-[11px] cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+                <span>Làm mới</span>
+              </button>
+            </div>
 
-          {isLoading ? (
-            <div className="py-6 flex flex-col items-center justify-center text-amber-200/70 text-xs gap-2">
-              <Loader2 className="w-5 h-5 animate-spin text-amber-400" />
-              <span>Đang tải thành viên...</span>
-            </div>
-          ) : members.length === 0 ? (
-            <div className="py-6 text-center text-amber-200/60 text-xs bg-[#2b170e]/50 rounded-2xl border border-[#452215]">
-              Chưa có thành viên nào khác được thêm.
-            </div>
-          ) : (
-            <div className="space-y-1.5">
-              {members.map((m, idx) => {
+            {isLoading ? (
+              <div className="py-6 flex flex-col items-center justify-center text-slate-500 text-xs gap-2 bg-white rounded-2xl border border-slate-200">
+                <Loader2 className="w-5 h-5 animate-spin text-[#9e5628]" />
+                <span>Đang tải thành viên...</span>
+              </div>
+            ) : (() => {
+              const otherMembers = members.filter(m => {
                 const isOwner = m.role === 'Owner';
                 const isSelf = currentUser?.email && m.email.toLowerCase() === currentUser.email.toLowerCase();
+                return !isOwner && !isSelf;
+              });
 
-                return (
-                  <div
-                    key={idx}
-                    className="p-2.5 bg-[#2b170e] border border-[#452215] rounded-2xl flex items-center justify-between gap-2"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className={`p-1.5 rounded-xl text-xs font-bold ${
-                        isOwner 
-                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                          : m.role === 'Editor'
-                          ? 'bg-[#1b6b5b]/30 text-teal-300 border border-teal-500/30'
-                          : 'bg-[#295588]/30 text-blue-300 border border-blue-500/30'
-                      }`}>
-                        <Shield className="w-3.5 h-3.5" />
-                      </div>
-                      <div className="min-w-0">
-                        <span className="text-xs font-bold text-white truncate block">
-                          {m.email} {isSelf ? '(Bạn)' : ''}
-                        </span>
-                        <span className="text-[10px] text-amber-200/70 block">
-                          Vai trò: <strong className="text-white">{m.role}</strong>
-                        </span>
-                      </div>
-                    </div>
+              return otherMembers.length === 0 ? (
+                <div className="py-6 text-center text-slate-500 text-xs bg-white rounded-2xl border border-slate-200">
+                  Chưa có thành viên nào khác được thêm.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {otherMembers.map((m, idx) => {
+                    const isOwner = m.role === 'Owner';
+                    const isSelf = currentUser?.email && m.email.toLowerCase() === currentUser.email.toLowerCase();
+                    const displayName = m.email.split('@')[0];
 
-                    {!isOwner && !isSelf && (
-                      <div className="shrink-0 flex items-center gap-1">
-                        {emailToRemoveConfirm === m.email ? (
-                          <div className="flex items-center gap-1 animate-in fade-in duration-100">
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveMember(m.email)}
-                              className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] rounded-lg transition active:scale-95 cursor-pointer shadow-3xs"
-                            >
-                              Gỡ
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEmailToRemoveConfirm(null)}
-                              className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] rounded-lg transition active:scale-95 cursor-pointer"
-                            >
-                              Hủy
-                            </button>
+                  return (
+                    <div
+                      key={idx}
+                      className="p-3 bg-white border border-slate-200/90 rounded-2xl flex items-center justify-between gap-3 shadow-3xs"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-900 font-black text-xs flex items-center justify-center border border-amber-200 shrink-0 shadow-2xs">
+                          {getInitials(m.email, displayName)}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold text-slate-900 truncate">
+                              {displayName}
+                            </span>
+                            {isSelf && (
+                              <span className="text-[10px] font-bold bg-slate-100 border border-slate-200 text-slate-600 px-1.5 py-0.5 rounded-md">
+                                Bạn
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[11px] text-slate-500 truncate block font-mono">
+                            {m.email}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0 flex items-center gap-2">
+                        {isOwner ? (
+                          <div className="flex items-center gap-1 px-2.5 py-1 bg-amber-100 border border-amber-200 rounded-xl text-amber-800 text-xs font-bold shadow-2xs">
+                            <span>👑 Admin</span>
                           </div>
                         ) : (
-                          <button
-                            type="button"
-                            onClick={() => setEmailToRemoveConfirm(m.email)}
-                            className="p-1.5 text-amber-200/60 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition"
-                            title="Xóa quyền"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            {emailToRemoveConfirm === m.email ? (
+                              <div className="flex items-center gap-1 animate-in fade-in duration-100">
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveMember(m.email)}
+                                  className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] rounded-lg transition active:scale-95 cursor-pointer shadow-3xs"
+                                >
+                                  Gỡ
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEmailToRemoveConfirm(null)}
+                                  className="px-2 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-[10px] rounded-lg transition active:scale-95 cursor-pointer"
+                                >
+                                  Hủy
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <div className="flex items-center gap-1 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-xl text-xs font-semibold text-slate-700">
+                                  <span>{m.role === 'Editor' ? '✏️ Sửa' : '👁️ Xem'}</span>
+                                  <ChevronDown className="w-3 h-3 text-slate-400" />
+                                </div>
+                                {!isSelf && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setEmailToRemoveConfirm(m.email)}
+                                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                    title="Xóa thành viên"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+          </div>
         </div>
 
-        {/* Footer */}
-        <div className="pt-2 border-t border-[#452215] flex justify-end">
+        {/* Modal Footer (Unified bottom bar: Rời không gian & Đóng) */}
+        <div className="px-4 py-3 bg-white border-t border-slate-200 flex items-center justify-between gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              showToast('Đang chuyển về kho sách cá nhân riêng...', 'info');
+              onClose();
+            }}
+            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1.5 border border-slate-200 cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5 text-slate-500" />
+            <span>↳ Rời không gian</span>
+          </button>
+
           <button
             type="button"
             onClick={onClose}
-            className="px-5 py-2 bg-[#2b170e] hover:bg-[#381c12] text-amber-200 font-bold text-xs rounded-xl transition"
+            className="px-5 py-2 bg-[#2b170e] hover:bg-[#381c12] text-white font-bold text-xs rounded-xl transition shadow-xs cursor-pointer"
           >
             Đóng
           </button>
