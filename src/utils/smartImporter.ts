@@ -846,6 +846,7 @@ export async function importFromGoogleSheetUrl(
 
   const spreadsheetId = match[1];
   let rawData: any[][] = [];
+  let sheetsApiNotFoundMessage = '';
 
   // BƯỚC 1: Nếu có Access Token, gọi trực tiếp Google Sheets API v4 (Đọc được cả Sheet riêng tư của tài khoản)
   if (accessToken) {
@@ -869,8 +870,14 @@ export async function importFromGoogleSheetUrl(
             ? 'Phiên Google đã hết hạn. Hãy đăng nhập lại rồi thử nhập Sheet.'
             : `Tài khoản Google chưa có quyền đọc Sheet hoặc thiếu quyền spreadsheets.readonly${apiMessage ? `: ${apiMessage}` : '.'}`
         );
+      } else if (resp.status === 404) {
+        const errorBody = await resp.json().catch(() => null);
+        sheetsApiNotFoundMessage = errorBody?.error?.message || 'Requested spreadsheet was not found.';
+        console.warn('[SmartImporter] Sheets API trả về 404; sẽ thử Public CSV:', sheetsApiNotFoundMessage);
       } else {
-        throw new Error(`Google Sheets API trả về HTTP ${resp.status}. Vui lòng thử lại.`);
+        const errorBody = await resp.json().catch(() => null);
+        const apiMessage = errorBody?.error?.message;
+        throw new Error(`Google Sheets API trả về HTTP ${resp.status}${apiMessage ? `: ${apiMessage}` : '. Vui lòng thử lại.'}`);
       }
     } catch (err) {
       if (err instanceof Error && /Phiên Google|chưa có quyền đọc Sheet|Google Sheets API trả về/.test(err.message)) {
@@ -883,13 +890,28 @@ export async function importFromGoogleSheetUrl(
   // BƯỚC 2: Fallback sang Public CSV (cho Sheet công khai)
   if (rawData.length === 0) {
     const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv`;
-    const resp = await smartDriveFetch(csvUrl);
+    let resp: Response;
+    try {
+      resp = await smartDriveFetch(csvUrl);
+    } catch (err) {
+      const fallbackReason = err instanceof Error ? err.message : String(err);
+      if (sheetsApiNotFoundMessage) {
+        throw new Error(`Google Sheets API báo không tìm thấy hoặc không thể đọc Sheet (404: ${sheetsApiNotFoundMessage}); CSV dự phòng cũng không kết nối được (${fallbackReason}). Hãy đăng nhập lại bằng tài khoản có quyền xem file, rồi thử lại.`);
+      }
+      throw new Error(`Không thể kết nối Google Sheets để nhập dữ liệu: ${fallbackReason}`);
+    }
     if (!resp.ok) {
+      if (sheetsApiNotFoundMessage) {
+        throw new Error(`Google Sheets API báo 404 (${sheetsApiNotFoundMessage}) và CSV dự phòng trả HTTP ${resp.status}. Hãy mở file bằng đúng tài khoản Google đã đăng nhập và xác nhận tài khoản có quyền xem Sheet.`);
+      }
       throw new Error('Không thể tải dữ liệu từ Google Sheet. Vui lòng đăng nhập tài khoản có quyền truy cập hoặc bật quyền "Bất kỳ ai có liên kết đều có thể xem".');
     }
 
     const csvText = await resp.text();
     if (!csvText || csvText.includes('<!DOCTYPE html>') || csvText.includes('<html>')) {
+      if (sheetsApiNotFoundMessage) {
+        throw new Error(`Google Sheets API báo 404 (${sheetsApiNotFoundMessage}) và Sheet không cho phép đọc CSV công khai. Hãy đăng nhập lại bằng tài khoản có quyền xem file hoặc xác nhận đã chọn đúng Google Sheet.`);
+      }
       throw new Error('Google Sheet yêu cầu quyền truy cập. Hãy đăng nhập Google hoặc chia sẻ quyền cho file.');
     }
 

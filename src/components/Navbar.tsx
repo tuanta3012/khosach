@@ -303,7 +303,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
             }`}
           >
-            <Layers className="w-4.5 h-4.5" />
+            <Layers className="w-[23.4px] h-[23.4px]" />
           </button>
 
           {/* 2. Quét AI */}
@@ -317,7 +317,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             }`}
           >
             <div className="relative inline-flex items-center justify-center">
-              <Camera className="w-4.5 h-4.5" />
+              <Camera className="w-[23.4px] h-[23.4px]" />
               <span className="absolute -top-1 -right-1.5 bg-amber-400 text-slate-950 text-[6.5px] font-black px-0.5 rounded leading-tight shadow-xs">
                 AI
               </span>
@@ -330,7 +330,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             title="Thêm Sách"
             className="p-1 rounded-lg text-amber-300 hover:bg-[#381c12] transition-all duration-150 active:scale-95"
           >
-            <PlusCircle className="w-4.5 h-4.5" />
+            <PlusCircle className="w-[23.4px] h-[23.4px]" />
           </button>
 
           {/* 4. Đồng Bộ / Xuất Nhập */}
@@ -339,7 +339,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             title="Đồng Bộ"
             className="p-1 rounded-lg text-amber-200/70 hover:text-white hover:bg-[#381c12] transition-all duration-150 active:scale-95"
           >
-            <ArrowUpDown className="w-4.5 h-4.5" />
+            <ArrowUpDown className="w-[23.4px] h-[23.4px]" />
           </button>
         </div>
       </nav>
