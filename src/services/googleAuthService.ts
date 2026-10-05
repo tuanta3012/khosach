@@ -22,9 +22,7 @@ export const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
 // Cấp quyền Google Drive (Chỉ truy cập và quản lý các tệp được tạo hoặc mở bằng ứng dụng này)
-// và spreadsheets.readonly (Chỉ đọc các trang tính để import file dữ liệu cũ)
 provider.addScope('https://www.googleapis.com/auth/drive.file');
-provider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
 // Loại bỏ prompt: 'select_account' để trình duyệt tự động đăng nhập ngầm không làm phiền người dùng nếu đã cấp quyền rồi
 
 // Khóa lưu trữ trong hệ thống
@@ -49,8 +47,7 @@ if (Capacitor.isNativePlatform()) {
     scopes: [
       'profile',
       'email',
-      'https://www.googleapis.com/auth/drive.file',
-      'https://www.googleapis.com/auth/spreadsheets.readonly'
+      'https://www.googleapis.com/auth/drive.file'
     ],
     grantOfflineAccess: true,
   });
@@ -299,7 +296,7 @@ export async function silentSignInGoogleGIS(userEmail: string): Promise<string |
     try {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: GOOGLE_CLIENT_ID,
-        scope: 'email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets.readonly',
+        scope: 'email profile https://www.googleapis.com/auth/drive.file',
         prompt: 'none',
         login_hint: userEmail,
         callback: (tokenResponse: any) => {
@@ -372,7 +369,7 @@ export async function signInWithGoogleGIS(): Promise<{
   return new Promise((resolve, reject) => {
     const client = google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
-      scope: 'email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets.readonly',
+      scope: 'email profile https://www.googleapis.com/auth/drive.file',
       callback: async (tokenResponse: any) => {
         if (tokenResponse.error) {
           if (tokenResponse.error === 'popup_closed_by_user') {

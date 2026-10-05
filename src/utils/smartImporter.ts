@@ -868,7 +868,7 @@ export async function importFromGoogleSheetUrl(
         throw new Error(
           resp.status === 401
             ? 'Phiên Google đã hết hạn. Hãy đăng nhập lại rồi thử nhập Sheet.'
-            : `Tài khoản Google chưa có quyền đọc Sheet hoặc thiếu quyền spreadsheets.readonly${apiMessage ? `: ${apiMessage}` : '.'}`
+            : `Tài khoản Google chưa có quyền truy cập tệp Google Sheet này${apiMessage ? `: ${apiMessage}` : '.'}`
         );
       } else if (resp.status === 404) {
         const errorBody = await resp.json().catch(() => null);

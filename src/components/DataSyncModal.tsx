@@ -3,8 +3,7 @@ import {
   X, Upload, FileSpreadsheet, Download, 
   Loader2, Sparkles, RefreshCw, AlertTriangle, 
   Trash2, Edit3, Check, CheckSquare, Square,
-  Cloud, Plus, ExternalLink, Table, Eye, CheckCircle2, Link as LinkIcon,
-  FolderOpen
+  Cloud, Plus, ExternalLink, Table, Eye, CheckCircle2, Link as LinkIcon
 } from 'lucide-react';
 import { BookRecord } from '../types';
 import { useToast } from '../context/ToastContext';
@@ -16,7 +15,6 @@ import type {
 import { getAccessToken, googleSignIn } from '../services/googleAuthService';
 import { 
   fetchUserSpreadsheetsFromDrive,
-  fetchAllUserSpreadsheets,
   fetchBooksFromGoogleSheet,
   deleteDriveSpreadsheet, 
   SpreadsheetInfo,
@@ -74,12 +72,6 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   const [newSheetTitle, setNewSheetTitle] = useState('Kho sach');
   const [isCreatingSheet, setIsCreatingSheet] = useState(false);
   const [deletingSheetId, setDeletingSheetId] = useState<string | null>(null);
-
-  // States cho tính năng Nhập từ Drive (tách biệt hoàn toàn với danh sách liên kết)
-  const [showDriveImportPicker, setShowDriveImportPicker] = useState(false);
-  const [driveImportSheets, setDriveImportSheets] = useState<SpreadsheetInfo[]>([]);
-  const [isLoadingImportSheets, setIsLoadingImportSheets] = useState(false);
-  const [isImportingFromDrive, setIsImportingFromDrive] = useState<string | null>(null);
 
   const [sheetPendingDelete, setSheetPendingDelete] = useState<SpreadsheetInfo | null>(null);
 
@@ -203,48 +195,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
     }
   };
 
-  // 1d. Tải danh sách TẤT CẢ Google Sheet của user (cho picker Nhập từ Drive)
-  const handleLoadDriveImportSheets = async () => {
-    setIsLoadingImportSheets(true);
-    try {
-      let token = await getAccessToken();
-      if (!token) {
-        const res = await googleSignIn().catch(() => null);
-        token = res?.accessToken || null;
-      }
-      // Dùng hàm riêng — không lọc appProperties, lấy mọi Spreadsheet user có quyền
-      const sheets = await fetchAllUserSpreadsheets(token || '');
-      setDriveImportSheets(sheets);
-    } catch (err: any) {
-      showToast(`Lỗi tải danh sách Drive: ${err.message || String(err)}`, 'error');
-    } finally {
-      setIsLoadingImportSheets(false);
-    }
-  };
 
-  // 1e. Nhập từ Drive: user chọn 1 sheet → import vào staging area
-  const handleImportFromDriveSheet = async (sheet: SpreadsheetInfo) => {
-    setIsImportingFromDrive(sheet.id);
-    setScanResult(null);
-    try {
-      let token = await getAccessToken();
-      if (!token) {
-        const res = await googleSignIn().catch(() => null);
-        token = res?.accessToken || null;
-      }
-      const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheet.id}`;
-      const { importFromGoogleSheetUrl } = await import('../utils/smartImporter');
-      const result = await importFromGoogleSheetUrl(sheetUrl, token, books);
-      setScanResult(result);
-      setStagingItems(result.items);
-      setShowDriveImportPicker(false);
-      showToast(`Đã tải ${result.totalCount} dòng từ "${sheet.name}" vào bảng nháp!`, 'success');
-    } catch (err: any) {
-      showToast(`Lỗi nhập từ Drive: ${err.message || String(err)}`, 'error');
-    } finally {
-      setIsImportingFromDrive(null);
-    }
-  };
 
   // 2. Xử lý tải file Excel / CSV / PDF từ thiết bị
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -835,54 +786,6 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     Chưa có tệp Google Sheet phù hợp. Hãy tạo mới một bảng tính!
                   </div>
                 )}
-
-                {/* Hộp thoại xác nhận xóa file Google Sheet */}
-                {sheetPendingDelete && (
-                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-2 animate-in fade-in duration-150">
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                      <div>
-                        <p className="text-xs font-bold text-rose-950 leading-tight">
-                          Xóa file "{sheetPendingDelete.name}" khỏi Google Drive?
-                        </p>
-                        <p className="text-[10px] text-rose-700 leading-normal mt-0.5">
-                          {spreadsheetInfo?.id === sheetPendingDelete.id
-                            ? 'Đây là file đang liên kết! Xóa file sẽ đồng thời hủy liên kết khỏi ứng dụng.'
-                            : 'Tệp tin này sẽ bị xóa vĩnh viễn khỏi tài khoản Google Drive của bạn.'}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 pt-0.5">
-                      <button
-                        type="button"
-                        onClick={() => executeDeleteSheet(sheetPendingDelete)}
-                        disabled={deletingSheetId === sheetPendingDelete.id}
-                        className="flex-1 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition active:scale-95 cursor-pointer shadow-3xs flex items-center justify-center gap-1.5"
-                      >
-                        {deletingSheetId === sheetPendingDelete.id ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Đang xóa...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Xác nhận xóa</span>
-                          </>
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSheetPendingDelete(null)}
-                        disabled={!!deletingSheetId}
-                        className="flex-1 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded-lg transition active:scale-95 cursor-pointer"
-                      >
-                        Hủy bỏ
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Nút Quay lại */}
@@ -981,48 +884,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                         </button>
                       )}
                     </div>
-
-                    {showUnlinkConfirm && (
-                      <div className="p-2.5 bg-rose-50/80 border border-rose-100 rounded-xl space-y-2 animate-in fade-in duration-150">
-                        <div className="flex items-start gap-2">
-                          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                          <div>
-                            <p className="text-xs font-bold text-rose-950 leading-tight">
-                              Xác nhận hủy liên kết với file Sheet?
-                            </p>
-                            <p className="text-[9.5px] text-rose-700 leading-normal mt-0.5">
-                              Tệp tin trên Google Drive vẫn được giữ an toàn tuyệt đối.
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              setShowUnlinkConfirm(false);
-                              setLastSyncTime('');
-                              localStorage.removeItem('last_drive_sync_time');
-                              if (onSelectSpreadsheet) {
-                                await onSelectSpreadsheet(null);
-                              }
-                              showToast('Đã hủy liên kết Google Sheet thành công.', 'info');
-                            }}
-                            className="flex-1 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-extrabold rounded-lg transition active:scale-95 cursor-pointer shadow-3xs"
-                          >
-                            Xác nhận hủy
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setShowUnlinkConfirm(false)}
-                            className="flex-1 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 text-[11px] font-bold rounded-lg transition active:scale-95 cursor-pointer"
-                          >
-                            Hủy bỏ
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                    </div>
                 </div>
               ) : (
                 /* GỢI Ý ĐỒNG BỘ CHO CHẾ ĐỘ OFFLINE */
@@ -1065,88 +927,6 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                   </button>
                 </div>
 
-                {/* Nhập từ Drive (chỉ hiện khi Online) — dùng scope spreadsheets.readonly, liệt kê MỌI sheet của user */}
-                {appMode === 'online' && (
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!showDriveImportPicker) {
-                          handleLoadDriveImportSheets();
-                        }
-                        setShowDriveImportPicker(prev => !prev);
-                      }}
-                      disabled={isProcessing || !!isImportingFromDrive}
-                      className={`w-full h-10 px-2.5 border text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer disabled:opacity-40 ${
-                        showDriveImportPicker
-                          ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700'
-                      }`}
-                    >
-                      <FolderOpen className="w-3.5 h-3.5 shrink-0" />
-                      <span className="truncate">Nhập từ Drive</span>
-                      {isLoadingImportSheets && <Loader2 className="w-3 h-3 animate-spin ml-1 shrink-0" />}
-                    </button>
-
-                    {/* Drive Import Picker — hiển thị MỌI Google Sheet của user */}
-                    {showDriveImportPicker && (
-                      <div className="mt-2 bg-blue-50/70 border border-blue-200/80 rounded-xl p-2.5 space-y-2 animate-in fade-in duration-150">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <span className="text-[11px] font-black text-blue-900">Chọn file để nhập dữ liệu:</span>
-                            <p className="text-[9.5px] text-blue-600 mt-0.5">Tất cả Google Sheet bạn có quyền truy cập</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={handleLoadDriveImportSheets}
-                            disabled={isLoadingImportSheets}
-                            className="text-[10px] font-bold text-blue-700 hover:underline flex items-center gap-0.5 shrink-0"
-                          >
-                            <RefreshCw className={`w-2.5 h-2.5 ${isLoadingImportSheets ? 'animate-spin' : ''}`} />
-                            Làm mới
-                          </button>
-                        </div>
-
-                        {isLoadingImportSheets ? (
-                          <div className="py-4 text-center text-xs text-blue-600 flex items-center justify-center gap-2">
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span>Đang tìm file...</span>
-                          </div>
-                        ) : driveImportSheets.length > 0 ? (
-                          <div className="space-y-1.5 max-h-40 overflow-y-auto pr-0.5">
-                            {driveImportSheets.map(sheet => (
-                              <div
-                                key={sheet.id}
-                                className="p-2 rounded-lg border border-blue-100 bg-white flex items-center justify-between gap-2 hover:border-blue-300 hover:bg-blue-50 transition"
-                              >
-                                <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                                  <FileSpreadsheet className="w-3.5 h-3.5 text-[#1b6b5b] shrink-0" />
-                                  <span className="text-[11px] font-semibold text-slate-800 truncate">{sheet.name}</span>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => handleImportFromDriveSheet(sheet)}
-                                  disabled={!!isImportingFromDrive}
-                                  className="shrink-0 px-2.5 py-1 bg-[#1b6b5b] hover:bg-[#145d4b] text-white text-[10px] font-bold rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50 flex items-center gap-1"
-                                >
-                                  {isImportingFromDrive === sheet.id ? (
-                                    <><Loader2 className="w-3 h-3 animate-spin" /><span>Đang tải...</span></>
-                                  ) : (
-                                    <><Download className="w-3 h-3" /><span>Nhập</span></>
-                                  )}
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="py-3 text-center text-[11px] text-blue-700 bg-white rounded-lg border border-dashed border-blue-200">
-                            Không tìm thấy file Google Sheet nào trên Drive.
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
 
               {/* PHÂN KHU 3: STATUS BANNER GỌN GÀNG (1 dòng duy nhất) */}
@@ -1214,6 +994,111 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
           )}
         </div>
       </div>
+
+      {/* POPUP XÁC NHẬN HỦY LIÊN KẾT GOOGLE SHEET */}
+      {showUnlinkConfirm && (
+        <div
+          className="fixed inset-0 z-60 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setShowUnlinkConfirm(false)}
+        >
+          <div
+            className="w-full max-w-xs bg-white rounded-3xl shadow-2xl border border-slate-100 p-5 space-y-4 text-center transform animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 border border-amber-100 flex items-center justify-center mx-auto shadow-3xs">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-sm font-black text-slate-900">
+                Hủy liên kết với file Sheet?
+              </h3>
+              <p className="text-xs text-slate-500 leading-normal">
+                Tệp tin trên Google Drive vẫn được giữ an toàn tuyệt đối.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowUnlinkConfirm(false)}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowUnlinkConfirm(false);
+                  setLastSyncTime('');
+                  localStorage.removeItem('last_drive_sync_time');
+                  if (onSelectSpreadsheet) {
+                    await onSelectSpreadsheet(null);
+                  }
+                  showToast('Đã hủy liên kết Google Sheet thành công.', 'info');
+                }}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer shadow-xs"
+              >
+                Xác nhận hủy
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POPUP XÁC NHẬN XÓA FILE TRÊN GOOGLE DRIVE */}
+      {sheetPendingDelete && (
+        <div
+          className="fixed inset-0 z-60 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => !deletingSheetId && setSheetPendingDelete(null)}
+        >
+          <div
+            className="w-full max-w-xs bg-white rounded-3xl shadow-2xl border border-slate-100 p-5 space-y-4 text-center transform animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center mx-auto shadow-3xs">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-sm font-black text-slate-900">
+                Xóa file "{sheetPendingDelete.name}"?
+              </h3>
+              <p className="text-xs text-slate-500 leading-normal">
+                {spreadsheetInfo?.id === sheetPendingDelete.id
+                  ? 'Đây là file đang liên kết! Xóa file sẽ đồng thời hủy liên kết khỏi ứng dụng.'
+                  : 'Tệp tin này sẽ bị xóa vĩnh viễn khỏi tài khoản Google Drive của bạn.'}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setSheetPendingDelete(null)}
+                disabled={!!deletingSheetId}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer disabled:opacity-50"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={() => executeDeleteSheet(sheetPendingDelete)}
+                disabled={deletingSheetId === sheetPendingDelete.id}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {deletingSheetId === sheetPendingDelete.id ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Đang xóa...</span>
+                  </>
+                ) : (
+                  <span>Xác nhận xóa</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

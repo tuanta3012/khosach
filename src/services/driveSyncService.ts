@@ -232,53 +232,6 @@ export async function fetchUserSpreadsheetsFromDrive(
   return verifiedList;
 }
 
-/**
- * Lấy TOÀN BỘ danh sách Google Sheet của user (không lọc theo appProperties).
- * Dùng cho tính năng "Nhập từ Drive" — liệt kê cả file cũ do user tự tạo bên ngoài app.
- * Yêu cầu scope: https://www.googleapis.com/auth/drive.readonly HOẶC drive.file + spreadsheets.readonly
- * Ghi chú: drive.file scope chỉ thấy file do app tạo ra, nhưng kết hợp với
- * spreadsheets.readonly thì Google Drive API /files vẫn trả về theo quyền drive.file.
- * Để thấy TẤT CẢ file, dùng drive.metadata.readonly hoặc drive.readonly.
- * Trong phạm vi scope hiện tại (drive.file), hàm này sẽ lấy file theo drive.file
- * nhưng KHÔNG lọc appProperties — tức là trả về tất cả Spreadsheet mà app có quyền đọc.
- */
-export async function fetchAllUserSpreadsheets(
-  accessToken: string
-): Promise<SpreadsheetInfo[]> {
-  if (!accessToken) return [];
-
-  try {
-    // Không lọc appProperties — liệt kê tất cả Spreadsheet mà token có quyền truy cập
-    const query = encodeURIComponent(
-      `mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`
-    );
-    const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,webViewLink,trashed)&pageSize=200&orderBy=modifiedTime desc`;
-
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
-    if (!resp.ok) {
-      console.warn('[DriveSync] fetchAllUserSpreadsheets thất bại:', resp.status, await resp.text());
-      return [];
-    }
-
-    const data = await resp.json();
-    const files: any[] = data.files || [];
-
-    return files
-      .filter(f => !f.trashed)
-      .map(f => ({
-        id: f.id,
-        name: f.name || 'Không có tên',
-        webViewLink: f.webViewLink || `https://docs.google.com/spreadsheets/d/${f.id}/edit`,
-      }));
-  } catch (err) {
-    console.warn('[DriveSync] fetchAllUserSpreadsheets lỗi:', err);
-    return [];
-  }
-}
-
 export async function findOrCreateLibrarySpreadsheet(
   accessToken: string,
   userEmail: string,

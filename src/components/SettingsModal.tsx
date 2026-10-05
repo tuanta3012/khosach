@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   X,
   Settings as SettingsIcon,
@@ -156,6 +156,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [testingKeysMap, setTestingKeysMap] = useState<Record<string, boolean>>({});
   const [testResultsMap, setTestResultsMap] = useState<Record<string, { success: boolean; message: string }>>({});
 
+  const handleTestSingleKey = async (keyToTest: string, silentToast = false) => {
+    const clean = keyToTest.trim();
+    if (!clean) return;
+
+    setTestingKeysMap((prev) => ({ ...prev, [clean]: true }));
+    try {
+      const res = await testGeminiApiKey(clean);
+      setTestResultsMap((prev) => ({ ...prev, [clean]: res }));
+      if (!silentToast) {
+        if (res.success) {
+          showToast('API Key hoạt động tốt (OK)!', 'success');
+        } else {
+          showToast(`Lỗi Key: ${res.message || 'Không thể kết nối'}`, 'error');
+        }
+      }
+    } catch (err: any) {
+      setTestResultsMap((prev) => ({
+        ...prev,
+        [clean]: { success: false, message: err?.message || 'Lỗi kết nối mạng.' },
+      }));
+      if (!silentToast) {
+        showToast(`Lỗi Key: ${err?.message || 'Lỗi kết nối'}`, 'error');
+      }
+    } finally {
+      setTestingKeysMap((prev) => ({ ...prev, [clean]: false }));
+    }
+  };
+
   const handleAddKey = async () => {
     const clean = newKeyInput.trim();
     if (!clean) return;
@@ -168,7 +196,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     await onSaveSettings({ ...settings, geminiApiKeys: updatedKeys });
     setApiKeys(updatedKeys);
     setNewKeyInput(''); // Xóa trắng ô gõ phím sau khi hoàn thành
-    showToast('Đã thêm Gemini API Key mới!', 'success');
+    
+    // Tự động kiểm tra ngay lập tức khi vừa nhập xong
+    handleTestSingleKey(clean);
   };
 
   const handleDeleteKey = async (keyToDelete: string) => {
@@ -179,23 +209,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     showToast('Đã xóa Gemini API Key!', 'info');
   };
 
-  const handleTestSingleKey = async (keyToTest: string) => {
-    const clean = keyToTest.trim();
-    if (!clean) return;
-
-    setTestingKeysMap((prev) => ({ ...prev, [clean]: true }));
-    try {
-      const res = await testGeminiApiKey(clean);
-      setTestResultsMap((prev) => ({ ...prev, [clean]: res }));
-    } catch (err: any) {
-      setTestResultsMap((prev) => ({
-        ...prev,
-        [clean]: { success: false, message: err?.message || 'Lỗi kết nối mạng.' },
-      }));
-    } finally {
-      setTestingKeysMap((prev) => ({ ...prev, [clean]: false }));
+  // Tự động kiểm tra trạng thái tất cả các key khi mở bảng Cài Đặt nếu chưa có kết quả
+  const testedOnceRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (isOpen && apiKeys.length > 0) {
+      apiKeys.forEach((key) => {
+        if (!testedOnceRef.current.has(key)) {
+          testedOnceRef.current.add(key);
+          handleTestSingleKey(key, true);
+        }
+      });
     }
-  };
+  }, [isOpen, apiKeys]);
 
   if (!isOpen) return null;
 
@@ -860,66 +885,68 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           const masked = `${key.slice(0, 6)}••••••••${key.slice(-4)}`;
 
                           return (
-                            <div key={key} className="space-y-1 bg-slate-50 border border-slate-200/60 rounded-xl p-1.5 pl-2.5">
-                              <div className="flex items-center justify-between gap-1.5 text-xs">
-                                <span className="font-mono text-slate-700 text-[10.5px] font-semibold truncate flex-1 min-w-0">
-                                  #{idx + 1}: {masked}
-                                </span>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleTestSingleKey(key);
-                                    }}
-                                    disabled={testing}
-                                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition active:scale-95 disabled:opacity-60 flex items-center gap-1 cursor-pointer ${
-                                      testing
-                                        ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                        : result?.success === true
-                                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
-                                        : result?.success === false
-                                        ? 'bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100'
-                                        : 'bg-purple-100/70 text-[#653f96] hover:bg-[#653f96] hover:text-white'
-                                    }`}
-                                  >
-                                    {testing ? (
-                                      <>
-                                        <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                                        <span>Thử...</span>
-                                      </>
-                                    ) : result?.success === true ? (
-                                      <>
-                                        <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                                        <span>OK</span>
-                                      </>
-                                    ) : result?.success === false ? (
-                                      <>
-                                        <XCircle className="w-2.5 h-2.5 text-rose-600" />
-                                        <span>Lỗi</span>
-                                      </>
-                                    ) : (
-                                      <span>Test</span>
-                                    )}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteKey(key);
-                                    }}
-                                    title="Xóa Key này"
-                                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition active:scale-95 cursor-pointer"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
+                            <div key={key} className="bg-slate-50 border border-slate-200/70 rounded-xl px-2.5 py-1.5 flex items-center justify-between gap-1.5 transition">
+                              <span className="font-mono text-slate-700 text-[10.5px] font-semibold truncate flex-1 min-w-0">
+                                #{idx + 1}: {masked}
+                              </span>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleTestSingleKey(key);
+                                  }}
+                                  disabled={testing}
+                                  title={
+                                    testing
+                                      ? 'Đang kiểm tra key...'
+                                      : result?.success === true
+                                      ? 'Key hoạt động tốt (Bấm để thử lại)'
+                                      : result?.success === false
+                                      ? `Lỗi: ${result.message || 'Không hợp lệ'} (Bấm để thử lại)`
+                                      : 'Bấm để kiểm tra key'
+                                  }
+                                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition active:scale-95 disabled:opacity-60 flex items-center gap-1 cursor-pointer ${
+                                    testing
+                                      ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                      : result?.success === true
+                                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
+                                      : result?.success === false
+                                      ? 'bg-rose-50 text-rose-700 border border-rose-300 hover:bg-rose-100'
+                                      : 'bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200'
+                                  }`}
+                                >
+                                  {testing ? (
+                                    <>
+                                      <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-600" />
+                                      <span>Thử...</span>
+                                    </>
+                                  ) : result?.success === true ? (
+                                    <>
+                                      <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                                      <span>OK</span>
+                                    </>
+                                  ) : result?.success === false ? (
+                                    <>
+                                      <XCircle className="w-2.5 h-2.5 text-rose-600" />
+                                      <span>Lỗi</span>
+                                    </>
+                                  ) : (
+                                    <span>Test</span>
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteKey(key);
+                                  }}
+                                  title="Xóa Key này"
+                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition active:scale-95 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               </div>
-                              {result?.message && (
-                                <p className={`text-[9.5px] leading-tight font-medium pl-0.5 ${result.success ? 'text-emerald-600' : 'text-rose-500'}`}>
-                                  {result.message}
-                                </p>
-                              )}
                             </div>
                           );
                         })}

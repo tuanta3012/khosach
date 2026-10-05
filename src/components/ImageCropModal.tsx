@@ -264,19 +264,19 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/85 backdrop-blur-xs transition-all">
-      <div className="relative w-full max-w-2xl bg-[#1c0e08] border border-[#452215] rounded-3xl shadow-2xl flex flex-col overflow-hidden max-h-[96vh] text-slate-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs transition-all">
+      <div className="relative w-full max-w-2xl bg-white border border-slate-200 rounded-3xl shadow-2xl flex flex-col overflow-hidden max-h-[96vh] text-slate-800">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[#452215] bg-[#2b170e] shrink-0">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white shrink-0">
           <div className="flex items-center gap-2">
-            <span className="p-1.5 bg-[#9e5628] text-white rounded-xl shadow-xs">
+            <span className="p-1.5 bg-[#9e5628]/10 text-[#9e5628] rounded-xl shadow-3xs">
               <Crop className="w-4 h-4" />
             </span>
             <div>
-              <h3 className="text-sm font-extrabold text-white flex items-center gap-1.5">
+              <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
                 <span>Cắt đúng phần muốn OCR</span>
               </h3>
-              <p className="text-[11px] text-amber-200/70 hidden sm:block">
+              <p className="text-[11px] text-slate-500 hidden sm:block">
                 Kéo khung để chọn vùng kệ sách hoặc gáy sách cần bóc tách
               </p>
             </div>
@@ -284,59 +284,61 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
 
           <button
             onClick={onCancel}
-            className="p-1.5 rounded-xl text-amber-200/70 hover:text-white hover:bg-[#381c12] transition-colors"
+            className="p-1.5 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 active:scale-95 transition cursor-pointer"
             title="Đóng / Hủy"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Preset Toolbar */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-[#452215] bg-[#1c0e08] text-xs shrink-0 gap-1.5 overflow-x-auto">
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => handleSetPreset('full')}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#2b170e] hover:bg-[#381c12] text-amber-200 text-[11px] font-bold transition"
-            >
-              <Maximize2 className="w-3 h-3 text-amber-400" />
-              <span>Toàn ảnh</span>
-            </button>
+        {/* Preset Toolbar: 4 nút biểu tượng cân đối trong 1 hàng */}
+        <div className="grid grid-cols-4 gap-2 px-3 sm:px-4 py-2 border-b border-slate-100 bg-slate-50 shrink-0">
+          <button
+            type="button"
+            onClick={() => handleSetPreset('full')}
+            className="h-10 flex items-center justify-center rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 transition shadow-3xs active:scale-95 cursor-pointer"
+            title="Toàn ảnh (Chọn tất cả)"
+            aria-label="Toàn ảnh"
+          >
+            <Maximize2 className="w-5 h-5 text-[#9e5628]" />
+          </button>
 
-            <button
-              type="button"
-              onClick={() => handleSetPreset('shelf')}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#2b170e] hover:bg-[#381c12] text-amber-200 text-[11px] font-bold transition"
-            >
-              <Rows className="w-3 h-3 text-amber-400" />
-              <span>Kệ ngang</span>
-            </button>
+          <button
+            type="button"
+            onClick={() => handleSetPreset('shelf')}
+            className="h-10 flex items-center justify-center rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 transition shadow-3xs active:scale-95 cursor-pointer"
+            title="Khung kệ ngang"
+            aria-label="Kệ ngang"
+          >
+            <Rows className="w-5 h-5 text-[#9e5628]" />
+          </button>
 
-            <button
-              type="button"
-              onClick={() => handleSetPreset('spine')}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#2b170e] hover:bg-[#381c12] text-amber-200 text-[11px] font-bold transition"
-            >
-              <Columns className="w-3 h-3 text-purple-400" />
-              <span>Gáy đứng</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => handleSetPreset('spine')}
+            className="h-10 flex items-center justify-center rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 transition shadow-3xs active:scale-95 cursor-pointer"
+            title="Khung gáy đứng"
+            aria-label="Gáy đứng"
+          >
+            <Columns className="w-5 h-5 text-purple-600" />
+          </button>
 
           <button
             type="button"
             onClick={handleRotate}
             disabled={isRotating}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#1b6b5b] hover:bg-[#165b4c] text-white text-[11px] font-bold transition shrink-0 shadow-xs"
+            className="h-10 flex items-center justify-center rounded-xl bg-[#1b6b5b] hover:bg-[#145d4b] text-white border border-transparent transition shadow-3xs active:scale-95 cursor-pointer disabled:opacity-50"
+            title="Xoay ảnh 90°"
+            aria-label="Xoay ảnh 90°"
           >
-            <RotateCw className={`w-3 h-3 ${isRotating ? 'animate-spin' : ''}`} />
-            <span>Xoay 90°</span>
+            <RotateCw className={`w-5 h-5 ${isRotating ? 'animate-spin' : ''}`} />
           </button>
         </div>
 
         {/* Interactive Canvas */}
         <div
           ref={containerRef}
-          className="relative flex-1 bg-black/90 p-2 sm:p-4 flex items-center justify-center overflow-hidden min-h-[300px] max-h-[60vh] select-none touch-none"
+          className="relative flex-1 bg-slate-900 p-2 sm:p-4 flex items-center justify-center overflow-hidden min-h-[300px] max-h-[60vh] select-none touch-none"
         >
           {currentImageSrc && (
             <div className="relative inline-block max-w-full max-h-full">
@@ -415,11 +417,11 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="px-4 py-3 border-t border-[#452215] bg-[#2b170e] flex items-center justify-between gap-2 shrink-0">
+        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50 flex items-center justify-between gap-2 shrink-0">
           <button
             type="button"
             onClick={onCancel}
-            className="px-3 py-2 rounded-xl text-amber-200/70 hover:text-white hover:bg-[#381c12] text-xs font-semibold transition"
+            className="px-3 py-2 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-200/70 text-xs font-bold transition active:scale-95 cursor-pointer"
           >
             Chụp lại
           </button>
@@ -428,7 +430,7 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
             <button
               type="button"
               onClick={() => onSkipCrop(currentImageSrc)}
-              className="px-3 py-2 rounded-xl bg-[#1c0e08] hover:bg-[#381c12] text-amber-200 text-xs font-bold transition border border-[#452215]"
+              className="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold transition border border-slate-200 shadow-3xs active:scale-95 cursor-pointer"
             >
               Dùng toàn ảnh
             </button>
@@ -437,7 +439,7 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
               type="button"
               onClick={handleConfirm}
               disabled={isProcessingCrop}
-              className="flex items-center gap-1.5 px-4 py-2 bg-[#9e5628] hover:bg-[#85451e] active:scale-95 text-white text-xs font-extrabold rounded-xl shadow-md transition disabled:opacity-50"
+              className="flex items-center gap-1.5 px-4 py-2 bg-[#9e5628] hover:bg-[#85451e] active:scale-95 text-white text-xs font-extrabold rounded-xl shadow-md transition disabled:opacity-50 cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-200" />
               <span>{isProcessingCrop ? 'Đang cắt...' : 'Cắt & Bóc tách AI'}</span>
