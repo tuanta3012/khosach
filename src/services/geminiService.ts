@@ -773,6 +773,23 @@ ${CATEGORY_GUIDELINES}
 }
 
 /**
+ * Tự động loại bỏ các định dạng trùng lặp vô nghĩa dạng "Tên (Tên)" ví dụ "Lolita (Lolita)" -> "Lolita"
+ */
+export function cleanDuplicateParenthesis(title: string): string {
+  if (!title) return '';
+  const trimmed = title.trim();
+  const match = trimmed.match(/^(.+?)\s*\((.+?)\)$/);
+  if (match) {
+    const left = match[1].trim().toLowerCase();
+    const right = match[2].trim().toLowerCase();
+    if (left === right) {
+      return match[1].trim();
+    }
+  }
+  return trimmed;
+}
+
+/**
  * CHUẨN HÓA MỘT LÔ SÁCH (100% Client-Side)
  */
 async function processChunk(
@@ -781,7 +798,8 @@ async function processChunk(
 ): Promise<any[] | null> {
   if (!books || books.length === 0 || stopSignal?.current) return [];
 
-  const cleanInput = books.map((b) => ({
+  const cleanInput = books.map((b, idx) => ({
+    stt: idx + 1,
     id: b.id,
     title: (b.title || '').trim(),
     author: (b.author || '').trim(),
@@ -789,65 +807,35 @@ async function processChunk(
     category: (b.category || '').trim(),
   }));
 
-  const prompt = `Bạn là chuyên gia biên tập thư viện và hiệu đính văn học xuất sắc.
-Hãy chuẩn hóa, sửa lỗi chính tả, dịch thuật và hoàn thiện thông tin cho danh sách ${cleanInput.length} cuốn sách sau theo tiêu chuẩn xuất bản thư viện Việt Nam.
+  const prompt = `Bạn là chuyên gia biên tập thư viện và hiệu đính văn học xuất sắc tại Việt Nam.
+Hãy chuẩn hóa, sửa lỗi chính tả, xác định thể loại và hoàn thiện thông tin cho danh sách ${cleanInput.length} cuốn sách sau theo tiêu chuẩn xuất bản thư viện Việt Nam.
 
 QUY TẮC BẮT BUỘC:
 
 1. TÊN SÁCH (title):
-   a. NGUYÊN TẮC BẮT BUỘC KHI TÊN SÁCH ĐÃ LÀ TIẾNG VIỆT:
-      - NẾU TỰA SÁCH ĐẦU VÀO ĐÃ LÀ TIẾNG VIỆT (kể cả tác phẩm văn học dịch, sách dịch nước ngoài phát hành tại VN) -> BẮT BUỘC GIỮ NGUYÊN TỰA TIẾNG VIỆT.
-      - TUYỆT ĐỐI CẤM DỊCH NGƯỢC SANG TIẾNG ANH / PHÁP / NGA / TRUNG / NHẬT và KHÔNG CHÈN THÊM TỰA GỐC NƯỚC NGOÀI VÀO ĐẦU TỰA ĐỀ.
+   a. NGUYÊN TẮC BẢO TỒN TỰA SÁCH TIẾNG VIỆT HỢP LỆ:
+      - Nếu tựa sách người dùng nhập ĐÃ LÀ TIẾNG VIỆT HỢP LỆ (kể cả tác phẩm dịch nước ngoài như "Rừng Na Uy", "Ba người lính ngự lâm", "21 bài học cho thế kỷ 21", "80 ngày vòng quanh thế giới", "Đắc nhân tâm", "Nhà giả kim", "Đời con", "Chiến tranh và hòa bình") -> BẮT BUỘC GIỮ NGUYÊN TỰA TIẾNG VIỆT ĐÓ.
+      - TUYỆT ĐỐI CẤM đổi sang từ đồng nghĩa hoặc bản dịch khác nếu tên hiện tại đã đúng (ví dụ: "80 ngày vòng quanh thế giới" thì GIỮ NGUYÊN "80 ngày vòng quanh thế giới", CẤM tự ý đổi thành "Vòng quanh thế giới trong 80 ngày").
+      - TUYỆT ĐỐI CẤM dịch ngược sang tiếng Anh/Pháp/Nga hay chèn tên gốc nước ngoài vào đầu tựa đề.
       - Xóa bỏ các phụ chú tiếng Anh sai lệch hoặc thừa trong ngoặc đơn nếu có (ví dụ: "Đời con (The Good Earth)" -> sửa thành "Đời con").
-      - CÁC VÍ DỤ CẤM LÀM SAI:
-        * "Ba người lính ngự lâm - Tập 2" -> PHẢI LÀ "Ba người lính ngự lâm - Tập 2" (TUYỆT ĐỐI CẤM đổi thành "Les Trois Mousquetaires (Ba người lính ngự lâm - Tập 2)")
-        * "21 Bài học cho thế kỷ 21" -> PHẢI LÀ "21 bài học cho thế kỷ 21" (TUYỆT ĐỐI CẤM đổi thành "21 Lessons for the 21st Century...")
-        * "80 Ngày Vòng Quanh Thế Giới" -> PHẢI LÀ "Vòng quanh thế giới trong 80 ngày" hoặc "80 ngày vòng quanh thế giới" (TUYỆT ĐỐI CẤM chèn tiếng Pháp "Le Tour du monde en quatre-vingts jours...")
-        * "Đắc nhân tâm" -> PHẢI LÀ "Đắc nhân tâm" (TUYỆT ĐỐI CẤM chèn "How to Win Friends...")
-        * "Nhà giả kim" -> PHẢI LÀ "Nhà giả kim" (TUYỆT ĐỐI CẤM chèn "O Alquimista...")
-        * "Rừng Na Uy" -> PHẢI LÀ "Rừng Na Uy" (TUYỆT ĐỐI CẤM chèn "Norwegian Wood...")
-        * "Người Mỹ trầm lặng" -> PHẢI LÀ "Người Mỹ trầm lặng" (TUYỆT ĐỐI CẤM chèn "The Quiet American...")
-        * "Chiến tranh và hòa bình" -> PHẢI LÀ "Chiến tranh và hòa bình" (TUYỆT ĐỐI CẤM chèn tiếng Nga)
-        * "Đời con" -> PHẢI LÀ "Đời con"
 
-   b. NGUYÊN TẮC CHO SÁCH NGOẠI VĂN GỐC (TỰA ĐẦU VÀO ĐANG LÀ TIẾNG NƯỚC NGOÀI):
-      - Giữ nguyên tên tiếng nước ngoài gốc và BỔ SUNG TÊN DỊCH TIẾNG VIỆT TRONG NGOẶC ĐƠN theo định dạng: "Tên Tiếng Nước Ngoài (Tên Tiếng Việt)".
-      - ĐIỀU KIỆN DỊCH NGHIÊM NGẶT:
-        * CHỈ bổ sung tên tiếng Việt trong ngoặc đơn nếu cuốn sách đó ĐÃ CÓ BẢN DỊCH XUẤT BẢN CHÍNH THỨC, PHỔ BIẾN trên thị trường sách Việt Nam.
-        * TUYỆT ĐỐI CẤM DỊCH THÔ TỪNG TỪ (WORD-BY-WORD / DỊCH MÁY NGU NGHÊ).
-        * Nếu sách tiếng nước ngoài chưa được dịch xuất bản tại Việt Nam hoặc không rõ tựa dịch chính thức -> BẮT BUỘC GIỮ NGUYÊN TỰA GỐC TIẾNG NƯỚC NGOÀI (không tự bịa hoặc dịch từng từ).
-      - Ví dụ mẫu:
-        * "After You" -> "After You (Sau ngày anh đến)" (Bản dịch chính thức NXB Nhã Nam, TUYỆT ĐỐI CẤM dịch từng từ thành "Sau đó")
-        * "The Great Gatsby" -> "The Great Gatsby (Đại gia Gatsby)"
-        * "The Good Earth" -> "The Good Earth (Đất lành)" hoặc "The Good Earth (Đất mẹ)"
-        * "Thinking, Fast and Slow" -> "Thinking, Fast and Slow (Tư duy nhanh và chậm)"
-        * "Atomic Habits" -> "Atomic Habits (Thay đổi tí hon, hiệu quả bất ngờ)"
-        * "Designing Data-Intensive Applications" -> "Designing Data-Intensive Applications" (Không có bản dịch đại chúng chính thức, giữ nguyên tiếng Anh).
+   b. NGUYÊN TẮC CHO SÁCH NGOẠI VĂN GỐC & CHỐNG LẶP LẠI TÊN:
+      - Với sách ngoại văn gốc (tiêu đề đầu vào là tiếng Anh/Pháp): Giữ tên tiếng nước ngoài và bổ sung tên tiếng Việt trong ngoặc đơn: "Tên Tiếng Nước Ngoài (Tên Tiếng Việt)".
+      - TUYỆT ĐỐI CẤM LẶP LẠI TÊN DẠNG "Lolita (Lolita)" hay "Heidi (Heidi)": Nếu tên gốc tiếng nước ngoài và tên bản dịch tiếng Việt giống hệt nhau hoặc là tên nhân vật (ví dụ: "Lolita", "Heidi", "Sherlock Holmes", "Oliver Twist", "Don Quixote", "Frankenstein", "Dracula", "Hamlet", "Steve Jobs"), BẮT BUỘC CHỈ GIỮ 1 TÊN DUY NHẤT (ví dụ: "Lolita", "Heidi").
+      - CHỈ bổ sung tên tiếng Việt nếu cuốn sách đó ĐÃ CÓ BẢN DỊCH XUẤT BẢN CHÍNH THỨC, PHỔ BIẾN (ví dụ: "After You (Sau ngày anh đến)", "The Great Gatsby (Đại gia Gatsby)").
+      - TUYỆT ĐỐI CẤM DỊCH THÔ TỪNG TỪ (WORD-BY-WORD).
 
-   c. QUY TẮC VIẾT HOA CHỮ TRONG TIẾNG VIỆT (TRÁNH LỖI TITLE CASE CỦA TIẾNG ANH):
-      - Tiếng Việt CHỈ viết hoa chữ cái đầu tiên của tựa đề và các Tên riêng / Danh từ riêng (ví dụ: tên người, địa danh, nhân vật).
-      - TUYỆT ĐỐI KHÔNG VIẾT HOA TẤT CẢ CÁC TỪ như "Những Cuộc Phiêu Lưu Của Mít Đặc Và Các Bạn" hay "Mọi Nơi Vụn Vỡ" (đây là lỗi viết hoa sai ngữ pháp tiếng Việt).
-      - Ví dụ đúng chuẩn:
-        * "Những cuộc phiêu lưu của Mít Đặc và các bạn"
-        * "Mọi nơi vụn vỡ"
-        * "Vòng quanh thế giới trong 80 ngày"
-        * "Kính vạn hoa"
-        * "Dế Mèn phiêu lưu ký"
+   c. QUY TẮC VIẾT HOA CHỮ TRONG TIẾNG VIỆT:
+      - Tiếng Việt CHỈ viết hoa chữ cái đầu tiên của tựa đề và các Tên riêng / Danh từ riêng (ví dụ: "Những cuộc phiêu lưu của Mít Đặc và các bạn", "Dế Mèn phiêu lưu ký", "Kính vạn hoa").
+      - TUYỆT ĐỐI KHÔNG VIẾT HOA TẤT CẢ CÁC TỪ như kiểu Title Case của tiếng Anh.
 
-   d. BẢO TỒN THÔNG TIN TẬP / PHẦN / BỘ SÁCH CỦA NGƯỜI DÙNG:
-      - TUYỆT ĐỐI KHÔNG XÓA số tập, số quyển, khoảng tập hoặc phần bộ sách của người dùng! Người dùng lưu trữ sách theo tập cụ thể.
-      - Chuẩn hóa định dạng tập gọn gàng trong ngoặc đơn hoặc dấu gạch nối.
-      - Ví dụ:
-        * "Kính vạn hoa 1-18" -> "Kính vạn hoa (Tập 1-18)" hoặc "Kính vạn hoa - Tập 1-18" (CẤM xóa thành "Kính vạn hoa")
-        * "Mọi nơi vụn vỡ (phần 2 Chú bé mang Pyjama sọc)" -> "Mọi nơi vụn vỡ (Phần 2: Chú bé mang pyjama sọc)"
-        * "Harry Potter 1" -> "Harry Potter và Hòn đá Phù thủy (Tập 1)" hoặc "Harry Potter (Tập 1)"
+   d. BẢO TỒN THÔNG TIN TẬP / PHẦN / BỘ SÁCH:
+      - TUYỆT ĐỐI KHÔNG XÓA số tập, số quyển của người dùng (ví dụ: "Kính vạn hoa (Tập 1-18)", "Ba người lính ngự lâm - Tập 2").
 
-   e. SỬA LỖI GÕ PHÍM & CON SỐ BỊ NHẦM RÕ RÀNG:
-      - Nếu có lỗi gõ phím hoặc năm/số rõ ràng (như "1941 - Những khám phá mới về Châu Mỹ thời kỳ tiền Columbus" của Charles C. Mann -> sách thực tế là năm 1491, sửa thành "1491 – Những khám phá mới về châu Mỹ thời kỳ tiền Columbus").
-
-2. TÁC GIẢ (author):
-   - Tác giả Việt Nam: Viết hoa có dấu chuẩn xác (ví dụ: "Nguyễn Nhật Ánh", "Nam Cao", "Vũ Trọng Phụng", "Chu Lai", "Bảo Ninh").
-   - Tác giả nước ngoài: Giữ tên La-tinh chuẩn hoặc tên phiên âm quen thuộc trên bìa sách tiếng Việt (ví dụ: "Nikolay Nosov" hoặc "Nicolai Nôxốp", "Jules Verne", "Haruki Murakami", "Charles C. Mann", "Yuval Noah Harari", "Victor Hugo", "Dale Carnegie").
+2. TÁC GIẢ (author) & TÍNH TOÀN VẸN 1-1:
+   - Xử lý ĐÚNG TỪNG CUỐN theo đúng STT và ID. TUYỆT ĐỐI KHÔNG HOÁN ĐỔI TÁC PHẨM VÀ TÁC GIẢ GIỮA CÁC CUỐN (ví dụ: cuốn "Rừng Na-uy" tác giả Haruki Murakami thì BẮT BUỘC giữ đúng tác phẩm của Haruki Murakami, CẤM biến thành "Robinson Crusoe" của Daniel Defoe).
+   - Tác giả Việt Nam: Viết hoa có dấu chuẩn xác.
+   - Tác giả nước ngoài: Dùng tên La-tinh chuẩn hoặc tên phiên âm quen thuộc trên bìa sách tiếng Việt.
 
 3. NHÀ XUẤT BẢN (publisher):
    - Tên NXB chính thống uy tín tại Việt Nam (NXB Trẻ, Nhã Nam, NXB Kim Đồng, NXB Hội Nhà Văn, NXB Văn Học, NXB Phụ Nữ...). Nếu không rõ thì giữ nguyên hoặc để trống.
@@ -856,10 +844,10 @@ QUY TẮC BẮT BUỘC:
    - BẮT BUỘC chỉ chọn duy nhất 1 trong 13 thể loại chuẩn sau:
 ${CATEGORY_GUIDELINES}
 
-DANH SÁCH SÁCH CẦN CHUẨN HÓA:
+DANH SÁCH SÁCH CẦN CHUẨN HÓA (XỬ LÝ ĐÚNG THỨ TỰ VÀ ĐÚNG ID):
 ${JSON.stringify(cleanInput, null, 2)}
 
-Trả về mảng JSON đúng cấu trúc, BẮT BUỘC giữ nguyên trường "id" của từng cuốn:`;
+Trả về mảng JSON đúng cấu trúc và BẮT BUỘC đúng trường "id" của từng cuốn:`;
 
   const buildContents = () => [{ text: prompt }];
 
@@ -882,7 +870,42 @@ Trả về mảng JSON đúng cấu trúc, BẮT BUỘC giữ nguyên trường 
     },
   };
 
-  return await executeWithFailover(buildContents, config);
+  const rawResults = await executeWithFailover(buildContents, config);
+  if (!Array.isArray(rawResults)) return null;
+
+  // Căn chỉnh và hậu xử lý an toàn 1-1
+  return books.map((origBook, idx) => {
+    let item = rawResults.find((r: any) => r && r.id === origBook.id);
+    if (!item && rawResults[idx]) {
+      item = rawResults[idx];
+    }
+
+    if (!item) {
+      return {
+        id: origBook.id,
+        title: origBook.title,
+        author: origBook.author,
+        publisher: origBook.publisher,
+        category: origBook.category || 'Chung',
+        is_ai_normalized: true,
+      };
+    }
+
+    const rawTitle = String(item.title || origBook.title).trim();
+    const resolvedTitle = cleanDuplicateParenthesis(rawTitle) || origBook.title;
+    const resolvedAuthor = String(item.author || origBook.author).trim() || origBook.author;
+    const resolvedPublisher = String(item.publisher || origBook.publisher || '').trim();
+    const resolvedCategory = sanitizeSingleCategory(item.category || origBook.category || 'Chung');
+
+    return {
+      id: origBook.id,
+      title: resolvedTitle,
+      author: resolvedAuthor,
+      publisher: resolvedPublisher,
+      category: resolvedCategory,
+      is_ai_normalized: true,
+    };
+  });
 }
 
 export interface BatchNormalizeOptions {
