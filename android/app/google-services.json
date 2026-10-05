@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "742077941372",
+    "project_id": "gen-lang-client-0516921569",
+    "storage_bucket": "gen-lang-client-0516921569.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:742077941372:android:daea2704ec150104912bf9",
+        "android_client_info": {
+          "package_name": "com.khosach.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "742077941372-8q2e54aapi47ekenp7hcgrtss4o698r2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.khosach.app",
+            "certificate_hash": "f8a60308c32761d84eeb88e8a6b85a53d6108b35"
+          }
+        },
+        {
+          "client_id": "742077941372-fk4ef96nfj54dqjov8vhpgum2tsq9dep.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDbvUpAMknoPVJXoqm3ZeDDiZgFeyIkVFg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "742077941372-fk4ef96nfj54dqjov8vhpgum2tsq9dep.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
