@@ -127,27 +127,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const normalizedCount = books.filter((b) => b.is_ai_normalized).length;
   const pendingBooks = books.filter((b) => !b.is_ai_normalized);
 
-  const [autoNormalize, setAutoNormalize] = useState<boolean>(() => settings.autoNormalizeEnabled ?? true);
+  // Mặc định tính năng AI tự động luôn là OFF khi cài app mới
+  const [autoNormalize, setAutoNormalize] = useState<boolean>(() => !!settings.autoNormalizeEnabled);
 
   const handleToggleAutoNormalize = async (val: boolean) => {
     setAutoNormalize(val);
     await onSaveSettings({ ...settings, autoNormalizeEnabled: val });
   };
 
-  // States cho danh sách Gemini API Keys cá nhân
+  // States cho danh sách Gemini API Keys cá nhân (hoàn toàn do người dùng nhập, không có key mặc định)
   const [newKeyInput, setNewKeyInput] = useState<string>('');
-  const [isKeySectionExpanded, setIsKeySectionExpanded] = useState<boolean>(() => {
-    const keys = settings.geminiApiKeys && settings.geminiApiKeys.length > 0
+  
+  const getCleanKeys = () => {
+    const raw = settings.geminiApiKeys && settings.geminiApiKeys.length > 0
       ? settings.geminiApiKeys
       : getStoredGeminiApiKeys();
-    return keys.length === 0;
+    return (raw || []).filter((k: string) => k && !k.includes('86IQ'));
+  };
+
+  const [isKeySectionExpanded, setIsKeySectionExpanded] = useState<boolean>(() => {
+    return getCleanKeys().length === 0;
   });
   
   const [apiKeys, setApiKeys] = useState<string[]>(() => {
-    const keys = settings.geminiApiKeys && settings.geminiApiKeys.length > 0
-      ? settings.geminiApiKeys
-      : getStoredGeminiApiKeys();
-    return keys;
+    return getCleanKeys();
   });
 
   const [testingKeysMap, setTestingKeysMap] = useState<Record<string, boolean>>({});
@@ -944,7 +947,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 type="button"
                 onClick={handleManualDeduplicate}
                 disabled={isDeduplicating || books.length === 0}
-                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shrink-0 disabled:opacity-50 active:scale-95 cursor-pointer shadow-xs"
+                className="px-3.5 py-2 bg-[#9e5628] hover:bg-[#854720] text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shrink-0 disabled:opacity-50 active:scale-95 cursor-pointer shadow-xs"
               >
                 {isDeduplicating ? (
                   <>
@@ -1099,7 +1102,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <button
                   type="button"
                   onClick={onCheckUpdates}
-                  className="px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95"
+                  className="px-3.5 py-2 text-xs font-bold text-white bg-[#9e5628] hover:bg-[#854720] rounded-xl transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   <span>Cập nhật</span>
@@ -1121,7 +1124,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="flex-1 py-2.5 px-4 bg-[#165b4c] hover:bg-[#124a3e] text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer text-center shadow-xs flex items-center justify-center gap-1.5"
+                className="flex-1 py-2.5 px-4 bg-[#9e5628] hover:bg-[#854720] text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer text-center shadow-xs flex items-center justify-center gap-1.5"
               >
                 <Check className="w-4 h-4" />
                 <span>Lưu Cấu Hình</span>

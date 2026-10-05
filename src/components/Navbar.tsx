@@ -60,6 +60,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isMigratingToCloud, setIsMigratingToCloud] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement>(null);
 
+  // Close account menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (accountMenuRef.current && !accountMenuRef.current.contains(event.target as Node)) {
@@ -90,8 +91,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <>
-      {/* Top Bar for Mobile & Desktop - Emerald Green Theme */}
-      <header className="sticky top-0 z-40 bg-emerald-900 text-white shadow-md border-b border-emerald-800 pt-[env(safe-area-inset-top,0px)]">
+      {/* Top Bar for Mobile & Desktop - Tông màu Nâu Vàng Gỗ Sồi Sienna (#2b170e) */}
+      <header className="sticky top-0 z-40 bg-[#2b170e] text-white shadow-md border-b border-[#452215]/80 pt-[env(safe-area-inset-top,0px)]">
         <div className="max-w-7xl mx-auto px-3 sm:px-5">
           <div className="flex items-center justify-between h-15 sm:h-16 gap-2">
             {/* App Branding & Storage Mode Status Indicator */}
@@ -99,21 +100,22 @@ export const Navbar: React.FC<NavbarProps> = ({
               <img
                 src="/stk_app_icon.png"
                 alt="Kho Sách"
-                className="w-7.5 h-7.5 sm:w-8 sm:h-8 rounded-lg object-contain bg-white/95 p-0.5 shadow-sm border border-emerald-400/40 shrink-0"
+                className="w-7.5 h-7.5 sm:w-8 sm:h-8 rounded-lg object-contain bg-white/95 p-0.5 shadow-sm border border-amber-400/40 shrink-0"
               />
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <h1 className="text-xs sm:text-sm font-extrabold tracking-tight text-white leading-tight">
                     Kho Sách
                   </h1>
-                  <span className="px-1.5 py-0.2 text-[9.5px] font-bold bg-emerald-700 text-emerald-100 rounded border border-emerald-500/40">
+                  <span className="px-1.5 py-0.2 text-[9.5px] font-bold bg-[#9e5628]/60 text-amber-200 rounded border border-amber-500/40">
                     {totalBooksCount}
                   </span>
 
+                  {/* Badge chỉ số thay đổi lớn !X khi AI đang làm giàu dữ liệu */}
                   {pendingAiCount > 0 && (
                     <span
                       title={`${pendingAiCount} cuốn sách đang chờ/chuẩn hóa AI`}
-                      className="px-1.5 py-0.2 text-[9.5px] font-black bg-amber-400 text-slate-950 rounded-full animate-bounce shadow-xs flex items-center gap-0.5"
+                      className="px-1.5 py-0.2 text-[9.5px] font-black bg-amber-500 text-slate-950 rounded-full animate-bounce shadow-xs flex items-center gap-0.5"
                     >
                       <Sparkles className="w-2.5 h-2.5" />
                       !{pendingAiCount}
@@ -121,7 +123,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                   )}
                 </div>
 
+                {/* Storage Mode Status Indicator */}
                 {appMode === 'online' ? (
+                  /* Trạng thái Online: Chấm xanh lá + chữ "Online" tinh gọn */
                   <button
                     type="button"
                     onClick={onOpenModeModal}
@@ -136,10 +140,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <span>{isSyncingDrive ? 'Đang đồng bộ...' : 'Online'}</span>
                   </button>
                 ) : (
+                  /* Trạng thái Offline: Chấm xám + chữ "Offline" tinh gọn */
                   <button
                     type="button"
                     onClick={onOpenModeModal}
-                    className="text-[9.5px] sm:text-xs text-emerald-200/70 flex items-center gap-1 font-bold hover:text-white transition text-left"
+                    className="text-[9.5px] sm:text-xs text-slate-300 flex items-center gap-1 font-bold hover:text-white transition text-left"
                     title="Chế độ ngoại tuyến (Bộ nhớ máy)"
                   >
                     <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-slate-400" />
@@ -150,13 +155,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             {/* Desktop Navigation Tabs */}
-            <div className="hidden md:flex items-center gap-1 bg-emerald-950 p-1 rounded-xl border border-emerald-800">
+            <div className="hidden md:flex items-center gap-1 bg-[#1a0c08] p-1 rounded-xl border border-[#452215]/80">
               <button
                 onClick={() => onTabChange('table')}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition ${
                   currentTab === 'table'
-                    ? 'bg-emerald-600 text-white shadow-xs'
-                    : 'text-emerald-200/70 hover:text-white hover:bg-emerald-800'
+                    ? 'bg-[#9e5628] text-white shadow-xs'
+                    : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
                 }`}
               >
                 <Layers className="w-3.5 h-3.5" />
@@ -167,8 +172,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onClick={() => onTabChange('scanner')}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition ${
                   currentTab === 'scanner'
-                    ? 'bg-emerald-600 text-white shadow-xs'
-                    : 'text-emerald-200/70 hover:text-white hover:bg-emerald-800'
+                    ? 'bg-[#9e5628] text-white shadow-xs'
+                    : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
                 }`}
               >
                 <div className="relative inline-flex items-center">
@@ -185,28 +190,30 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="flex items-center gap-1">
               <div className="relative" ref={accountMenuRef}>
                 {appMode === 'online' && currentUser ? (
+                  /* User logged in: Profile Pill with Avatar & Direct Actions */
                   <button
                     type="button"
                     onClick={() => setIsAccountMenuOpen(!isAccountMenuOpen)}
-                    className="flex items-center gap-1 p-0.5 sm:px-1.5 rounded-full bg-emerald-800 hover:bg-emerald-700 border border-emerald-500/40 text-white text-xs font-bold transition active:scale-95 shadow-sm"
+                    className="flex items-center gap-1 p-0.5 sm:px-1.5 rounded-full bg-[#381c12] hover:bg-[#4a2417] border border-amber-500/40 text-white text-xs font-bold transition active:scale-95 shadow-sm"
                     title={currentUser.email}
                   >
                     {currentUser.photoURL ? (
                       <img
                         src={currentUser.photoURL}
                         alt={currentUser.name}
-                        className="w-6 h-6 rounded-full object-cover border border-emerald-400/60"
+                        className="w-6 h-6 rounded-full object-cover border border-amber-400/60"
                         referrerPolicy="no-referrer"
                       />
                     ) : (
-                      <div className="w-6 h-6 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center font-black text-[11px] shadow-xs">
+                      <div className="w-6 h-6 rounded-full bg-amber-500 text-slate-950 flex items-center justify-center font-black text-[11px] shadow-xs">
                         {(currentUser.name || currentUser.email || 'U').charAt(0).toUpperCase()}
                       </div>
                     )}
-                    <span className="hidden sm:inline max-w-[100px] truncate text-emerald-100 font-semibold">{currentUser.name}</span>
-                    <ChevronDown className="w-3 h-3 text-emerald-300 opacity-80" />
+                    <span className="hidden sm:inline max-w-[100px] truncate text-amber-100 font-semibold">{currentUser.name}</span>
+                    <ChevronDown className="w-3 h-3 text-amber-300 opacity-80" />
                   </button>
                 ) : (
+                  /* User logged out / Offline: Direct Google Sign-In Button */
                   <button
                     onClick={() => {
                       if (onGoogleSignIn) {
@@ -215,7 +222,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         onOpenModeModal();
                       }
                     }}
-                    className="flex items-center gap-1.5 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-[11px] font-bold rounded-lg shadow-xs transition border border-emerald-400/30"
+                    className="flex items-center gap-1.5 px-2 py-1 bg-[#9e5628] hover:bg-[#85451e] active:scale-95 text-white text-[11px] font-bold rounded-lg shadow-xs transition border border-amber-400/30"
                   >
                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
                       <path fill="#ffffff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -230,11 +237,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <div
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
-                    className="absolute right-0 mt-1.5 w-56 bg-white text-slate-900 border border-slate-200 rounded-2xl shadow-2xl p-2 z-50 animate-in fade-in duration-150 space-y-1"
+                    className="absolute right-0 mt-1.5 w-56 bg-[#2b170e] text-white border border-[#452215] rounded-2xl shadow-2xl p-2 z-50 animate-in fade-in duration-150 space-y-1"
                   >
-                    <div className="p-2 border-b border-slate-100">
-                      <p className="text-xs font-bold text-slate-900 truncate">{currentUser.name}</p>
-                      <p className="text-[10px] text-slate-500 truncate">{currentUser.email}</p>
+                    <div className="p-2 border-b border-[#452215]">
+                      <p className="text-xs font-bold text-white truncate">{currentUser.name}</p>
+                      <p className="text-[10px] text-amber-200/70 truncate">{currentUser.email}</p>
                     </div>
 
                     {onOpenFamilyShare && (
@@ -245,9 +252,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                           setIsAccountMenuOpen(false);
                           onOpenFamilyShare();
                         }}
-                        className="w-full flex items-center gap-2 p-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 transition text-left cursor-pointer"
+                        className="w-full flex items-center gap-2 p-2 rounded-xl text-xs font-semibold text-amber-200 hover:bg-[#381c12] active:bg-[#4a2417] transition text-left cursor-pointer"
                       >
-                        <Users className="w-4 h-4 text-emerald-600" />
+                        <Users className="w-4 h-4 text-amber-400" />
                         <span>Quản lý thành viên</span>
                       </button>
                     )}
@@ -260,9 +267,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                           setIsAccountMenuOpen(false);
                           onGoogleLogout();
                         }}
-                        className="w-full flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-rose-600 hover:bg-rose-50 transition text-left cursor-pointer"
+                        className="w-full flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-rose-300 hover:bg-rose-950/40 active:bg-rose-900/60 transition text-left cursor-pointer"
                       >
-                        <LogOut className="w-4 h-4 text-rose-500" />
+                        <LogOut className="w-4 h-4 text-rose-400" />
                         <span>Đăng xuất</span>
                       </button>
                     )}
@@ -274,7 +281,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 onClick={onOpenSettingsModal}
                 title="Cài đặt"
-                className="p-1.5 text-emerald-100 hover:text-white hover:bg-emerald-800 active:scale-95 rounded-lg transition border border-transparent hover:border-emerald-700"
+                className="p-1.5 text-amber-100 hover:text-white hover:bg-[#381c12] active:scale-95 rounded-lg transition border border-transparent hover:border-[#452215]"
               >
                 <Settings className="w-4.5 h-4.5" />
               </button>
@@ -283,28 +290,30 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       </header>
 
-      {/* Bottom Navigation Dock for Mobile - Emerald Green Theme */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-emerald-950/95 backdrop-blur-md border-t border-emerald-800 px-4 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
+      {/* Bottom Navigation Dock for Mobile - Tông màu Nâu Vàng Gỗ Sồi Sienna (#2b170e) (Tăng chiều cao 30%) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#2b170e]/95 backdrop-blur-md border-t border-[#452215]/80 px-4 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
         <div className="flex items-center justify-around max-w-md mx-auto h-12">
+          {/* 1. Kho Sách */}
           <button
             onClick={() => onTabChange('table')}
             title="Kho Sách"
             className={`p-1 rounded-lg transition-all duration-150 active:scale-95 ${
               currentTab === 'table'
-                ? 'text-white bg-emerald-600 font-bold shadow-xs'
-                : 'text-emerald-200/70 hover:text-white hover:bg-emerald-800'
+                ? 'text-white bg-[#9e5628] font-bold shadow-xs'
+                : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
             }`}
           >
             <Layers className="w-[23.4px] h-[23.4px]" />
           </button>
 
+          {/* 2. Quét AI */}
           <button
             onClick={() => onTabChange('scanner')}
             title="Quét AI"
             className={`p-1 rounded-lg transition-all duration-150 active:scale-95 ${
               currentTab === 'scanner'
-                ? 'text-white bg-emerald-600 font-bold shadow-xs'
-                : 'text-emerald-200/70 hover:text-white hover:bg-emerald-800'
+                ? 'text-white bg-[#9e5628] font-bold shadow-xs'
+                : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
             }`}
           >
             <div className="relative inline-flex items-center justify-center">
@@ -315,18 +324,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </button>
 
+          {/* 3. Thêm Sách */}
           <button
             onClick={onOpenAddModal}
             title="Thêm Sách"
-            className="p-1 rounded-lg text-amber-300 hover:bg-emerald-800 transition-all duration-150 active:scale-95"
+            className="p-1 rounded-lg text-amber-300 hover:bg-[#381c12] transition-all duration-150 active:scale-95"
           >
             <PlusCircle className="w-[23.4px] h-[23.4px]" />
           </button>
 
+          {/* 4. Đồng Bộ / Xuất Nhập */}
           <button
             onClick={onOpenSyncModal}
             title="Đồng Bộ"
-            className="p-1 rounded-lg text-emerald-200/70 hover:text-white hover:bg-emerald-800 transition-all duration-150 active:scale-95"
+            className="p-1 rounded-lg text-amber-200/70 hover:text-white hover:bg-[#381c12] transition-all duration-150 active:scale-95"
           >
             <ArrowUpDown className="w-[23.4px] h-[23.4px]" />
           </button>

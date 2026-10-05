@@ -57,9 +57,6 @@ const OBFUSCATED_SHEET_PAYLOAD = 'IycrMSNqcHklOi8ncVVfXVEzNmsgOj9qLCQ9LiQqODs6JC
 const NEW_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxE1QPGt-xyLiEjzBo2vrZLsjK36aTQ0PDHVdEbx2eBu2DjwaRtTubM0_uf5hBZgyvn/exec';
 const OBFUSCATED_SCRIPT_PAYLOAD = encodeVaultPayload(NEW_APPS_SCRIPT_URL);
 
-// Payload mã hóa của Google Gemini API Key mặc định (đã xáo trộn hoàn toàn, không lộ chuỗi)
-const OBFUSCATED_GEMINI_PAYLOAD = 'CgJxADJoDRh3HjxlFGJ8agMpCyAZeBgyM20nKjICfTQ3MwIiZxUuIHgsF191cQBsPn11HAM=';
-
 /**
  * Link Google Sheet mặc định sau khi tự động giải mã trong bộ nhớ RAM
  */
@@ -69,11 +66,6 @@ export const DEFAULT_GOOGLE_SHEET_URL = decodeVaultPayload(OBFUSCATED_SHEET_PAYL
  * URL Google Apps Script Endpoint mặc định sau khi tự động giải mã trong bộ nhớ RAM
  */
 export const DEFAULT_APPS_SCRIPT_URL = decodeVaultPayload(OBFUSCATED_SCRIPT_PAYLOAD);
-
-/**
- * Google Gemini API Key mặc định sau khi tự động giải mã trong bộ nhớ RAM
- */
-export const DEFAULT_GEMINI_API_KEY = decodeVaultPayload(OBFUSCATED_GEMINI_PAYLOAD);
 
 /**
  * Lấy link Google Sheet đã lưu trong LocalStorage hoặc mặc định từ mã nguồn
@@ -103,12 +95,12 @@ export function getStoredOrConfiguredScriptUrl(): string {
 }
 
 /**
- * Lấy Gemini API Key đã lưu trong LocalStorage hoặc mặc định từ bộ mã hóa
+ * Lấy Gemini API Key đã lưu trong LocalStorage do người dùng nhập (không lưu cứng key trong code)
  */
 export function getStoredOrConfiguredApiKey(): string {
   const stored = localStorage.getItem('custom_gemini_api_key');
   if (stored && stored.trim().length > 0) {
     return stored.trim();
   }
-  return DEFAULT_GEMINI_API_KEY;
+  return '';
 }

@@ -27,7 +27,6 @@ import {
   KeyQuotaMetrics 
 } from '../types';
 import { sanitizeSingleCategory } from '../utils/driveSyncClient';
-import { getStoredOrConfiguredApiKey } from '../config/syncConfig';
 
 const KEYS_STORAGE_KEY = 'gemini_api_keys_v1';
 const MODEL_STORAGE_KEY = 'gemini_selected_model_v1';
@@ -121,7 +120,8 @@ export function getNextAvailableKey(keys: string[], excludedKeys: ReadonlySet<st
 }
 
 /**
- * LƯU TRỮ VÀ TRUY VẤN DANH SÁCH API KEYS
+ * LƯU TRỮ VÀ TRUY VẤN DANH SÁCH API KEYS DO NGƯỜI DÙNG CUNG CẤP
+ * Hoàn toàn không lưu bất kỳ API Key nào trong mã nguồn.
  */
 export function getStoredGeminiApiKeys(): string[] {
   try {
@@ -129,7 +129,14 @@ export function getStoredGeminiApiKeys(): string[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((k: string) => k.trim()).filter(Boolean);
+        // Tự động thanh lọc loại bỏ key rác/key mặc định cũ nếu còn sót lại trong bộ nhớ máy
+        const cleanList = parsed
+          .map((k: string) => k.trim())
+          .filter((k: string) => k && !k.endsWith('86IQ') && !k.startsWith('AQ.Ab8'));
+        if (cleanList.length !== parsed.length) {
+          saveStoredGeminiApiKeys(cleanList);
+        }
+        return cleanList;
       }
     }
   } catch (err) {
@@ -138,12 +145,12 @@ export function getStoredGeminiApiKeys(): string[] {
 
   const oldSingleKey = localStorage.getItem('custom_gemini_api_key');
   if (oldSingleKey && oldSingleKey.trim()) {
-    return [oldSingleKey.trim()];
-  }
-
-  const vaultKey = getStoredOrConfiguredApiKey();
-  if (vaultKey && vaultKey.trim()) {
-    return [vaultKey.trim()];
+    const trimmed = oldSingleKey.trim();
+    if (trimmed.endsWith('86IQ') || trimmed.startsWith('AQ.Ab8')) {
+      localStorage.removeItem('custom_gemini_api_key');
+      return [];
+    }
+    return [trimmed];
   }
 
   return [];
