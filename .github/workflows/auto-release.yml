@@ -197,8 +197,8 @@ jobs:
                 }
                 buildTypes {`);
               }
-              if (content.includes("buildTypes {") && !content.includes("signingConfig signingConfigs.release")) {
-                content = content.replace(/release\s*\{/, "release {\n            signingConfig signingConfigs.release");
+              if (!content.includes("signingConfig signingConfigs.release")) {
+                content = content.replace(/buildTypes\s*\{([\s\S]*?)release\s*\{/, "buildTypes {$1release {\n            signingConfig signingConfigs.release");
               }
               fs.writeFileSync("android/app/build.gradle", content, "utf8");
             '
