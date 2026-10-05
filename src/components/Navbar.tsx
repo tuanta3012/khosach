@@ -94,7 +94,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Top Bar for Mobile & Desktop - Warm Sienna Theme (Giảm 20% chiều cao) */}
       <header className="sticky top-0 z-40 bg-[#2b170e] text-white shadow-md border-b border-[#452215]/80 pt-[env(safe-area-inset-top,0px)]">
         <div className="max-w-7xl mx-auto px-3 sm:px-5">
-          <div className="flex items-center justify-between h-11 sm:h-12 gap-2">
+          <div className="flex items-center justify-between h-15 sm:h-16 gap-2">
             {/* App Branding & Storage Mode Status Indicator */}
             <div className="flex items-center gap-2 min-w-0">
               <img
@@ -290,9 +290,9 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       </header>
 
-      {/* Bottom Navigation Dock for Mobile - Warm Sienna Theme (Giảm 20% chiều cao) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#2b170e]/95 backdrop-blur-md border-t border-[#452215]/80 px-4 pt-0.5 pb-[max(0.2rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
-        <div className="flex items-center justify-around max-w-md mx-auto h-9">
+      {/* Bottom Navigation Dock for Mobile - Warm Sienna Theme (Tăng chiều cao 30%) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#2b170e]/95 backdrop-blur-md border-t border-[#452215]/80 px-4 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
+        <div className="flex items-center justify-around max-w-md mx-auto h-12">
           {/* 1. Kho Sách */}
           <button
             onClick={() => onTabChange('table')}
