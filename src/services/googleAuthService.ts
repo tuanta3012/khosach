@@ -34,6 +34,12 @@ const REFRESH_TOKEN_KEY = 'google_drive_refresh_token';
 const ID_TOKEN_KEY = 'google_drive_id_token';
 const USER_PROFILE_KEY = 'google_drive_user_profile';
 
+function persistNativePreference(key: string, value: string): void {
+  void Preferences.set({ key, value }).catch((err: unknown) => {
+    console.warn('[GoogleAuth] Lỗi lưu native preference:', err);
+  });
+}
+
 // Khởi tạo Google Auth cho Native nếu đang chạy trên ứng dụng di động Android/iOS
 const GOOGLE_CLIENT_ID = '742077941372-fk4ef96nfj54dqjov8vhpgum2tsq9dep.apps.googleusercontent.com';
 
@@ -99,21 +105,21 @@ export function saveGoogleAuthSession(session: {
     
     localStorage.setItem(TOKEN_KEY, session.accessToken);
     localStorage.setItem(TOKEN_EXPIRES_AT_KEY, expiresAt.toString());
-    Preferences.set({ key: TOKEN_KEY, value: session.accessToken });
-    Preferences.set({ key: TOKEN_EXPIRES_AT_KEY, value: expiresAt.toString() });
+    persistNativePreference(TOKEN_KEY, session.accessToken);
+    persistNativePreference(TOKEN_EXPIRES_AT_KEY, expiresAt.toString());
 
     if (session.refreshToken) {
       localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken);
-      Preferences.set({ key: REFRESH_TOKEN_KEY, value: session.refreshToken });
+      persistNativePreference(REFRESH_TOKEN_KEY, session.refreshToken);
     }
     if (session.idToken) {
       localStorage.setItem(ID_TOKEN_KEY, session.idToken);
-      Preferences.set({ key: ID_TOKEN_KEY, value: session.idToken });
+      persistNativePreference(ID_TOKEN_KEY, session.idToken);
     }
     if (session.userProfile) {
       const profileJson = JSON.stringify(session.userProfile);
       localStorage.setItem(USER_PROFILE_KEY, profileJson);
-      Preferences.set({ key: USER_PROFILE_KEY, value: profileJson });
+      persistNativePreference(USER_PROFILE_KEY, profileJson);
     }
   } catch (err) {
     console.warn('[GoogleAuth] Lỗi lưu phiên đăng nhập:', err);

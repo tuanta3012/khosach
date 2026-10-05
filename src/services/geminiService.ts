@@ -26,7 +26,7 @@ import {
   KeyQuotaState, 
   KeyQuotaMetrics 
 } from '../types';
-import { sanitizeSingleCategory } from '../utils/driveSyncService';
+import { sanitizeSingleCategory } from '../utils/driveSyncClient';
 import { getStoredOrConfiguredApiKey } from '../config/syncConfig';
 
 const KEYS_STORAGE_KEY = 'gemini_api_keys_v1';
@@ -83,7 +83,7 @@ let rrIndex = 0;
 /**
  * Lấy API Key tiếp theo theo cơ chế Round-Robin, bỏ qua các key đang cooldown hoặc cạn ngày
  */
-export function getNextAvailableKey(keys: string[]): string {
+export function getNextAvailableKey(keys: string[], excludedKeys: ReadonlySet<string> = new Set()): string {
   if (keys.length === 0) return '';
   const today = new Date().toISOString().split('T')[0];
   const numKeys = keys.length;
@@ -101,18 +101,18 @@ export function getNextAvailableKey(keys: string[]): string {
       state.cooldownUntil = 0;
     }
 
-    if (!state.isRpdExhausted && Date.now() >= state.cooldownUntil) {
+    if (!excludedKeys.has(candidate) && !state.isRpdExhausted && Date.now() >= state.cooldownUntil) {
       rrIndex = (idx + 1) % numKeys; // Cập nhật con trỏ cho lần kế tiếp
       return candidate;
     }
   }
 
   // Nếu tất cả các keys đều đang cooldown, chọn key sắp hết cooldown nhất (chưa bị cạn ngày)
-  let earliestKey = keys[0];
+  let earliestKey = '';
   let minCooldown = Infinity;
   for (const k of keys) {
     const state = getKeyState(k);
-    if (!state.isRpdExhausted && state.cooldownUntil < minCooldown) {
+    if (!excludedKeys.has(k) && !state.isRpdExhausted && state.cooldownUntil < minCooldown) {
       minCooldown = state.cooldownUntil;
       earliestKey = k;
     }
@@ -229,7 +229,7 @@ export function getDynamicApiQuotaMetrics(): KeyQuotaMetrics {
   return {
     keyCount,
     healthyKeyCount: healthyCount,
-    microBatchSize: 12,
+    microBatchSize: 2,
     concurrency,
     maxRpm: 14 * Math.max(1, keyCount),
     maxRpd: 500 * Math.max(1, keyCount),
@@ -293,11 +293,11 @@ export async function executeWithFailover(
 
   let lastError: unknown = null;
   const attemptedKeys = new Set<string>();
-  const maxAttempts = Math.min(keys.length, 10);
+  const maxAttempts = keys.length;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const key = getNextAvailableKey(keys);
-    if (!key || attemptedKeys.has(key)) {
+    const key = getNextAvailableKey(keys, attemptedKeys);
+    if (!key) {
       break;
     }
     attemptedKeys.add(key);
@@ -339,7 +339,7 @@ export async function executeWithFailover(
         return null;
       }
 
-      // Chuỗi Auto Failover: 3.5 Flash Lite -> 3.1 Flash Lite -> 1.5 Flash 8B
+      // Thử model đã cấu hình trước, sau đó chuyển sang key dự phòng.
       const modelsToTry: string[] = overridePreferredModel 
         ? [overridePreferredModel, ...FAILOVER_CHAIN.filter(m => m !== overridePreferredModel)]
         : FAILOVER_CHAIN;
@@ -626,6 +626,7 @@ export async function scanImages(
 
   const detectedBooksMap = new Map<string, ScannedBookItem>();
   let processedImagesCount = 0;
+  let failedBatchCount = 0;
   let currentBatchIndex = 0;
 
   const notifyProgress = (message?: string) => {
@@ -669,6 +670,7 @@ export async function scanImages(
         notifyProgress(`Đã quét ${processedImagesCount}/${images.length} ảnh (Tìm thấy ${detectedBooksMap.size} cuốn)`);
       } catch (batchErr) {
         console.warn(`[Gemini Vision] Lô ảnh #${idx + 1} gặp sự cố:`, batchErr);
+        failedBatchCount += 1;
         processedImagesCount += batchImgCount;
         notifyProgress(`Lô #${idx + 1} gặp lỗi, tiếp tục các ảnh còn lại...`);
       }
@@ -687,7 +689,7 @@ export async function scanImages(
 
   const finalBooks = Array.from(detectedBooksMap.values());
   return {
-    success: true,
+    success: failedBatchCount === 0,
     count: finalBooks.length,
     books: finalBooks,
   };

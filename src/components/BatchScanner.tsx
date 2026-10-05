@@ -270,7 +270,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             }
 
             const res = await scanImages(chunkA, existingBooks);
-            if (res && Array.isArray(res.books)) {
+            if (res?.success && Array.isArray(res.books)) {
               rawBooks = res.books;
               success = true;
               break;

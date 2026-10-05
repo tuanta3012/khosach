@@ -7,12 +7,8 @@ import {
   FolderOpen
 } from 'lucide-react';
 import { BookRecord } from '../types';
-import { exportBooksToJson, exportBooksToExcel } from '../utils/backupService';
 import { useToast } from '../context/ToastContext';
-import { 
-  importFromExcelBuffer, 
-  importFromPdfBuffer,
-  importFromGoogleSheetUrl,
+import type {
   ImportScanResult, 
   ImportedBookItem,
   StagingBadgeType
@@ -43,7 +39,7 @@ interface DataSyncModalProps {
   onSyncDriveNow?: () => Promise<void>;
   isSyncingDrive?: boolean;
   spreadsheetInfo?: SpreadsheetInfo | null;
-  onSelectSpreadsheet?: (sheet: SpreadsheetInfo) => Promise<void>;
+  onSelectSpreadsheet?: (sheet: SpreadsheetInfo | null) => Promise<void>;
   onCreateSpreadsheet?: (customTitle: string) => Promise<SpreadsheetInfo>;
 }
 
@@ -124,7 +120,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
           localStorage.removeItem('library_spreadsheet_info_v2');
           removeKnownSpreadsheet(spreadsheetInfo.id);
           if (onSelectSpreadsheet) {
-            await onSelectSpreadsheet(null as any);
+            await onSelectSpreadsheet(null);
           }
         }
       } catch (err) {
@@ -194,7 +190,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       await deleteDriveSpreadsheet(token, sheet.id);
       setDriveSheets((prev) => prev.filter((s) => s.id !== sheet.id));
       if (isLinked && onSelectSpreadsheet) {
-        await onSelectSpreadsheet(null as any);
+        await onSelectSpreadsheet(null);
         setLastSyncTime('');
         localStorage.removeItem('last_drive_sync_time');
       }
@@ -237,6 +233,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
         token = res?.accessToken || null;
       }
       const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheet.id}`;
+      const { importFromGoogleSheetUrl } = await import('../utils/smartImporter');
       const result = await importFromGoogleSheetUrl(sheetUrl, token, books);
       setScanResult(result);
       setStagingItems(result.items);
@@ -259,9 +256,10 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
     try {
       const buffer = await file.arrayBuffer();
       const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
-      const result = isPdf 
-        ? await importFromPdfBuffer(buffer, books) 
-        : await importFromExcelBuffer(buffer, books, file.name);
+      const importer = await import('../utils/smartImporter');
+      const result = isPdf
+        ? await importer.importFromPdfBuffer(buffer, books)
+        : await importer.importFromExcelBuffer(buffer, books, file.name);
       setScanResult(result);
       setStagingItems(result.items);
     } catch (err: any) {
@@ -269,6 +267,19 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
     } finally {
       setIsProcessing(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleExportExcel = async () => {
+    if (books.length === 0) {
+      showToast('Không có dữ liệu sách để xuất file Excel!', 'warning');
+      return;
+    }
+    try {
+      const { exportBooksToExcel } = await import('../utils/backupService');
+      exportBooksToExcel(books);
+    } catch (err) {
+      showToast(`Lỗi xuất file Excel: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   };
 
@@ -291,7 +302,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
           localStorage.removeItem('library_spreadsheet_info_v2');
           removeKnownSpreadsheet(spreadsheetInfo.id);
           if (onSelectSpreadsheet) {
-            await onSelectSpreadsheet(null as any);
+            await onSelectSpreadsheet(null);
           }
           showToast(`⚠️ File "${spreadsheetInfo.name}" đã bị xóa trên Google Drive. Đã hủy liên kết!`, 'error');
           return;
@@ -981,7 +992,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                               setLastSyncTime('');
                               localStorage.removeItem('last_drive_sync_time');
                               if (onSelectSpreadsheet) {
-                                await onSelectSpreadsheet(null as any);
+                                await onSelectSpreadsheet(null);
                               }
                               showToast('Đã hủy liên kết Google Sheet thành công.', 'info');
                             }}
@@ -1034,13 +1045,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                   {/* Xuất file Excel */}
                   <button
                     type="button"
-                    onClick={() => {
-                      if (books.length === 0) {
-                        showToast('Không có dữ liệu sách để xuất file Excel!', 'warning');
-                        return;
-                      }
-                      exportBooksToExcel(books);
-                    }}
+                    onClick={handleExportExcel}
                     className="h-10 px-2.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5 text-slate-600 shrink-0" />

@@ -6,7 +6,7 @@ import { BookRecord } from '../types';
 import { checkDuplicateBook, removeVietnameseTones } from './fuzzyMatcher';
 import { GoogleGenAI } from '@google/genai';
 import { getStoredGeminiApiKeys } from '../services/geminiService';
-import { sanitizeSingleCategory, smartDriveFetch } from './driveSyncService';
+import { sanitizeSingleCategory, smartDriveFetch } from './driveSyncClient';
 
 // Configure PDF.js worker
 try {
@@ -852,7 +852,7 @@ export async function importFromGoogleSheetUrl(
     try {
       console.log(`[SmartImporter] Đang gọi Google Sheets API v4 cho Sheet: ${spreadsheetId}...`);
       const apiUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A:Z`;
-      const resp = await fetch(apiUrl, {
+      const resp = await smartDriveFetch(apiUrl, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
@@ -861,8 +861,21 @@ export async function importFromGoogleSheetUrl(
         if (Array.isArray(data.values) && data.values.length > 0) {
           rawData = data.values;
         }
+      } else if (resp.status === 401 || resp.status === 403) {
+        const errorBody = await resp.json().catch(() => null);
+        const apiMessage = errorBody?.error?.message;
+        throw new Error(
+          resp.status === 401
+            ? 'Phiên Google đã hết hạn. Hãy đăng nhập lại rồi thử nhập Sheet.'
+            : `Tài khoản Google chưa có quyền đọc Sheet hoặc thiếu quyền spreadsheets.readonly${apiMessage ? `: ${apiMessage}` : '.'}`
+        );
+      } else {
+        throw new Error(`Google Sheets API trả về HTTP ${resp.status}. Vui lòng thử lại.`);
       }
     } catch (err) {
+      if (err instanceof Error && /Phiên Google|chưa có quyền đọc Sheet|Google Sheets API trả về/.test(err.message)) {
+        throw err;
+      }
       console.warn('[SmartImporter] Sheets API v4 đọc thất bại, chuyển sang phương án Public CSV...', err);
     }
   }

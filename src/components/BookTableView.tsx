@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useDeferredValue } from 'react';
+import React, { useState, useMemo, useRef, useDeferredValue, useCallback } from 'react';
 import {
   Search,
   Edit2,
@@ -256,7 +256,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       return sortFn(a.book, b.book);
     });
     return scored.map((s) => s.book);
-  }, [books, globalFilter, selectedCategory, sortBy]);
+  }, [books, deferredFilter, selectedCategory, sortBy]);
 
   // Phân trang
   const totalPages = Math.ceil(filteredData.length / pageSize) || 1;
@@ -275,12 +275,12 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
     setPageIndex(0);
   };
 
-  const handleSelectCategoryFromChart = (catName: string) => {
+  const handleSelectCategoryFromChart = useCallback((catName: string) => {
     setSelectedCategory(catName);
     setViewMode('list');
     setPageIndex(0);
     showToast(`Đã lọc: ${catName}`, 'info');
-  };
+  }, [showToast]);
 
   const handleStartEdit = (book: BookRecord) => {
     setEditingRowId(book.id);

@@ -1,5 +1,5 @@
 import { BookRecord, UserRole } from '../types';
-import { sanitizeDocId, sanitizeSingleCategory } from '../utils/driveSyncService';
+import { sanitizeDocId, sanitizeSingleCategory } from '../utils/driveSyncClient';
 import { checkDuplicateBook } from '../utils/fuzzyMatcher';
 import { getAccessToken } from './googleAuthService';
 

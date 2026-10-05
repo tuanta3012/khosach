@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { BookRecord, LibrarySettings, AuthUser } from './types';
@@ -16,13 +16,13 @@ import {
 } from './utils/localBooksStorage';
 import { Navbar, NavTabType } from './components/Navbar';
 import { BookTableView } from './components/BookTableView';
-import { BatchScanner } from './components/BatchScanner';
-import { AddEditBookModal } from './components/AddEditBookModal';
-import { DataSyncModal } from './components/DataSyncModal';
-import { SettingsModal } from './components/SettingsModal';
 import { ModeSelectionModal } from './components/ModeSelectionModal';
-import { FamilyShareModal } from './components/FamilyShareModal';
-import { AppUpdateModal } from './components/AppUpdateModal';
+const BatchScanner = lazy(() => import('./components/BatchScanner').then((module) => ({ default: module.BatchScanner })));
+const AddEditBookModal = lazy(() => import('./components/AddEditBookModal').then((module) => ({ default: module.AddEditBookModal })));
+const DataSyncModal = lazy(() => import('./components/DataSyncModal').then((module) => ({ default: module.DataSyncModal })));
+const SettingsModal = lazy(() => import('./components/SettingsModal').then((module) => ({ default: module.SettingsModal })));
+const FamilyShareModal = lazy(() => import('./components/FamilyShareModal').then((module) => ({ default: module.FamilyShareModal })));
+const AppUpdateModal = lazy(() => import('./components/AppUpdateModal').then((module) => ({ default: module.AppUpdateModal })));
 import { useToast } from './context/ToastContext';
 import { useAutoUpdate } from './hooks/useAutoUpdate';
 import { CURRENT_APP_VERSION } from './version';
@@ -580,6 +580,7 @@ export default function App() {
       setIsAutoNormalizing(true);
       try {
         const batchToProcess = pending.slice(0, 10);
+        const { batchNormalize } = await import('./utils/geminiService');
         const result = await batchNormalize(batchToProcess);
 
         if (result && result.success && Array.isArray(result.normalized) && result.normalized.length > 0) {
@@ -806,6 +807,7 @@ export default function App() {
         )}
 
         {currentTab === 'scanner' && (
+          <Suspense fallback={<div className="py-8 text-center text-sm text-slate-500">Đang tải công cụ quét...</div>}>
           <BatchScanner
             categories={currentCategories}
             existingBooks={books}
@@ -815,11 +817,13 @@ export default function App() {
             }}
             onSwitchToTable={() => setCurrentTab('table')}
           />
+          </Suspense>
         )}
       </main>
 
       {/* Modal 1: Thêm/Sửa Sách */}
-      <AddEditBookModal
+      <Suspense fallback={null}>
+      {isAddEditModalOpen && <AddEditBookModal
         isOpen={isAddEditModalOpen}
         onClose={() => {
           setIsAddEditModalOpen(false);
@@ -829,10 +833,10 @@ export default function App() {
         initialBook={editingBook}
         categories={currentCategories}
         books={books}
-      />
+      />}
 
       {/* Modal 2: Đồng Bộ & Nhập Xuất Thông Minh */}
-      <DataSyncModal
+      {isSyncModalOpen && <DataSyncModal
         isOpen={isSyncModalOpen}
         onClose={() => setIsSyncModalOpen(false)}
         books={books}
@@ -921,10 +925,10 @@ export default function App() {
             throw err;
           }
         }}
-      />
+      />}
 
       {/* Modal 3: Cài Đặt Hệ Thống */}
-      <SettingsModal
+      {isSettingsModalOpen && <SettingsModal
         isOpen={isSettingsModalOpen}
         onClose={() => setIsSettingsModalOpen(false)}
         settings={settings}
@@ -941,18 +945,18 @@ export default function App() {
         currentUser={currentUser}
         onGoogleSignIn={() => handleSelectMode('online')}
         onGoogleLogout={handleGoogleLogout}
-      />
+      />}
 
       {/* Modal 5: Chia Sẻ Tủ Sách Gia Đình */}
-      <FamilyShareModal
+      {isFamilyShareModalOpen && <FamilyShareModal
         isOpen={isFamilyShareModalOpen}
         onClose={() => setIsFamilyShareModalOpen(false)}
         spreadsheetInfo={spreadsheetInfo}
         currentUser={currentUser}
-      />
+      />}
 
       {/* Modal 6: Auto Update (Chỉ khả dụng ở bản APK) */}
-      {!IS_BUILD_AAB && (
+      {!IS_BUILD_AAB && isUpdateModalOpen && (
         <AppUpdateModal
           isOpen={isUpdateModalOpen}
           currentVersion={CURRENT_APP_VERSION}
@@ -960,6 +964,7 @@ export default function App() {
           onClose={closeUpdateModal}
         />
       )}
+      </Suspense>
     </div>
   );
 }
