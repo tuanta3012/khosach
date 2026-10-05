@@ -947,7 +947,98 @@ export async function addFamilyMember(
 }
 
 /**
- * 6. Xóa thành viên khỏi gia đình
+ * 6. Cập nhật quyền của thành viên gia đình (Editor / Viewer)
+ */
+export async function updateFamilyMemberRole(
+  accessToken: string,
+  spreadsheetId: string,
+  email: string,
+  newRole: 'Editor' | 'Viewer'
+): Promise<void> {
+  const cleanEmail = email.trim().toLowerCase();
+  const driveRole = newRole === 'Editor' ? 'writer' : 'reader';
+
+  // 1. Cập nhật quyền trên Google Drive API
+  try {
+    const permListResp = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${spreadsheetId}/permissions?fields=permissions(id,emailAddress,role)`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (permListResp.ok) {
+      const pData = await permListResp.json();
+      const permItem = (pData.permissions || []).find(
+        (p: any) => (p.emailAddress || '').toLowerCase() === cleanEmail
+      );
+      if (permItem && permItem.id) {
+        await fetch(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}/permissions/${permItem.id}`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ role: driveRole }),
+        });
+      } else {
+        await fetch(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}/permissions?sendNotificationEmail=false`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            role: driveRole,
+            type: 'user',
+            emailAddress: cleanEmail,
+          }),
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[DriveSync] Cập nhật permission trên Drive:', err);
+  }
+
+  // 2. Cập nhật Tab Config trong Google Sheet
+  const existing = await fetchFamilyMembers(accessToken, spreadsheetId);
+  const updatedMembers = existing.map((m) => {
+    if (m.email.toLowerCase() === cleanEmail) {
+      return { ...m, role: newRole };
+    }
+    return m;
+  });
+
+  if (!updatedMembers.some((m) => m.email.toLowerCase() === cleanEmail)) {
+    updatedMembers.push({
+      email: cleanEmail,
+      role: newRole,
+      addedAt: new Date().toISOString(),
+    });
+  }
+
+  const configRows = [
+    ['Email', 'Role', 'AddedAt'],
+    ...updatedMembers.map((m) => [m.email, m.role, m.addedAt]),
+  ];
+
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A:C:clear`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+  }).catch(() => {});
+
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A1?valueInputOption=USER_ENTERED`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ values: configRows }),
+  });
+}
+
+/**
+ * 7. Xóa thành viên khỏi gia đình (Bảo vệ tuyệt đối danh sách thành viên còn lại)
  */
 export async function removeFamilyMember(
   accessToken: string,
@@ -956,7 +1047,10 @@ export async function removeFamilyMember(
 ): Promise<void> {
   const cleanEmail = email.trim().toLowerCase();
 
-  // Đọc danh sách permissions từ Drive API để tìm permissionId tương ứng
+  // 1. Đọc danh sách hiện tại trước, nếu không đọc được thì không xóa tab để tránh mất dữ liệu
+  const existing = await fetchFamilyMembers(accessToken, spreadsheetId);
+
+  // 2. Xóa permission trên Drive API
   try {
     const permListResp = await fetch(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}/permissions?fields=permissions(id,emailAddress,role)`, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -975,8 +1069,7 @@ export async function removeFamilyMember(
     console.warn('[DriveSync] Xóa permission trên Drive:', err);
   }
 
-  // Cập nhật lại Tab Config
-  const existing = await fetchFamilyMembers(accessToken, spreadsheetId);
+  // 3. Cập nhật lại Tab Config với danh sách còn lại
   const remaining = existing.filter((m) => m.email.toLowerCase() !== cleanEmail);
 
   const configRows = [

@@ -129,13 +129,9 @@ export function getStoredGeminiApiKeys(): string[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        // Tự động thanh lọc loại bỏ key rác/key mặc định cũ nếu còn sót lại trong bộ nhớ máy
         const cleanList = parsed
-          .map((k: string) => k.trim())
-          .filter((k: string) => k && !k.endsWith('86IQ') && !k.startsWith('AQ.Ab8'));
-        if (cleanList.length !== parsed.length) {
-          saveStoredGeminiApiKeys(cleanList);
-        }
+          .map((k: string) => String(k || '').trim())
+          .filter(Boolean);
         return cleanList;
       }
     }
@@ -145,12 +141,7 @@ export function getStoredGeminiApiKeys(): string[] {
 
   const oldSingleKey = localStorage.getItem('custom_gemini_api_key');
   if (oldSingleKey && oldSingleKey.trim()) {
-    const trimmed = oldSingleKey.trim();
-    if (trimmed.endsWith('86IQ') || trimmed.startsWith('AQ.Ab8')) {
-      localStorage.removeItem('custom_gemini_api_key');
-      return [];
-    }
-    return [trimmed];
+    return [oldSingleKey.trim()];
   }
 
   return [];

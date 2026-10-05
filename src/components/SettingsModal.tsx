@@ -142,7 +142,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const raw = settings.geminiApiKeys && settings.geminiApiKeys.length > 0
       ? settings.geminiApiKeys
       : getStoredGeminiApiKeys();
-    return (raw || []).filter((k: string) => k && !k.includes('86IQ'));
+    return (raw || []).map((k: string) => String(k || '').trim()).filter(Boolean);
   };
 
   const [isKeySectionExpanded, setIsKeySectionExpanded] = useState<boolean>(() => {
@@ -227,14 +227,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleStartNormalize = async () => {
     if (!onBatchUpdateBooks || pendingBooks.length === 0) return;
 
+    // Đảm bảo đồng bộ API Keys vào storage trước khi chạy
+    let storedKeys = getStoredGeminiApiKeys();
+    if (storedKeys.length === 0 && apiKeys.length > 0) {
+      saveStoredGeminiApiKeys(apiKeys);
+      storedKeys = getStoredGeminiApiKeys();
+    }
+
+    if (storedKeys.length === 0) {
+      showToast('Vui lòng thêm và lưu ít nhất 1 Gemini API Key trước khi hiệu chỉnh kho!', 'warning');
+      return;
+    }
+
     setIsNormalizing(true);
     stopNormalizingRef.current = false;
     pendingReviewAccumulatorRef.current = [];
     let localPending = [...pendingBooks];
     let currentProcessed = 0;
-
-    // Tính toán hạn ngạch và nhịp gọi API động dựa trên số lượng Key thực tế
-    const quotaMetrics = getDynamicApiQuotaMetrics();
 
     setCurrentBatchText(`Đang kết nối Gemini API để chuẩn hóa...`);
 
@@ -304,12 +313,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
 
     try {
-      await batchNormalize(localPending, {
+      const res = await batchNormalize(localPending, {
         onChunkComplete,
         stopSignal: stopNormalizingRef,
       });
+
+      if (currentProcessed > 0) {
+        showToast(`Đã hoàn tất hiệu chỉnh ${currentProcessed} cuốn sách!`, 'success');
+      } else if (!stopNormalizingRef.current) {
+        showToast('Không có sách nào được chuẩn hóa. Vui lòng kiểm tra lại API Key hoặc hạn ngạch!', 'warning');
+      }
     } catch (err: any) {
       console.error('Lỗi khi chuẩn hóa lô:', err);
+      showToast(`Lỗi chuẩn hóa: ${err?.message || String(err)}`, 'error');
     }
 
     setIsNormalizing(false);
