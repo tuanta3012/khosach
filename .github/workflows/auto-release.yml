@@ -140,6 +140,12 @@ jobs:
             if ! grep -q "REQUEST_INSTALL_PACKAGES" android/app/src/main/AndroidManifest.xml; then
               sed -i '/<application/i \    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" \/>' android/app/src/main/AndroidManifest.xml
             fi
+            # Tắt hoàn toàn Android Auto Cloud Backup & Restore để đảm bảo cài mới luôn sạch 100%
+            sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
+            sed -i 's/android:fullBackupContent="true"/android:fullBackupContent="false"/g' android/app/src/main/AndroidManifest.xml
+            if ! grep -q 'android:allowBackup=' android/app/src/main/AndroidManifest.xml; then
+              sed -i 's/<application/<application android:allowBackup="false" android:fullBackupContent="false"/g' android/app/src/main/AndroidManifest.xml
+            fi
           fi
 
       # 7. Copy google-services.json & Tạo icon
@@ -218,6 +224,10 @@ jobs:
           echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
           VITE_BUILD_AAB=false npm run build
           npx cap sync android
+          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
+            sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
+            sed -i 's/android:fullBackupContent="true"/android:fullBackupContent="false"/g' android/app/src/main/AndroidManifest.xml
+          fi
 
       - name: "[Luồng 1 - APK] Assemble Android APK"
         run: |
@@ -277,6 +287,10 @@ jobs:
           echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
           VITE_BUILD_AAB=true npm run build
           npx cap sync android
+          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
+            sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
+            sed -i 's/android:fullBackupContent="true"/android:fullBackupContent="false"/g' android/app/src/main/AndroidManifest.xml
+          fi
 
       - name: "[Luồng 2 - AAB] Bundle Android App Bundle (AAB)"
         run: |
