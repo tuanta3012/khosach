@@ -166,11 +166,14 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
             </div>
             <input
               type="text"
-              autoComplete="off"
+              name="nomatch_title"
+              autoComplete="new-password"
               autoCorrect="off"
               autoCapitalize="none"
               spellCheck={false}
               data-lpignore="true"
+              data-1p-ignore="true"
+              data-form-type="other"
               required
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -191,11 +194,14 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
             <label className="block text-xs font-bold text-slate-700 mb-1">Tác Giả</label>
             <input
               type="text"
-              autoComplete="off"
+              name="nomatch_author"
+              autoComplete="new-password"
               autoCorrect="off"
               autoCapitalize="none"
               spellCheck={false}
               data-lpignore="true"
+              data-1p-ignore="true"
+              data-form-type="other"
               value={author}
               onChange={(e) => setAuthor(e.target.value)}
               placeholder="Tên tác giả..."
@@ -208,11 +214,14 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
             <div className="relative">
               <input
                 type="text"
-                autoComplete="off"
+                name="nomatch_category"
+                autoComplete="new-password"
                 autoCorrect="off"
                 autoCapitalize="none"
                 spellCheck={false}
                 data-lpignore="true"
+                data-1p-ignore="true"
+                data-form-type="other"
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
                 placeholder="Chọn hoặc nhập thể loại"
@@ -231,11 +240,14 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
             <label className="block text-xs font-bold text-slate-700 mb-1">Nhà Xuất Bản</label>
             <input
               type="text"
-              autoComplete="off"
+              name="nomatch_publisher"
+              autoComplete="new-password"
               autoCorrect="off"
               autoCapitalize="none"
               spellCheck={false}
               data-lpignore="true"
+              data-1p-ignore="true"
+              data-form-type="other"
               value={publisher}
               onChange={(e) => setPublisher(e.target.value)}
               placeholder="NXB..."

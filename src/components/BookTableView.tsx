@@ -331,14 +331,15 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               type="search"
-              name="search"
+              name="nomatch_search"
               id="book-catalog-search-input"
-              autoComplete="one-time-code"
+              autoComplete="new-password"
               autoCorrect="off"
               autoCapitalize="none"
               spellCheck={false}
               inputMode="search"
               data-lpignore="true"
+              data-1p-ignore="true"
               data-form-type="other"
               value={globalFilter}
               onChange={(e) => handleFilterChange(e.target.value)}
@@ -468,11 +469,14 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                         <label className="text-[10px] font-bold text-slate-500">Tên Sách</label>
                         <input
                           type="text"
-                          autoComplete="off"
+                          name="nomatch_inline_title"
+                          autoComplete="new-password"
                           autoCorrect="off"
                           autoCapitalize="none"
                           spellCheck={false}
                           data-lpignore="true"
+                          data-1p-ignore="true"
+                          data-form-type="other"
                           value={editingValues.title ?? book.title}
                           onChange={(e) =>
                             setEditingValues((prev) => ({
@@ -488,11 +492,14 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                           <label className="text-[10px] font-bold text-slate-500">Tác Giả</label>
                           <input
                             type="text"
-                            autoComplete="off"
+                            name="nomatch_inline_author"
+                            autoComplete="new-password"
                             autoCorrect="off"
                             autoCapitalize="none"
                             spellCheck={false}
                             data-lpignore="true"
+                            data-1p-ignore="true"
+                            data-form-type="other"
                             value={editingValues.author ?? book.author}
                             onChange={(e) =>
                               setEditingValues((prev) => ({
@@ -507,11 +514,14 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                           <label className="text-[10px] font-bold text-slate-500">Thể Loại</label>
                           <input
                             type="text"
-                            autoComplete="off"
+                            name="nomatch_inline_category"
+                            autoComplete="new-password"
                             autoCorrect="off"
                             autoCapitalize="none"
                             spellCheck={false}
                             data-lpignore="true"
+                            data-1p-ignore="true"
+                            data-form-type="other"
                             value={editingValues.category ?? book.category}
                             onChange={(e) =>
                               setEditingValues((prev) => ({
@@ -527,11 +537,14 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                         <label className="text-[10px] font-bold text-slate-500">Nhà Xuất Bản</label>
                         <input
                           type="text"
-                          autoComplete="off"
+                          name="nomatch_inline_publisher"
+                          autoComplete="new-password"
                           autoCorrect="off"
                           autoCapitalize="none"
                           spellCheck={false}
                           data-lpignore="true"
+                          data-1p-ignore="true"
+                          data-form-type="other"
                           value={editingValues.publisher ?? book.publisher}
                           onChange={(e) =>
                             setEditingValues((prev) => ({

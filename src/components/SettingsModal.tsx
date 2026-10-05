@@ -802,9 +802,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="relative flex-1">
                         <input
                           type="search"
-                          name="query"
+                          name="nomatch_key"
                           id="book-api-input-search"
-                          autoComplete="one-time-code"
+                          autoComplete="new-password"
                           autoCorrect="off"
                           autoCapitalize="none"
                           spellCheck={false}

@@ -590,11 +590,14 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                       <div key={item.tempId} className="bg-amber-50/50 border border-amber-200 rounded-2xl p-2.5 space-y-2">
                         <input
                           type="text"
-                          autoComplete="off"
+                          name="nomatch_sync_title"
+                          autoComplete="new-password"
                           autoCorrect="off"
                           autoCapitalize="none"
                           spellCheck={false}
                           data-lpignore="true"
+                          data-1p-ignore="true"
+                          data-form-type="other"
                           value={editForm.title}
                           onChange={e => setEditForm({ ...editForm, title: e.target.value })}
                           placeholder="Tên sách"
@@ -603,11 +606,14 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                         <div className="grid grid-cols-2 gap-2">
                           <input
                             type="text"
-                            autoComplete="off"
+                            name="nomatch_sync_author"
+                            autoComplete="new-password"
                             autoCorrect="off"
                             autoCapitalize="none"
                             spellCheck={false}
                             data-lpignore="true"
+                            data-1p-ignore="true"
+                            data-form-type="other"
                             value={editForm.author}
                             onChange={e => setEditForm({ ...editForm, author: e.target.value })}
                             placeholder="Tác giả"
@@ -615,11 +621,14 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                           />
                           <input
                             type="text"
-                            autoComplete="off"
+                            name="nomatch_sync_category"
+                            autoComplete="new-password"
                             autoCorrect="off"
                             autoCapitalize="none"
                             spellCheck={false}
                             data-lpignore="true"
+                            data-1p-ignore="true"
+                            data-form-type="other"
                             value={editForm.category}
                             onChange={e => setEditForm({ ...editForm, category: e.target.value })}
                             placeholder="Thể loại"
@@ -704,11 +713,14 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                   <form onSubmit={handleCreateNewSheetForm} className="flex gap-2">
                     <input
                       type="text"
-                      autoComplete="off"
+                      name="nomatch_new_sheet"
+                      autoComplete="new-password"
                       autoCorrect="off"
                       autoCapitalize="none"
                       spellCheck={false}
                       data-lpignore="true"
+                      data-1p-ignore="true"
+                      data-form-type="other"
                       value={newSheetTitle}
                       onChange={e => setNewSheetTitle(e.target.value)}
                       placeholder="Nhập tên bảng tính..."
