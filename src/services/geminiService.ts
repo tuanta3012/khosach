@@ -702,23 +702,39 @@ export async function enrichBook(
   author = '',
   publisher = ''
 ): Promise<BookEnrichmentResult> {
-  if (!title.trim()) {
+  const cleanTitle = (title || '').trim();
+  if (!cleanTitle) {
     return { success: false };
   }
 
-  const prompt = `Tra cứu thông tin chính xác của cuốn sách:
-- Tên sách: "${title}"
-- Tác giả: "${author || 'Chưa rõ'}"
-- NXB: "${publisher || 'Chưa rõ'}"
+  const prompt = `Bạn là thủ thư uyên bác và chuyên gia biên mục sách hàng đầu tại Việt Nam.
+Người dùng đang tra cứu hoặc thêm một cuốn sách mới vào kho với thông tin đầu vào sau:
+- Tên sách / Từ khóa tra cứu: "${cleanTitle}"
+- Tác giả (nếu có): "${(author || '').trim() || 'Chưa rõ'}"
+- NXB (nếu có): "${(publisher || '').trim() || 'Chưa rõ'}"
 
-Hãy trả về JSON gồm:
-- title: Tên sách chuẩn hóa. ĐẶC BIỆT: Nếu là sách có tựa tiếng nước ngoài (tiếng Anh, Pháp...), BẮT BUỘC giữ nguyên tựa gốc tiếng nước ngoài kèm bản dịch tiếng Việt trong ngoặc đơn dạng "Tên Tiếng Nước Ngoài (Tên Tiếng Việt)", ví dụ "The Good Earth (Đất mẹ)", "The Quiet American (Người Mỹ trầm lặng)".
-- author: Tác giả chuẩn
-- publisher: Nhà xuất bản uy tín
-- publish_year: Năm phát hành bản in phổ biến
-- category: Thể loại chuyên sâu theo hướng dẫn:
+NHIỆM VỤ BIÊN MỤC & TRA CỨU:
+
+1. GIẢI MÃ THÔNG MINH TỪ KHÓA TỰ NHIÊN / TIẾNG VIỆT KHÔNG DẤU / TÊN RÚT GỌN:
+   - Người dùng thường gõ tiếng Việt không dấu, viết tắt, hoặc tên nhân vật / tiêu đề quen thuộc (ví dụ: "mit dac" -> "Những cuộc phiêu lưu của Mít Đặc và các bạn", "de men" -> "Dế Mèn phiêu lưu ký", "khong gia dinh" -> "Không gia đình", "hoang tu be" -> "Hoàng tử bé", "mat biec" -> "Mắt biếc", "so do" -> "Số đỏ", "nha gia kim" -> "Nhà giả kim", "tam quoc" -> "Tam quốc diễn nghĩa", "tay du ky" -> "Tây du ký", "thuy hu" -> "Thủy hử", "dac nhan tam" -> "Đắc nhân tâm").
+   - Hãy tự động nhận diện chính xác tác phẩm văn học / sách tương ứng được xuất bản phổ biến tại Việt Nam.
+
+2. NGUYÊN TẮC TÊN SÁCH (title):
+   - SÁCH TIẾNG VIỆT (kể cả tác phẩm dịch sang tiếng Việt): BẮT BUỘC trả về TÊN TIẾNG VIỆT chuẩn chính tả, viết hoa chữ cái đầu và tên riêng (ví dụ: "Những cuộc phiêu lưu của Mít Đặc và các bạn", "Dế Mèn phiêu lưu ký", "Đắc nhân tâm", "Nhà giả kim", "Rừng Na Uy", "Chiến tranh và hòa bình"). TUYỆT ĐỐI KHÔNG dịch ngược sang tiếng Anh hay chèn tên gốc nước ngoài.
+   - SÁCH NGOẠI VĂN GỐC (chỉ khi người dùng cố ý nhập tên tiếng nước ngoài như "Thinking, Fast and Slow", "Atomic Habits"): Giữ tên tiếng nước ngoài và bổ sung bản dịch tiếng Việt phổ biến trong ngoặc đơn "Tên Tiếng Nước Ngoài (Tên Bản Dịch Phổ Biến)". TUYỆT ĐỐI CẤM DỊCH THÔ TỪNG TỪ (WORD-BY-WORD). Nếu chưa có bản dịch chính thức thì giữ nguyên tên tiếng nước ngoài gốc.
+
+3. TÁC GIẢ (author):
+   - Tác giả chuẩn xác của cuốn sách (ví dụ: "mit dac" -> "Nikolay Nosov", "de men" -> "Tô Hoài", "nha gia kim" -> "Paulo Coelho", "khong gia dinh" -> "Hector Malot", "hoang tu be" -> "Antoine de Saint-Exupéry").
+
+4. NHÀ XUẤT BẢN (publisher):
+   - Nhà xuất bản uy tín phổ biến phát hành cuốn sách này tại Việt Nam (ví dụ: NXB Kim Đồng, NXB Trẻ, Nhã Nam, NXB Hội Nhà Văn, NXB Văn Học, NXB Tổng hợp TP.HCM...).
+
+5. THỂ LOẠI (category):
+   - BẮT BUỘC chỉ chọn đúng 1 trong 13 thể loại chuẩn:
 ${CATEGORY_GUIDELINES}
-- summary: Tóm tắt 1-2 câu`;
+
+6. CHỐNG ẢO GIÁC (ANTI-HALLUCINATION):
+   - TUYỆT ĐỐI KHÔNG BỊA RA HOẶC TRẢ VỀ MỘT CUỐN SÁCH HOÀN TOÀN KHÔNG LIÊN QUAN (ví dụ người dùng gõ "mit dac" thì TUYỆT ĐỐI CẤM trả về sách Dale Carnegie hay sách tiếng Anh ngẫu nhiên). Nếu là sách lạ chưa rõ thông tin, hãy chuẩn hóa chính tả của chính từ khóa đó và điền tác giả "Chưa rõ" hoặc "Khuyết danh".`;
 
   const buildContents = () => [{ text: prompt }];
 
@@ -779,21 +795,36 @@ Hãy chuẩn hóa, sửa lỗi chính tả, dịch thuật và hoàn thiện th�
 QUY TẮC BẮT BUỘC:
 
 1. TÊN SÁCH (title):
-   a. SÁCH CÓ TỰA GỐC TIẾNG NƯỚC NGOÀI (Tiếng Anh, Pháp, Trung, Nhật, v.v.):
-      - BẮT BUỘC GIỮ NGUYÊN TÊN TIẾNG NƯỚC NGOÀI GỐC + DỊCH KÈM TỰA TIẾNG VIỆT TRONG NGOẶC ĐƠN.
-      - Định dạng chuẩn bắt buộc: "Tên Tiếng Nước Ngoài (Tên Tiếng Việt)"
-      - Ví dụ mẫu:
-        * "The Good Earth" -> "The Good Earth (Đất mẹ)"
-        * "The Quiet American" hoặc "The Quiet American (Bản tiếng Anh)" -> "The Quiet American (Người Mỹ trầm lặng)"
-        * "The Devil Wears Prada" -> "The Devil Wears Prada (Yêu nữ thích hàng hiệu)"
-        * "The Great Gatsby" -> "The Great Gatsby (Đại gia Gatsby)"
-        * "To Kill a Mockingbird" -> "To Kill a Mockingbird (Giết con chim nhại)"
-        * "Norwegian Wood" -> "Norwegian Wood (Rừng Na Uy)"
-        * "Rich Dad Poor Dad" -> "Rich Dad Poor Dad (Dạy con làm giàu)"
-        * "How to Win Friends and Influence People" -> "How to Win Friends and Influence People (Đắc nhân tâm)"
-      - LƯU Ý QUAN TRỌNG: Nếu tựa sách người dùng nhập vốn đã là tiếng Việt phát hành tại VN (ví dụ: "Người Mỹ trầm lặng", "Đất mẹ", "Đắc nhân tâm", "Rừng Na Uy") thì GIỮ NGUYÊN tên tiếng Việt, TUYỆT ĐỐI KHÔNG tự ý dịch ngược sang tiếng Anh.
+   a. NGUYÊN TẮC BẮT BUỘC KHI TÊN SÁCH ĐÃ LÀ TIẾNG VIỆT:
+      - NẾU TỰA SÁCH ĐẦU VÀO ĐÃ LÀ TIẾNG VIỆT (kể cả tác phẩm văn học dịch, sách dịch nước ngoài phát hành tại VN) -> BẮT BUỘC GIỮ NGUYÊN TỰA TIẾNG VIỆT.
+      - TUYỆT ĐỐI CẤM DỊCH NGƯỢC SANG TIẾNG ANH / PHÁP / NGA / TRUNG / NHẬT và KHÔNG CHÈN THÊM TỰA GỐC NƯỚC NGOÀI VÀO ĐẦU TỰA ĐỀ.
+      - Xóa bỏ các phụ chú tiếng Anh sai lệch hoặc thừa trong ngoặc đơn nếu có (ví dụ: "Đời con (The Good Earth)" -> sửa thành "Đời con").
+      - CÁC VÍ DỤ CẤM LÀM SAI:
+        * "Ba người lính ngự lâm - Tập 2" -> PHẢI LÀ "Ba người lính ngự lâm - Tập 2" (TUYỆT ĐỐI CẤM đổi thành "Les Trois Mousquetaires (Ba người lính ngự lâm - Tập 2)")
+        * "21 Bài học cho thế kỷ 21" -> PHẢI LÀ "21 bài học cho thế kỷ 21" (TUYỆT ĐỐI CẤM đổi thành "21 Lessons for the 21st Century...")
+        * "80 Ngày Vòng Quanh Thế Giới" -> PHẢI LÀ "Vòng quanh thế giới trong 80 ngày" hoặc "80 ngày vòng quanh thế giới" (TUYỆT ĐỐI CẤM chèn tiếng Pháp "Le Tour du monde en quatre-vingts jours...")
+        * "Đắc nhân tâm" -> PHẢI LÀ "Đắc nhân tâm" (TUYỆT ĐỐI CẤM chèn "How to Win Friends...")
+        * "Nhà giả kim" -> PHẢI LÀ "Nhà giả kim" (TUYỆT ĐỐI CẤM chèn "O Alquimista...")
+        * "Rừng Na Uy" -> PHẢI LÀ "Rừng Na Uy" (TUYỆT ĐỐI CẤM chèn "Norwegian Wood...")
+        * "Người Mỹ trầm lặng" -> PHẢI LÀ "Người Mỹ trầm lặng" (TUYỆT ĐỐI CẤM chèn "The Quiet American...")
+        * "Chiến tranh và hòa bình" -> PHẢI LÀ "Chiến tranh và hòa bình" (TUYỆT ĐỐI CẤM chèn tiếng Nga)
+        * "Đời con" -> PHẢI LÀ "Đời con"
 
-   b. QUY TẮC VIẾT HOA CHỮ TRONG TIẾNG VIỆT (TRÁNH LỖI TITLE CASE CỦA TIẾNG ANH):
+   b. NGUYÊN TẮC CHO SÁCH NGOẠI VĂN GỐC (TỰA ĐẦU VÀO ĐANG LÀ TIẾNG NƯỚC NGOÀI):
+      - Giữ nguyên tên tiếng nước ngoài gốc và BỔ SUNG TÊN DỊCH TIẾNG VIỆT TRONG NGOẶC ĐƠN theo định dạng: "Tên Tiếng Nước Ngoài (Tên Tiếng Việt)".
+      - ĐIỀU KIỆN DỊCH NGHIÊM NGẶT:
+        * CHỈ bổ sung tên tiếng Việt trong ngoặc đơn nếu cuốn sách đó ĐÃ CÓ BẢN DỊCH XUẤT BẢN CHÍNH THỨC, PHỔ BIẾN trên thị trường sách Việt Nam.
+        * TUYỆT ĐỐI CẤM DỊCH THÔ TỪNG TỪ (WORD-BY-WORD / DỊCH MÁY NGU NGHÊ).
+        * Nếu sách tiếng nước ngoài chưa được dịch xuất bản tại Việt Nam hoặc không rõ tựa dịch chính thức -> BẮT BUỘC GIỮ NGUYÊN TỰA GỐC TIẾNG NƯỚC NGOÀI (không tự bịa hoặc dịch từng từ).
+      - Ví dụ mẫu:
+        * "After You" -> "After You (Sau ngày anh đến)" (Bản dịch chính thức NXB Nhã Nam, TUYỆT ĐỐI CẤM dịch từng từ thành "Sau đó")
+        * "The Great Gatsby" -> "The Great Gatsby (Đại gia Gatsby)"
+        * "The Good Earth" -> "The Good Earth (Đất lành)" hoặc "The Good Earth (Đất mẹ)"
+        * "Thinking, Fast and Slow" -> "Thinking, Fast and Slow (Tư duy nhanh và chậm)"
+        * "Atomic Habits" -> "Atomic Habits (Thay đổi tí hon, hiệu quả bất ngờ)"
+        * "Designing Data-Intensive Applications" -> "Designing Data-Intensive Applications" (Không có bản dịch đại chúng chính thức, giữ nguyên tiếng Anh).
+
+   c. QUY TẮC VIẾT HOA CHỮ TRONG TIẾNG VIỆT (TRÁNH LỖI TITLE CASE CỦA TIẾNG ANH):
       - Tiếng Việt CHỈ viết hoa chữ cái đầu tiên của tựa đề và các Tên riêng / Danh từ riêng (ví dụ: tên người, địa danh, nhân vật).
       - TUYỆT ĐỐI KHÔNG VIẾT HOA TẤT CẢ CÁC TỪ như "Những Cuộc Phiêu Lưu Của Mít Đặc Và Các Bạn" hay "Mọi Nơi Vụn Vỡ" (đây là lỗi viết hoa sai ngữ pháp tiếng Việt).
       - Ví dụ đúng chuẩn:
@@ -803,7 +834,7 @@ QUY TẮC BẮT BUỘC:
         * "Kính vạn hoa"
         * "Dế Mèn phiêu lưu ký"
 
-   c. BẢO TỒN THÔNG TIN TẬP / PHẦN / BỘ SÁCH CỦA NGƯỜI DÙNG:
+   d. BẢO TỒN THÔNG TIN TẬP / PHẦN / BỘ SÁCH CỦA NGƯỜI DÙNG:
       - TUYỆT ĐỐI KHÔNG XÓA số tập, số quyển, khoảng tập hoặc phần bộ sách của người dùng! Người dùng lưu trữ sách theo tập cụ thể.
       - Chuẩn hóa định dạng tập gọn gàng trong ngoặc đơn hoặc dấu gạch nối.
       - Ví dụ:
@@ -811,7 +842,7 @@ QUY TẮC BẮT BUỘC:
         * "Mọi nơi vụn vỡ (phần 2 Chú bé mang Pyjama sọc)" -> "Mọi nơi vụn vỡ (Phần 2: Chú bé mang pyjama sọc)"
         * "Harry Potter 1" -> "Harry Potter và Hòn đá Phù thủy (Tập 1)" hoặc "Harry Potter (Tập 1)"
 
-   d. SỬA LỖI GÕ PHÍM & CON SỐ BỊ NHẦM RÕ RÀNG:
+   e. SỬA LỖI GÕ PHÍM & CON SỐ BỊ NHẦM RÕ RÀNG:
       - Nếu có lỗi gõ phím hoặc năm/số rõ ràng (như "1941 - Những khám phá mới về Châu Mỹ thời kỳ tiền Columbus" của Charles C. Mann -> sách thực tế là năm 1491, sửa thành "1491 – Những khám phá mới về châu Mỹ thời kỳ tiền Columbus").
 
 2. TÁC GIẢ (author):

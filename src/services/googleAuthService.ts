@@ -401,7 +401,7 @@ export async function signInWithGoogleGIS(): Promise<{
           });
 
           const authUser: AuthUser = {
-            email: userInfo.email || 'tuanta3012@gmail.com',
+            email: userInfo.email || '',
             name: userInfo.name || 'Người dùng Google',
             photoURL: userInfo.picture,
             userRole: 'ADMIN',

@@ -246,7 +246,7 @@ export default function App() {
         }
 
         // 1. Dynamic Authorization: Xác thực chéo vai trò thực tế từ Tab Config ẩn
-        const activeRole = await determineCurrentUserRole(token, sheetInfo.id, currentUser?.email || 'tuanta3012@gmail.com');
+        const activeRole = await determineCurrentUserRole(token, sheetInfo.id, currentUser?.email || '');
         if (currentUser && currentUser.userRole !== activeRole) {
           console.log(`[Sync] Cập nhật vai trò thành viên thực tế: ${currentUser.userRole} -> ${activeRole}`);
           const updatedUser = { ...currentUser, userRole: activeRole };
@@ -423,7 +423,7 @@ export default function App() {
             
             // Cập nhật ngay lập tức thông tin người dùng đang đăng nhập
             const loggedInUser: AuthUser = res.authUser || {
-              email: res.user.email || 'tuanta3012@gmail.com',
+              email: res.user.email || '',
               name: res.user.displayName || 'Người dùng Google',
               photoURL: res.user.photoURL,
               userRole: 'ADMIN',
@@ -551,7 +551,7 @@ export default function App() {
           if (resp.ok) {
             const info = await resp.json();
             const u: AuthUser = {
-              email: info.email || 'tuanta3012@gmail.com',
+              email: info.email || '',
               name: info.name || 'Người dùng Google',
               photoURL: info.picture,
               userRole: 'ADMIN',
@@ -903,7 +903,7 @@ export default function App() {
           }
           if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
-          const creatorEmail = currentUser?.email || 'tuanta3012@gmail.com';
+          const creatorEmail = currentUser?.email || '';
 
           try {
             const newSheet = await createNewLibrarySpreadsheet(token, creatorEmail, customTitle);

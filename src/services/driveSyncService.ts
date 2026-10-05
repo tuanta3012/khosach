@@ -641,7 +641,7 @@ async function initializeSheetHeaders(
   fileName?: string
 ) {
   try {
-    const cleanEmail = (userEmail && userEmail.trim().toLowerCase()) || 'tuanta3012@gmail.com';
+    const cleanEmail = (userEmail && userEmail.trim().toLowerCase()) || '';
     const activeFileName = fileName || 'Tu sach gia dinh';
     const activeFileUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?usp=drivesdk`;
     const nowMs = Date.now();

@@ -175,7 +175,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
           <div className="p-2 bg-white rounded-xl border border-slate-200/90 shadow-3xs flex items-center justify-between gap-2">
             <div className="min-w-0">
               <span className="text-xs text-slate-500 font-medium truncate block">
-                Tài khoản: <strong className="text-slate-900 font-semibold">{currentUser?.email || 'tuanta3012@gmail.com'}</strong>
+                Tài khoản: <strong className="text-slate-900 font-semibold">{currentUser?.email || 'Chưa đăng nhập'}</strong>
               </span>
             </div>
             <div className="flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 rounded-lg text-xs font-bold shrink-0 border border-amber-200 shadow-2xs">
