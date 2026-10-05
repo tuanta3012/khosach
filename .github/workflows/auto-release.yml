@@ -213,13 +213,13 @@ jobs:
       # =======================================================================
       # LUỒNG 1: BUILD BẢN APK (PUBLIC GITHUB RELEASE + AUTO UPDATE BẬT)
       # =======================================================================
-      - name: [Luồng 1 - APK] Build Web Assets (Auto Update ENABLED)
+      - name: "[Luồng 1 - APK] Build Web Assets (Auto Update ENABLED)"
         run: |
           echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
           VITE_BUILD_AAB=false npm run build
           npx cap sync android
 
-      - name: [Luồng 1 - APK] Assemble Android APK
+      - name: "[Luồng 1 - APK] Assemble Android APK"
         run: |
           cd android
           echo "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8" >> gradle.properties
@@ -227,7 +227,7 @@ jobs:
           ./gradlew assembleRelease --no-daemon || ./gradlew assembleDebug --no-daemon
           cd ..
 
-      - name: [Luồng 1 - APK] Collect and Rename APK
+      - name: "[Luồng 1 - APK] Collect and Rename APK"
         run: |
           mkdir -p output_artifacts
           if [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
@@ -239,7 +239,7 @@ jobs:
           fi
           echo "APK created: khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
 
-      - name: [Luồng 1 - APK] Create/Update GitHub Release
+      - name: "[Luồng 1 - APK] Create/Update GitHub Release"
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
@@ -252,7 +252,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: [Luồng 1 - APK] Update version.json
+      - name: "[Luồng 1 - APK] Update version.json"
         run: |
           APK_URL="https://github.com/tuanta3012/khosach/releases/download/v${{ steps.auto_version.outputs.NAME }}/khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
           cat <<EOF > version.json
@@ -272,20 +272,20 @@ jobs:
       # =======================================================================
       # LUỒNG 2: BUILD BẢN AAB (GOOGLE PLAY STORE - AUTO UPDATE CLEANED & ARTIFACT ONLY)
       # =======================================================================
-      - name: [Luồng 2 - AAB] Build Web Assets (Auto Update DISABLED / Play Store Compliance)
+      - name: "[Luồng 2 - AAB] Build Web Assets (Auto Update DISABLED / Play Store Compliance)"
         run: |
           echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
           VITE_BUILD_AAB=true npm run build
           npx cap sync android
 
-      - name: [Luồng 2 - AAB] Bundle Android App Bundle (AAB)
+      - name: "[Luồng 2 - AAB] Bundle Android App Bundle (AAB)"
         run: |
           cd android
           chmod +x gradlew
           ./gradlew bundleRelease --no-daemon || ./gradlew bundleDebug --no-daemon
           cd ..
 
-      - name: [Luồng 2 - AAB] Collect and Rename AAB
+      - name: "[Luồng 2 - AAB] Collect and Rename AAB"
         run: |
           if [ -f "android/app/build/outputs/bundle/release/app-release.aab" ]; then
             cp android/app/build/outputs/bundle/release/app-release.aab khosach_v${{ steps.auto_version.outputs.NAME }}.aab
@@ -296,7 +296,7 @@ jobs:
           fi
           echo "AAB created: khosach_v${{ steps.auto_version.outputs.NAME }}.aab"
 
-      - name: [Luồng 2 - AAB] Upload AAB to Private GitHub Actions Artifacts
+      - name: "[Luồng 2 - AAB] Upload AAB to Private GitHub Actions Artifacts"
         uses: actions/upload-artifact@v4
         with:
           name: khosach-v${{ steps.auto_version.outputs.NAME }}-aab
