@@ -3,7 +3,8 @@ import {
   X, Upload, FileSpreadsheet, Download, 
   Loader2, Sparkles, RefreshCw, AlertTriangle, 
   Trash2, Edit3, Check, CheckSquare, Square,
-  Cloud, Plus, ExternalLink, Table, Eye, CheckCircle2, Link as LinkIcon
+  Cloud, Plus, ExternalLink, Table, Eye, CheckCircle2, Link as LinkIcon,
+  FolderOpen
 } from 'lucide-react';
 import { BookRecord } from '../types';
 import { exportBooksToJson, exportBooksToExcel } from '../utils/backupService';
@@ -11,13 +12,15 @@ import { useToast } from '../context/ToastContext';
 import { 
   importFromExcelBuffer, 
   importFromPdfBuffer,
+  importFromGoogleSheetUrl,
   ImportScanResult, 
   ImportedBookItem,
   StagingBadgeType
 } from '../utils/smartImporter';
 import { getAccessToken, googleSignIn } from '../services/googleAuthService';
 import { 
-  fetchUserSpreadsheetsFromDrive, 
+  fetchUserSpreadsheetsFromDrive,
+  fetchAllUserSpreadsheets,
   fetchBooksFromGoogleSheet,
   deleteDriveSpreadsheet, 
   SpreadsheetInfo,
@@ -75,6 +78,12 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   const [newSheetTitle, setNewSheetTitle] = useState('Kho sach');
   const [isCreatingSheet, setIsCreatingSheet] = useState(false);
   const [deletingSheetId, setDeletingSheetId] = useState<string | null>(null);
+
+  // States cho tính năng Nhập từ Drive (tách biệt hoàn toàn với danh sách liên kết)
+  const [showDriveImportPicker, setShowDriveImportPicker] = useState(false);
+  const [driveImportSheets, setDriveImportSheets] = useState<SpreadsheetInfo[]>([]);
+  const [isLoadingImportSheets, setIsLoadingImportSheets] = useState(false);
+  const [isImportingFromDrive, setIsImportingFromDrive] = useState<string | null>(null);
 
   const [sheetPendingDelete, setSheetPendingDelete] = useState<SpreadsheetInfo | null>(null);
 
@@ -195,6 +204,48 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       showToast(`Lỗi xóa file: ${err.message || String(err)}`, 'error');
     } finally {
       setDeletingSheetId(null);
+    }
+  };
+
+  // 1d. Tải danh sách TẤT CẢ Google Sheet của user (cho picker Nhập từ Drive)
+  const handleLoadDriveImportSheets = async () => {
+    setIsLoadingImportSheets(true);
+    try {
+      let token = await getAccessToken();
+      if (!token) {
+        const res = await googleSignIn().catch(() => null);
+        token = res?.accessToken || null;
+      }
+      // Dùng hàm riêng — không lọc appProperties, lấy mọi Spreadsheet user có quyền
+      const sheets = await fetchAllUserSpreadsheets(token || '');
+      setDriveImportSheets(sheets);
+    } catch (err: any) {
+      showToast(`Lỗi tải danh sách Drive: ${err.message || String(err)}`, 'error');
+    } finally {
+      setIsLoadingImportSheets(false);
+    }
+  };
+
+  // 1e. Nhập từ Drive: user chọn 1 sheet → import vào staging area
+  const handleImportFromDriveSheet = async (sheet: SpreadsheetInfo) => {
+    setIsImportingFromDrive(sheet.id);
+    setScanResult(null);
+    try {
+      let token = await getAccessToken();
+      if (!token) {
+        const res = await googleSignIn().catch(() => null);
+        token = res?.accessToken || null;
+      }
+      const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheet.id}`;
+      const result = await importFromGoogleSheetUrl(sheetUrl, token, books);
+      setScanResult(result);
+      setStagingItems(result.items);
+      setShowDriveImportPicker(false);
+      showToast(`Đã tải ${result.totalCount} dòng từ "${sheet.name}" vào bảng nháp!`, 'success');
+    } catch (err: any) {
+      showToast(`Lỗi nhập từ Drive: ${err.message || String(err)}`, 'error');
+    } finally {
+      setIsImportingFromDrive(null);
     }
   };
 
@@ -959,8 +1010,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                 </div>
               )}
 
-              {/* PHÂN KHU 2: NHẬP / XUẤT FILE TỪ THIẾT BỊ (Thu gọn 50% chiều cao) */}
-              <div className="bg-white border border-slate-200/80 rounded-2xl p-2 shadow-2xs">
+              {/* PHÂN KHU 2: NHẬP / XUẤT FILE TỪ THIẾT BỊ */}
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-2 shadow-2xs space-y-2">
                 <div className="grid grid-cols-2 gap-2">
                   {/* Nhập sách từ file */}
                   <input
@@ -996,6 +1047,89 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     <span className="truncate">Xuất file Excel</span>
                   </button>
                 </div>
+
+                {/* Nhập từ Drive (chỉ hiện khi Online) — dùng scope spreadsheets.readonly, liệt kê MỌI sheet của user */}
+                {appMode === 'online' && (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!showDriveImportPicker) {
+                          handleLoadDriveImportSheets();
+                        }
+                        setShowDriveImportPicker(prev => !prev);
+                      }}
+                      disabled={isProcessing || !!isImportingFromDrive}
+                      className={`w-full h-10 px-2.5 border text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer disabled:opacity-40 ${
+                        showDriveImportPicker
+                          ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700'
+                      }`}
+                    >
+                      <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">Nhập từ Drive</span>
+                      {isLoadingImportSheets && <Loader2 className="w-3 h-3 animate-spin ml-1 shrink-0" />}
+                    </button>
+
+                    {/* Drive Import Picker — hiển thị MỌI Google Sheet của user */}
+                    {showDriveImportPicker && (
+                      <div className="mt-2 bg-blue-50/70 border border-blue-200/80 rounded-xl p-2.5 space-y-2 animate-in fade-in duration-150">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-[11px] font-black text-blue-900">Chọn file để nhập dữ liệu:</span>
+                            <p className="text-[9.5px] text-blue-600 mt-0.5">Tất cả Google Sheet bạn có quyền truy cập</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleLoadDriveImportSheets}
+                            disabled={isLoadingImportSheets}
+                            className="text-[10px] font-bold text-blue-700 hover:underline flex items-center gap-0.5 shrink-0"
+                          >
+                            <RefreshCw className={`w-2.5 h-2.5 ${isLoadingImportSheets ? 'animate-spin' : ''}`} />
+                            Làm mới
+                          </button>
+                        </div>
+
+                        {isLoadingImportSheets ? (
+                          <div className="py-4 text-center text-xs text-blue-600 flex items-center justify-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Đang tìm file...</span>
+                          </div>
+                        ) : driveImportSheets.length > 0 ? (
+                          <div className="space-y-1.5 max-h-40 overflow-y-auto pr-0.5">
+                            {driveImportSheets.map(sheet => (
+                              <div
+                                key={sheet.id}
+                                className="p-2 rounded-lg border border-blue-100 bg-white flex items-center justify-between gap-2 hover:border-blue-300 hover:bg-blue-50 transition"
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                  <FileSpreadsheet className="w-3.5 h-3.5 text-[#1b6b5b] shrink-0" />
+                                  <span className="text-[11px] font-semibold text-slate-800 truncate">{sheet.name}</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleImportFromDriveSheet(sheet)}
+                                  disabled={!!isImportingFromDrive}
+                                  className="shrink-0 px-2.5 py-1 bg-[#1b6b5b] hover:bg-[#145d4b] text-white text-[10px] font-bold rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                                >
+                                  {isImportingFromDrive === sheet.id ? (
+                                    <><Loader2 className="w-3 h-3 animate-spin" /><span>Đang tải...</span></>
+                                  ) : (
+                                    <><Download className="w-3 h-3" /><span>Nhập</span></>
+                                  )}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="py-3 text-center text-[11px] text-blue-700 bg-white rounded-lg border border-dashed border-blue-200">
+                            Không tìm thấy file Google Sheet nào trên Drive.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* PHÂN KHU 3: STATUS BANNER GỌN GÀNG (1 dòng duy nhất) */}

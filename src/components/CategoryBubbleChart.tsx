@@ -85,7 +85,7 @@ function formatCategorySpineText(rawCategory: string): { displayName: string; fo
   return { displayName: formatted, fontSize };
 }
 
-export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = ({
+export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = React.memo(({
   books,
   onSelectCategory,
 }) => {
@@ -260,4 +260,4 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = ({
       </div>
     </div>
   );
-};
+});

@@ -1,49 +1,68 @@
 /**
  * Client-Centric Google Gemini SDK Integration Service (@google/genai)
  * 
- * Đã dọn dẹp toàn bộ cơ chế đa luồng phức tạp:
- * 1. Chỉ hỗ trợ duy nhất 1 API Key tại một thời điểm.
- * 2. Bộ kiểm soát tần suất cuộc gọi (Sliding Window Rate Limiter) đảm bảo tối đa 14 RPM (dưới mốc 15 RPM).
- * 3. Hỗ trợ Failover: Ưu tiên dùng model 3.5 Flash Lite chính, tự động dự phòng sang 3.1 Flash Lite khi có lỗi.
- * 4. Kiểm soát hạn mức ngày RPD và an toàn Safety Filters từ Google.
+ * Kiến trúc 100% Client-Side (Không phụ thuộc bất kỳ máy chủ proxy nào):
+ * 1. Hỗ trợ đa API Keys cá nhân với cơ chế xoay vòng Round-robin & Sliding Window Rate Limiter (tối đa 14 RPM/key).
+ * 2. Auto Failover 2 cấp độ tối ưu:
+ *    - Cấp 1 (Chính): gemini-3.5-flash-lite (Tối ưu hạn ngạch & siêu tốc)
+ *    - Cấp 2 (Dự phòng): gemini-3.1-flash-lite (Ổn định, bền bỉ khi gặp 429/quá tải)
+ *    - Tự động xoay sang Key kế tiếp khi một Key đạt trần RPD hoặc cooldown.
+ * 3. Xử lý đa luồng ảnh chụp gáy sách (Batch Scan Vision):
+ *    - Tự động chia nhỏ micro-batch (1-2 ảnh/lô) tránh quá tải token & bộ nhớ RAM thiết bị di động.
+ *    - Concurrency thích ứng theo số lượng API Keys (1-4 luồng đồng thời).
+ *    - Yield Event Loop giải phóng Main Thread chống treo UI (Zero-Jank UX).
+ *    - Callback cập nhật tiến độ chi tiết theo thời gian thực.
  */
 
 import { GoogleGenAI } from '@google/genai';
-import { BookRecord } from '../types';
+import { 
+  BookRecord, 
+  GeminiModelId, 
+  GeminiModelInfo, 
+  ScannedBookItem, 
+  ScanImagesResult, 
+  ScanImagesOptions, 
+  BookEnrichmentResult, 
+  KeyQuotaState, 
+  KeyQuotaMetrics 
+} from '../types';
 import { sanitizeSingleCategory } from '../utils/driveSyncService';
 import { getStoredOrConfiguredApiKey } from '../config/syncConfig';
 
 const KEYS_STORAGE_KEY = 'gemini_api_keys_v1';
 const MODEL_STORAGE_KEY = 'gemini_selected_model_v1';
 
-export const AVAILABLE_GEMINI_MODELS = [
-  { id: 'auto', name: 'Tự động (3.5 Flash Lite + 3.1 Flash Lite)', desc: 'Chạy 3.5 Flash Lite chính, tự động dự phòng 3.1 Flash Lite khi quá tải' },
-  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', desc: 'Engine chính: Tối ưu hạn ngạch & xử lý siêu tốc' },
-  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', desc: 'Engine dự phòng: Bền bỉ & ổn định' },
+export const AVAILABLE_GEMINI_MODELS: GeminiModelInfo[] = [
+  { 
+    id: 'auto', 
+    name: 'Tự động (3.5 Flash Lite + 3.1 Flash Lite)', 
+    desc: 'Ưu tiên 3.5 Flash Lite chính, tự động dự phòng 3.1 Flash Lite khi gặp quá tải/429' 
+  },
+  { 
+    id: 'gemini-3.5-flash-lite', 
+    name: 'Gemini 3.5 Flash Lite', 
+    desc: 'Engine chính: Tối ưu hạn ngạch & xử lý siêu tốc' 
+  },
+  { 
+    id: 'gemini-3.1-flash-lite', 
+    name: 'Gemini 3.1 Flash Lite', 
+    desc: 'Engine dự phòng: Bền bỉ & ổn định cao' 
+  },
 ];
 
-// Bộ đếm mốc thời gian gọi API để kiểm soát RPM (giới hạn an toàn tối đa 14 cuộc gọi trong 60 giây)
-let apiCallTimestamps: number[] = [];
+// Danh sách thứ tự failover khi gặp lỗi quá tải (Chỉ gồm 2 model chuẩn hóa)
+const FAILOVER_CHAIN: GeminiModelId[] = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+];
+
 const RPM_LIMIT = 14;
 const RPM_WINDOW_MS = 60000;
 
-// Trạng thái khóa ngày RPD
-let isRpdExhausted = false;
-let rpdExhaustedDate = '';
+// Trạng thái theo dõi từng API Key để kiểm soát tốc độ gọi và trạng thái lỗi
+const keyStateMap = new Map<string, KeyQuotaState>();
 
-// Trạng thái của từng API Key để kiểm soát RPM và RPD
-interface KeyState {
-  key: string;
-  cooldownUntil: number;
-  backoffFactor: number;
-  isRpdExhausted: boolean;
-  rpdExhaustedDate: string;
-  apiCallTimestamps: number[];
-}
-
-const keyStateMap = new Map<string, KeyState>();
-
-function getKeyState(key: string): KeyState {
+function getKeyState(key: string): KeyQuotaState {
   let state = keyStateMap.get(key);
   if (!state) {
     state = {
@@ -61,6 +80,9 @@ function getKeyState(key: string): KeyState {
 
 let rrIndex = 0;
 
+/**
+ * Lấy API Key tiếp theo theo cơ chế Round-Robin, bỏ qua các key đang cooldown hoặc cạn ngày
+ */
 export function getNextAvailableKey(keys: string[]): string {
   if (keys.length === 0) return '';
   const today = new Date().toISOString().split('T')[0];
@@ -71,7 +93,7 @@ export function getNextAvailableKey(keys: string[]): string {
     const candidate = keys[idx];
     const state = getKeyState(candidate);
     
-    // Reset RPD nếu qua ngày mới
+    // Reset trạng thái RPD nếu đã qua ngày mới
     if (state.rpdExhaustedDate && state.rpdExhaustedDate !== today) {
       state.isRpdExhausted = false;
       state.rpdExhaustedDate = '';
@@ -80,12 +102,12 @@ export function getNextAvailableKey(keys: string[]): string {
     }
 
     if (!state.isRpdExhausted && Date.now() >= state.cooldownUntil) {
-      rrIndex = (idx + 1) % numKeys; // Cập nhật rrIndex cho lần sau
+      rrIndex = (idx + 1) % numKeys; // Cập nhật con trỏ cho lần kế tiếp
       return candidate;
     }
   }
 
-  // Nếu tất cả bận/cooldown, tìm key hết hạn cooldown sớm nhất mà chưa bị cạn ngày RPD
+  // Nếu tất cả các keys đều đang cooldown, chọn key sắp hết cooldown nhất (chưa bị cạn ngày)
   let earliestKey = keys[0];
   let minCooldown = Infinity;
   for (const k of keys) {
@@ -99,7 +121,7 @@ export function getNextAvailableKey(keys: string[]): string {
 }
 
 /**
- * LƯU TRỮ VÀ QUẢN LÝ DANH SÁCH API KEYS
+ * LƯU TRỮ VÀ TRUY VẤN DANH SÁCH API KEYS
  */
 export function getStoredGeminiApiKeys(): string[] {
   try {
@@ -111,7 +133,7 @@ export function getStoredGeminiApiKeys(): string[] {
       }
     }
   } catch (err) {
-    console.warn('[GeminiService] Lỗi đọc API Key:', err);
+    console.warn('[GeminiService] Lỗi đọc API Key từ localStorage:', err);
   }
 
   const oldSingleKey = localStorage.getItem('custom_gemini_api_key');
@@ -132,7 +154,7 @@ export function saveStoredGeminiApiKeys(keys: string[]): void {
     const cleanKeys = keys.map(k => k.trim()).filter(Boolean);
     if (cleanKeys.length > 0) {
       localStorage.setItem(KEYS_STORAGE_KEY, JSON.stringify(cleanKeys));
-      localStorage.setItem('custom_gemini_api_key', cleanKeys[0]); // Đặt key đầu làm fallback
+      localStorage.setItem('custom_gemini_api_key', cleanKeys[0]);
     } else {
       localStorage.removeItem(KEYS_STORAGE_KEY);
       localStorage.removeItem('custom_gemini_api_key');
@@ -157,10 +179,10 @@ export function saveStoredSelectedModel(model: string): void {
 }
 
 /**
- * Phân loại lỗi trả về từ Google
+ * Phân loại mã lỗi trả về từ Google Gemini API
  */
-export function classifyQuotaError(err: any): 'RPM' | 'RPD' | 'OTHER' {
-  const errMsg = (err?.message || String(err)).toLowerCase();
+export function classifyQuotaError(err: unknown): 'RPM' | 'RPD' | 'OTHER' {
+  const errMsg = (err instanceof Error ? err.message : String(err)).toLowerCase();
 
   if (
     errMsg.includes('per day') ||
@@ -191,49 +213,52 @@ export function classifyQuotaError(err: any): 'RPM' | 'RPD' | 'OTHER' {
 export function isKeyInCooldown(key: string): boolean {
   if (!key) return false;
   const today = new Date().toISOString().split('T')[0];
-  if (isRpdExhausted && rpdExhaustedDate === today) {
-    return true; // Đã cạn RPD hôm nay
+  const state = getKeyState(key);
+  if (state.isRpdExhausted && state.rpdExhaustedDate === today) {
+    return true;
   }
-  return false;
+  return Date.now() < state.cooldownUntil;
 }
 
-export function getDynamicApiQuotaMetrics() {
+export function getDynamicApiQuotaMetrics(): KeyQuotaMetrics {
   const keys = getStoredGeminiApiKeys();
   const keyCount = keys.length;
-  const healthyCount = isKeyInCooldown(keys[0] || '') ? 0 : keyCount;
+  const healthyCount = keys.filter(k => !isKeyInCooldown(k)).length;
+  const concurrency = Math.max(1, Math.min(healthyCount || keyCount, 4));
 
   return {
     keyCount,
     healthyKeyCount: healthyCount,
     microBatchSize: 12,
-    concurrency: 1,
-    maxRpm: 14,
-    maxRpd: 500,
+    concurrency,
+    maxRpm: 14 * Math.max(1, keyCount),
+    maxRpd: 500 * Math.max(1, keyCount),
   };
 }
 
 /**
- * Cơ chế trượt Sliding Window đảm bảo không bao giờ vượt quá RPM 15 (Chặn chủ động đầu Client theo từng Key riêng biệt)
+ * Sliding Window Rate Limiter: đảm bảo mỗi Key không vượt quá 14 RPM
  */
 async function acquireRpmSlot(key: string): Promise<void> {
   const state = getKeyState(key);
   const now = Date.now();
-  // Loại bỏ các mốc thời gian ngoài cửa sổ trượt 60 giây của Key này
+  
+  // Lọc các timestamp ngoài cửa sổ 60s
   state.apiCallTimestamps = state.apiCallTimestamps.filter((t) => now - t < RPM_WINDOW_MS);
 
   if (state.apiCallTimestamps.length >= RPM_LIMIT) {
     const oldest = state.apiCallTimestamps[0];
-    const waitMs = Math.max(100, RPM_WINDOW_MS - (now - oldest) + 150);
-    console.warn(`[Gemini Rate Limiter] Key ${key.slice(0, 6)}... đạt ngưỡng an toàn 14 RPM. Tự động trì hoãn cuộc gọi trong ${waitMs}ms...`);
+    const waitMs = Math.max(150, RPM_WINDOW_MS - (now - oldest) + 150);
+    console.warn(`[Gemini Rate Limiter] Key ${key.slice(0, 6)}... đạt ngưỡng 14 RPM. Nghỉ chờ ${waitMs}ms...`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
-    return acquireRpmSlot(key); // Quét lại để cấp slot cho Key này
+    return acquireRpmSlot(key);
   }
 
   state.apiCallTimestamps.push(Date.now());
 }
 
 /**
- * Kiểm tra Safety Block Reason và Finish Reason
+ * Kiểm tra Safety Block và Finish Reason từ phản hồi của Google
  */
 function checkSafetyBlockReason(response: any): void {
   if (!response) return;
@@ -242,33 +267,38 @@ function checkSafetyBlockReason(response: any): void {
   if (candidate) {
     const finishReason = candidate.finishReason;
     if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
-      throw new Error(`Yêu cầu bị từ chối bởi Google AI (Finish Reason: ${finishReason}).`);
+      throw new Error(`Yêu cầu bị từ chối bởi Google AI (Lý do: ${finishReason}).`);
     }
   }
 
   const blockReason = response.promptFeedback?.blockReason;
   if (blockReason) {
-    throw new Error(`Nội dung bị chặn bởi bộ lọc an toàn Google AI (Block Reason: ${blockReason}).`);
+    throw new Error(`Nội dung bị chặn bởi bộ lọc an toàn Google AI (Lý do: ${blockReason}).`);
   }
 }
 
 /**
- * THỰC THI CUỘC GỌI API GEMINI VỚI COOLDOWN & FAILOVER CHUẨN XÁC, HOÀN TOÀN TỰ ĐỘNG XOAY VÒNG MULTI-KEYS
+ * THỰC THI CUỘC GỌI API GEMINI VỚI AUTO FAILOVER & XOAY VÒNG MULTI-KEYS
+ * 100% Client-Side sử dụng @google/genai SDK trực tiếp.
  */
-export async function executeWithFailover(buildContents: () => any, config?: any): Promise<any> {
+export async function executeWithFailover(
+  buildContents: () => any, 
+  config?: any,
+  overridePreferredModel?: string
+): Promise<any> {
   const keys = getStoredGeminiApiKeys();
   if (keys.length === 0) {
     throw new Error('Chưa thiết lập Gemini API Key trong phần Cài đặt.');
   }
 
-  let lastError: any = null;
+  let lastError: unknown = null;
   const attemptedKeys = new Set<string>();
+  const maxAttempts = Math.min(keys.length, 10);
 
-  // Thử tối đa số lượng keys có sẵn (tối đa là 10 keys) để tránh lặp vô hạn
-  for (let attempt = 0; attempt < Math.min(keys.length, 10); attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const key = getNextAvailableKey(keys);
     if (!key || attemptedKeys.has(key)) {
-      break; // Đã quét qua hết tất cả các key khả dụng
+      break;
     }
     attemptedKeys.add(key);
 
@@ -276,17 +306,18 @@ export async function executeWithFailover(buildContents: () => any, config?: any
     const keyState = getKeyState(key);
 
     if (keyState.isRpdExhausted && keyState.rpdExhaustedDate === today) {
-      continue; // Key đã hết hạn ngày, bỏ qua sang key khác
+      continue;
     }
 
     try {
       await acquireRpmSlot(key);
-
       const ai = new GoogleGenAI({ apiKey: key });
       const contents = buildContents();
-      const selectedModel = getStoredSelectedModel();
+      
+      const selectedModel = overridePreferredModel || getStoredSelectedModel();
 
-      if (selectedModel !== 'auto') {
+      // Nếu người dùng chọn đích danh 1 model cụ thể và không phải auto
+      if (selectedModel !== 'auto' && !overridePreferredModel) {
         const response = await ai.models.generateContent({
           model: selectedModel,
           contents,
@@ -296,7 +327,6 @@ export async function executeWithFailover(buildContents: () => any, config?: any
         checkSafetyBlockReason(response);
         const textOutput = response?.text;
 
-        // Thành công: Reset backoff
         keyState.backoffFactor = 0;
         keyState.cooldownUntil = 0;
 
@@ -309,101 +339,91 @@ export async function executeWithFailover(buildContents: () => any, config?: any
         return null;
       }
 
-      // Chế độ 'auto': Ưu tiên chạy 3.5 Flash Lite trước
-      try {
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.5-flash-lite',
-          contents,
-          config,
-        });
+      // Chuỗi Auto Failover: 3.5 Flash Lite -> 3.1 Flash Lite -> 1.5 Flash 8B
+      const modelsToTry: string[] = overridePreferredModel 
+        ? [overridePreferredModel, ...FAILOVER_CHAIN.filter(m => m !== overridePreferredModel)]
+        : FAILOVER_CHAIN;
 
-        checkSafetyBlockReason(response);
-        const textOutput = response?.text;
+      let modelSuccess = false;
+      let lastModelError: unknown = null;
 
-        // Thành công: Reset backoff
-        keyState.backoffFactor = 0;
-        keyState.cooldownUntil = 0;
+      for (const modelName of modelsToTry) {
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents,
+            config,
+          });
 
-        if (textOutput) {
-          if (config?.responseMimeType === 'application/json') {
-            return JSON.parse(textOutput.trim());
+          checkSafetyBlockReason(response);
+          const textOutput = response?.text;
+
+          // Thành công: Reset lại backoff factor của key
+          keyState.backoffFactor = 0;
+          keyState.cooldownUntil = 0;
+          modelSuccess = true;
+
+          if (textOutput) {
+            if (config?.responseMimeType === 'application/json') {
+              return JSON.parse(textOutput.trim());
+            }
+            return textOutput;
           }
-          return textOutput;
+          return null;
+        } catch (err: unknown) {
+          lastModelError = err;
+          const errType = classifyQuotaError(err);
+          const errMsg = err instanceof Error ? err.message : String(err);
+
+          console.warn(`[Gemini Failover] Model ${modelName} trên Key ${key.slice(0, 6)}... gặp lỗi (${errType}): ${errMsg}`);
+
+          // Nếu cạn giới hạn ngày RPD, không thử tiếp model khác trên key này nữa
+          if (errType === 'RPD') {
+            keyState.isRpdExhausted = true;
+            keyState.rpdExhaustedDate = today;
+            break;
+          }
+
+          // Nếu lỗi 429/503 (RPM/Resource Exhausted): Thử model tiếp theo trong chuỗi (ví dụ: sang 1.5-flash-8b)
+          if (errType === 'RPM') {
+            continue;
+          }
+
+          // Nếu là lỗi khác (như cú pháp nội dung), tiếp tục thử model dự phòng
         }
-      } catch (err35: any) {
-        const errType = classifyQuotaError(err35);
-        if (errType === 'RPD') {
-          keyState.isRpdExhausted = true;
-          keyState.rpdExhaustedDate = today;
-          console.warn(`[Gemini Rotator] Key ${key.slice(0, 6)}... đạt giới hạn ngày RPD.`);
-          continue; // Chuyển sang key tiếp theo
-        }
-        if (errType === 'RPM') {
-          keyState.backoffFactor += 1;
-          const delay = 10000 * Math.pow(2, keyState.backoffFactor - 1);
-          keyState.cooldownUntil = Date.now() + delay;
-          console.warn(`[Gemini Rotator] Key ${key.slice(0, 6)}... chạm trần RPM. Tạm nghỉ ${delay}ms.`);
-          continue; // Chuyển sang key tiếp theo
-        }
-        console.warn('[Gemini Failover] 3.5 Flash Lite gặp lỗi, chuyển sang dự phòng 3.1 Flash Lite...', err35?.message || err35);
       }
 
-      // Dự phòng bằng 3.1 Flash Lite trên cùng key này
-      try {
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
-          contents,
-          config,
-        });
-
-        checkSafetyBlockReason(response);
-        const textOutput = response?.text;
-
-        // Thành công: Reset backoff
-        keyState.backoffFactor = 0;
-        keyState.cooldownUntil = 0;
-
-        if (textOutput) {
-          if (config?.responseMimeType === 'application/json') {
-            return JSON.parse(textOutput.trim());
-          }
-          return textOutput;
-        }
-      } catch (err31: any) {
-        const errType = classifyQuotaError(err31);
-        if (errType === 'RPD') {
-          keyState.isRpdExhausted = true;
-          keyState.rpdExhaustedDate = today;
-        } else if (errType === 'RPM') {
-          keyState.backoffFactor += 1;
-          const delay = 10000 * Math.pow(2, keyState.backoffFactor - 1);
-          keyState.cooldownUntil = Date.now() + delay;
-        }
-        throw err31;
+      if (modelSuccess) {
+        return;
       }
 
-    } catch (err: any) {
-      console.warn(`[Gemini Rotator] Key ${key.slice(0, 6)}... gặp lỗi:`, err.message || err);
+      // Nếu tất cả model trên key này đều lỗi: Tăng backoff và chuyển sang key kế tiếp
+      lastError = lastModelError;
+      keyState.backoffFactor += 1;
+      const delay = Math.min(60000, 5000 * Math.pow(2, keyState.backoffFactor - 1));
+      keyState.cooldownUntil = Date.now() + delay;
+
+    } catch (err: unknown) {
       lastError = err;
-
       const errType = classifyQuotaError(err);
       if (errType === 'RPD') {
         keyState.isRpdExhausted = true;
         keyState.rpdExhaustedDate = today;
       } else if (errType === 'RPM') {
         keyState.backoffFactor += 1;
-        const delay = 10000 * Math.pow(2, keyState.backoffFactor - 1);
+        const delay = Math.min(60000, 5000 * Math.pow(2, keyState.backoffFactor - 1));
         keyState.cooldownUntil = Date.now() + delay;
       }
-      // Vòng lặp sẽ tiếp tục thử Key tiếp theo
     }
   }
 
-  throw lastError || new Error('Tất cả các API Keys hiện có đều tạm thời gián đoạn hoặc hết hạn ngạch.');
+  const errMessage = lastError instanceof Error ? lastError.message : 'Tất cả các API Keys hiện có đều tạm thời gián đoạn hoặc hết hạn ngạch.';
+  throw new Error(`[Gemini SDK] ${errMessage}`);
 }
 
 /**
- * PING TEST CHO KEY CÁ NHÂN
+ * KIỂM TRA TÍNH HỢP LỆ VÀ KẾT NỐI CỦA MỘT GEMINI API KEY
+ * Thực thi trực tiếp 100% Client-Side.
  */
 export async function testGeminiApiKey(
   candidateKey: string
@@ -413,22 +433,7 @@ export async function testGeminiApiKey(
     return { success: false, message: 'Vui lòng nhập API Key để kiểm tra!' };
   }
 
-  // Thử qua backend API trước
-  try {
-    const res = await fetch('/api/ai/test-key', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey: cleanKey }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.success) {
-        return { success: true, message: data.message || 'Kết nối thành công!' };
-      }
-    }
-  } catch (e) {}
-
-  // Thử trực tiếp phía Client bằng SDK
+  // Thử trực tiếp phía Client qua GoogleGenAI SDK với model 3.5 Flash Lite
   try {
     const ai = new GoogleGenAI({ apiKey: cleanKey });
     const response = await ai.models.generateContent({
@@ -436,29 +441,31 @@ export async function testGeminiApiKey(
       contents: 'Ping test. Reply with word OK.',
     });
 
-    if (response && response.text) {
+    if (response?.text) {
       return { success: true, message: 'Kết nối thành công! Key hoạt động tốt (Gemini 3.5 Flash Lite).' };
     }
-  } catch (err35: any) {
+  } catch (err35: unknown) {
+    // Dự phòng kiểm tra bằng 3.1 Flash Lite
     try {
       const ai = new GoogleGenAI({ apiKey: cleanKey });
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-flash-lite',
         contents: 'Ping test. Reply with word OK.',
       });
-      if (response && response.text) {
+      if (response?.text) {
         return { success: true, message: 'Kết nối thành công! Key hoạt động tốt (Gemini 3.1 Flash Lite).' };
       }
-    } catch (err31: any) {
+    } catch (err31: unknown) {
       const errType = classifyQuotaError(err31);
       if (errType === 'RPD') {
-        return { success: false, message: 'Key đã đạt giới hạn cuộc gọi trong ngày.' };
+        return { success: false, message: 'Key đã đạt giới hạn cuộc gọi trong ngày (RPD).' };
       }
-      return { success: false, message: 'Key không hoạt động hoặc không đúng cấu hình.' };
+      const msg = err31 instanceof Error ? err31.message : String(err31);
+      return { success: false, message: `Key không hoạt động hoặc sai cấu hình: ${msg}` };
     }
   }
 
-  return { success: false, message: 'Không thể kết nối Gemini API.' };
+  return { success: false, message: 'Không thể kết nối tới Google Gemini API.' };
 }
 
 export async function testAllGeminiApiKeys(
@@ -498,40 +505,14 @@ BẮT BUỘC CHỈ CHỌN DUY NHẤT 1 THỂ LOẠI TIÊU BIỂU NHẤT TRONG 13
 `;
 
 /**
- * BÓC TÁCH KỆ SÁCH HÀNG LOẠT BẰNG AI VISION (BATCH SCAN OCR)
+ * Xử lý quét một micro-batch ảnh (1-2 ảnh) trực tiếp bằng SDK
  */
-export async function scanImages(
+async function scanSingleImageBatch(
   images: string[],
-  existingBooks: BookRecord[] = [],
+  existingTitlesRef: string,
   preferredModel?: string
-): Promise<{ success: boolean; count: number; books: any[] }> {
-  if (!images || images.length === 0) {
-    return { success: true, count: 0, books: [] };
-  }
-
-  // 1. Thử qua backend API trước (Khuyên dùng - Bỏ qua CORS và an toàn tuyệt đối)
-  try {
-    const key = getGeminiApiKey();
-    const res = await fetch('/api/books/scan-images', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-gemini-api-key': key,
-      },
-      body: JSON.stringify({ images, existingBooks, preferredModel }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.success) {
-        return data;
-      }
-    }
-  } catch (apiErr) {
-    console.warn('[Gemini OCR API Proxy] Thử gọi API thất bại, chuyển sang chạy trực tiếp đầu client:', apiErr);
-  }
-
-  // 2. Fallback chạy trực tiếp phía Client bằng SDK như cũ
-  const existingTitles = existingBooks.slice(0, 80).map((b) => b.title).filter(Boolean).join(', ');
+): Promise<ScannedBookItem[]> {
+  if (!images || images.length === 0) return [];
 
   const prompt = `Bạn là chuyên gia thị giác máy tính và biên mục thư viện sách xuất sắc.
 Hãy phân tích tỉ mỉ ảnh bìa / gáy sách và trích xuất danh sách tất cả các cuốn sách có trong hình.
@@ -542,7 +523,7 @@ QUY TẮC CHÍNH XÁC:
 3. Thể loại (category): BẮT BUỘC CHỈ CHỌN 1 TRONG 13 DANH MỤC:
 ${CATEGORY_GUIDELINES}
 
-Danh sách sách đã có trong kho (tham khảo để đối chiếu): ${existingTitles || 'Chưa có'}
+Danh sách sách đã có trong kho (đối chiếu tránh trùng): ${existingTitlesRef || 'Chưa có'}
 
 Trả về mảng JSON danh sách các cuốn sách tìm thấy:`;
 
@@ -589,57 +570,142 @@ Trả về mảng JSON danh sách các cuốn sách tìm thấy:`;
     },
   };
 
-  try {
-    const rawBooks = await executeWithFailover(buildContents, config);
-    if (Array.isArray(rawBooks)) {
-      const sanitized = rawBooks.map((b: any) => ({
-        ...b,
-        category: sanitizeSingleCategory(b.category || 'Chung'),
-        is_ai_normalized: true,
-      }));
-      return { success: true, count: sanitized.length, books: sanitized };
-    }
-  } catch (err) {
-    console.warn('[Gemini OCR Fallback] Trích xuất trực tiếp client thất bại:', err);
+  const rawBooks = await executeWithFailover(buildContents, config, preferredModel);
+  if (Array.isArray(rawBooks)) {
+    return rawBooks.map((b: any) => ({
+      title: (b.title || '').trim(),
+      author: (b.author || '').trim(),
+      publisher: (b.publisher || '').trim(),
+      category: sanitizeSingleCategory(b.category || 'Chung'),
+      is_ai_normalized: true,
+    })).filter(b => b.title.length > 0);
   }
 
-  return { success: true, count: 0, books: [] };
+  return [];
+}
+
+/**
+ * BÓC TÁCH KỆ SÁCH HÀNG LOẠT BẰNG AI VISION (BATCH SCAN OCR)
+ * 100% Client-Side, xử lý chia nhỏ micro-batch, chạy đa luồng đồng thời theo số Key,
+ * không làm treo giao diện người dùng (Non-blocking UI).
+ */
+export async function scanImages(
+  images: string[],
+  existingBooks: BookRecord[] = [],
+  preferredModelOrOptions?: string | ScanImagesOptions,
+  legacyOptions?: ScanImagesOptions
+): Promise<ScanImagesResult> {
+  if (!images || images.length === 0) {
+    return { success: true, count: 0, books: [] };
+  }
+
+  let preferredModel: string | undefined;
+  let options: ScanImagesOptions = {};
+
+  if (typeof preferredModelOrOptions === 'string') {
+    preferredModel = preferredModelOrOptions;
+    options = legacyOptions || {};
+  } else if (preferredModelOrOptions && typeof preferredModelOrOptions === 'object') {
+    options = preferredModelOrOptions;
+    preferredModel = options.preferredModel;
+  }
+
+  const existingTitlesRef = existingBooks.slice(0, 80).map((b) => b.title).filter(Boolean).join(', ');
+
+  // Chia nhỏ thành các micro-batch: Mỗi batch gồm tối đa 2 ảnh để giữ kích thước base64 an toàn
+  const MICRO_BATCH_SIZE = 2;
+  const imageBatches: string[][] = [];
+  for (let i = 0; i < images.length; i += MICRO_BATCH_SIZE) {
+    imageBatches.push(images.slice(i, i + MICRO_BATCH_SIZE));
+  }
+
+  const keys = getStoredGeminiApiKeys();
+  const concurrency = Math.max(1, Math.min(keys.length, 3)); // Tối đa 3 luồng song song
+
+  console.log(`[Gemini Vision] Bắt đầu phân tích ${images.length} ảnh (${imageBatches.length} lô nhỏ) với ${concurrency} luồng đồng thời...`);
+
+  const detectedBooksMap = new Map<string, ScannedBookItem>();
+  let processedImagesCount = 0;
+  let currentBatchIndex = 0;
+
+  const notifyProgress = (message?: string) => {
+    if (options.onProgress) {
+      try {
+        options.onProgress({
+          processedImages: processedImagesCount,
+          totalImages: images.length,
+          detectedBooksCount: detectedBooksMap.size,
+          currentMessage: message,
+        });
+      } catch (e) {
+        console.warn('[Gemini Vision] Lỗi gọi progress callback:', e);
+      }
+    }
+  };
+
+  notifyProgress('Bắt đầu phân tích ảnh gáy sách...');
+
+  const runWorker = async () => {
+    while (currentBatchIndex < imageBatches.length) {
+      if (options.stopSignal?.current) break;
+
+      const idx = currentBatchIndex++;
+      if (idx >= imageBatches.length) break;
+
+      const batch = imageBatches[idx];
+      const batchImgCount = batch.length;
+
+      try {
+        const found = await scanSingleImageBatch(batch, existingTitlesRef, preferredModel);
+        
+        found.forEach((book) => {
+          const dedupeKey = `${book.title.toLowerCase()}_${(book.author || '').toLowerCase()}`;
+          if (!detectedBooksMap.has(dedupeKey)) {
+            detectedBooksMap.set(dedupeKey, book);
+          }
+        });
+
+        processedImagesCount += batchImgCount;
+        notifyProgress(`Đã quét ${processedImagesCount}/${images.length} ảnh (Tìm thấy ${detectedBooksMap.size} cuốn)`);
+      } catch (batchErr) {
+        console.warn(`[Gemini Vision] Lô ảnh #${idx + 1} gặp sự cố:`, batchErr);
+        processedImagesCount += batchImgCount;
+        notifyProgress(`Lô #${idx + 1} gặp lỗi, tiếp tục các ảnh còn lại...`);
+      }
+
+      // Nhường CPU cho Main Thread (React render 60fps mượt mà không bị treo giật)
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+  };
+
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < concurrency; w++) {
+    workers.push(runWorker());
+  }
+
+  await Promise.allSettled(workers);
+
+  const finalBooks = Array.from(detectedBooksMap.values());
+  return {
+    success: true,
+    count: finalBooks.length,
+    books: finalBooks,
+  };
 }
 
 /**
  * LÀM GIÀU DỮ LIỆU SÁCH ĐƠN LẺ (AUTOFILL / ENRICHMENT)
+ * 100% Client-Side.
  */
 export async function enrichBook(
   title: string,
   author = '',
   publisher = ''
-): Promise<{ success: boolean; enriched?: any }> {
+): Promise<BookEnrichmentResult> {
   if (!title.trim()) {
     return { success: false };
   }
 
-  // 1. Thử qua backend API trước (Khuyên dùng)
-  try {
-    const key = getGeminiApiKey();
-    const res = await fetch('/api/books/enrich', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-gemini-api-key': key,
-      },
-      body: JSON.stringify({ title, author, publisher }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.success) {
-        return data;
-      }
-    }
-  } catch (apiErr) {
-    console.warn('[Gemini Enrich API Proxy] Thử gọi API thất bại, chuyển sang chạy trực tiếp đầu client:', apiErr);
-  }
-
-  // 2. Fallback chạy trực tiếp phía Client bằng SDK như cũ
   const prompt = `Tra cứu thông tin chính xác của cuốn sách:
 - Tên sách: "${title}"
 - Tác giả: "${author || 'Chưa rõ'}"
@@ -684,14 +750,14 @@ ${CATEGORY_GUIDELINES}
       };
     }
   } catch (err) {
-    console.warn('[Gemini Enrich Fallback] Tra cứu trực tiếp client thất bại:', err);
+    console.warn('[Gemini Enrich] Tra cứu trực tiếp client thất bại:', err);
   }
 
   return { success: false };
 }
 
 /**
- * CHUẨN HÓA MỘT LÔ CHUNK QUY ĐỊNH (Không chạy đa luồng)
+ * CHUẨN HÓA MỘT LÔ SÁCH (100% Client-Side)
  */
 async function processChunk(
   books: BookRecord[],
@@ -699,28 +765,6 @@ async function processChunk(
 ): Promise<any[] | null> {
   if (!books || books.length === 0 || stopSignal?.current) return [];
 
-  // 1. Thử qua backend API trước (Giải quyết triệt để lỗi "nằm im" do nghẽn/CORS)
-  try {
-    const key = getGeminiApiKey();
-    const res = await fetch('/api/books/batch-normalize', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-gemini-api-key': key,
-      },
-      body: JSON.stringify({ books }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.success && Array.isArray(data.normalized)) {
-        return data.normalized;
-      }
-    }
-  } catch (apiErr) {
-    console.warn('[Gemini Batch-Normalize API Proxy] Thử gọi API thất bại, chuyển sang chạy trực tiếp đầu client:', apiErr);
-  }
-
-  // 2. Fallback chạy trực tiếp phía Client bằng SDK như cũ
   const cleanInput = books.map((b) => ({
     id: b.id,
     title: (b.title || '').trim(),
@@ -765,12 +809,7 @@ Trả về mảng JSON đúng cấu trúc, BẮT BUỘC giữ nguyên trường 
     },
   };
 
-  try {
-    return await executeWithFailover(buildContents, config);
-  } catch (err) {
-    console.warn('[Gemini Service Fallback] processChunk trực tiếp client thất bại:', err);
-    throw err;
-  }
+  return await executeWithFailover(buildContents, config);
 }
 
 export interface BatchNormalizeOptions {
@@ -780,7 +819,7 @@ export interface BatchNormalizeOptions {
 }
 
 /**
- * CHUẨN HÓA HÀNG LOẠT SÁCH (Hỗ trợ đa luồng đồng thời thông minh theo số lượng API Keys để tăng tốc độ tối đa)
+ * CHUẨN HÓA HÀNG LOẠT SÁCH (100% Client-Side đa luồng theo số API Keys)
  */
 export async function batchNormalize(
   books: BookRecord[],
@@ -802,31 +841,26 @@ export async function batchNormalize(
   }
 
   const keys = getStoredGeminiApiKeys();
-  // Giới hạn luồng chạy song song tối đa là 4 (hoặc số lượng keys đang có) để tránh quá tải trình duyệt
   const concurrency = Math.max(1, Math.min(keys.length, 4));
 
-  console.log(`[Gemini Service] Bắt đầu chuẩn hóa song song ${chunks.length} lô (${books.length} cuốn sách) với ${concurrency} luồng đồng thời...`);
+  console.log(`[Gemini Normalizer] Bắt đầu chuẩn hóa song song ${chunks.length} lô (${books.length} cuốn) với ${concurrency} luồng...`);
 
   const allNormalizedResults: any[] = [];
   let remainingCount = books.length;
   let activeIndex = 0;
 
-  // Khóa đồng bộ hóa khi thêm kết quả để tránh race conditions
   const addResults = (chunkResults: any[]) => {
     allNormalizedResults.push(...chunkResults);
   };
 
   const runWorker = async () => {
     while (activeIndex < chunks.length) {
-      if (options.stopSignal?.current) {
-        break;
-      }
+      if (options.stopSignal?.current) break;
 
       const currentIndex = activeIndex++;
       if (currentIndex >= chunks.length) break;
 
       const chunk = chunks[currentIndex];
-      console.log(`[Gemini Worker] Đang xử lý lô ${currentIndex + 1}/${chunks.length} (${chunk.length} cuốn)...`);
 
       try {
         const normalizedChunk = await processChunk(chunk, options.stopSignal);
@@ -839,17 +873,14 @@ export async function batchNormalize(
             try {
               await options.onChunkComplete(normalizedChunk, remainingCount);
             } catch (cbErr) {
-              console.warn('[Gemini Service] Lỗi callback onChunkComplete:', cbErr);
+              console.warn('[Gemini Normalizer] Lỗi callback onChunkComplete:', cbErr);
             }
           }
-        } else {
-          throw new Error('Kết quả chuẩn hóa trống rỗng.');
         }
-      } catch (err: any) {
-        console.warn(`[Gemini Worker] Lô ${currentIndex + 1} thất bại, thử lại sau 2 giây...`, err?.message || err);
+      } catch (err: unknown) {
+        console.warn(`[Gemini Normalizer] Lô ${currentIndex + 1} gặp lỗi, thử lại sau 2 giây...`, err);
         if (options.stopSignal?.current) break;
         
-        // Chờ và thử lại một lần nữa
         await new Promise((r) => setTimeout(r, 2000));
         try {
           const normalizedChunk = await processChunk(chunk, options.stopSignal);
@@ -859,27 +890,22 @@ export async function batchNormalize(
             if (options.onChunkComplete) {
               await options.onChunkComplete(normalizedChunk, remainingCount);
             }
-          } else {
-            console.warn(`[Gemini Worker] Bỏ qua lô ${currentIndex + 1} do không thể chuẩn hóa.`);
           }
-        } catch (retryErr: any) {
-          console.error(`[Gemini Worker] Lô ${currentIndex + 1} thất bại hoàn toàn sau khi thử lại:`, retryErr?.message || retryErr);
+        } catch (retryErr) {
+          console.error(`[Gemini Normalizer] Lô ${currentIndex + 1} thất bại hoàn toàn:`, retryErr);
         }
       }
 
-      // Khoảng nghỉ nhỏ để điều hòa tải giữa các lượt gọi
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 120));
     }
   };
 
-  // Khởi động các luồng song song
   const workers: Promise<void>[] = [];
   for (let i = 0; i < concurrency; i++) {
     workers.push(runWorker());
   }
 
-  // Đợi cho đến khi tất cả các luồng hoàn thành công việc
-  await Promise.all(workers);
+  await Promise.allSettled(workers);
 
   return {
     success: true,

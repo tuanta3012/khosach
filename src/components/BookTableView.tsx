@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useDeferredValue } from 'react';
 import {
   Search,
   Edit2,
@@ -58,7 +58,7 @@ function getCategoryBadgeStyle(categoryName: string): { bg: string; text: string
   return { bg: 'bg-[#fffbeb]', text: 'text-[#9e5628]', border: 'border-[#fef3c7]' };
 }
 
-export const BookTableView: React.FC<BookTableViewProps> = ({
+export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   books,
   categories,
   onSaveBook,
@@ -69,6 +69,9 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
 }) => {
   const { showToast } = useToast();
   const [globalFilter, setGlobalFilter] = useState('');
+  // React 18 useDeferredValue: Gõ phím phản hồi tức thì 60fps, không khựng giật khi lọc mảng lớn
+  const deferredFilter = useDeferredValue(globalFilter);
+
   const [viewMode, setViewMode] = useState<'list' | 'chart'>('list');
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editingValues, setEditingValues] = useState<Partial<BookRecord>>({});
@@ -98,7 +101,17 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
 
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
-  // Bộ lọc thông minh + Fuzzy Match + Tự sắp xếp
+  // Tối ưu hóa đếm số lượng sách theo danh mục trong O(N) duy nhất, loại bỏ O(Categories * N)
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (let i = 0; i < books.length; i++) {
+      const cat = (books[i].category || 'Chung').trim() || 'Chung';
+      counts[cat] = (counts[cat] || 0) + 1;
+    }
+    return counts;
+  }, [books]);
+
+  // Bộ lọc thông minh + Fuzzy Match + Tự sắp xếp (chạy non-blocking với deferredFilter)
   const filteredData = useMemo(() => {
     let result = [...books];
 
@@ -141,7 +154,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
       return 0;
     };
 
-    const query = globalFilter.trim();
+    const query = deferredFilter.trim();
     if (!query) {
       result.sort(sortFn);
       return result;
@@ -408,7 +421,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                   Tất cả ({books.length})
                 </button>
                 {categories.map((cat) => {
-                  const count = books.filter((b) => (b.category || 'Chung') === cat).length;
+                  const count = categoryCounts[cat] || 0;
                   if (count === 0) return null;
                   const isSel = selectedCategory === cat;
                   return (
@@ -763,4 +776,4 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
       )}
     </div>
   );
-};
+});

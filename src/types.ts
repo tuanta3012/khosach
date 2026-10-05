@@ -68,3 +68,89 @@ export interface DriveBackupPayload {
   totalBooks: number;
   books: BookRecord[];
 }
+
+export type GeminiModelId = 
+  | 'auto' 
+  | 'gemini-3.5-flash-lite' 
+  | 'gemini-3.1-flash-lite';
+
+export interface GeminiModelInfo {
+  id: GeminiModelId;
+  name: string;
+  desc: string;
+}
+
+export interface ScannedBookItem {
+  title: string;
+  author: string;
+  publisher?: string;
+  category?: string;
+  is_ai_normalized?: boolean;
+}
+
+export interface ScanImagesResult {
+  success: boolean;
+  count: number;
+  books: ScannedBookItem[];
+}
+
+export interface ScanImagesProgressInfo {
+  processedImages: number;
+  totalImages: number;
+  detectedBooksCount: number;
+  currentMessage?: string;
+}
+
+export type ScanImagesProgressCallback = (progress: ScanImagesProgressInfo) => void;
+
+export interface ScanImagesOptions {
+  preferredModel?: string;
+  onProgress?: ScanImagesProgressCallback;
+  stopSignal?: { current: boolean };
+}
+
+export interface BookEnrichmentResult {
+  success: boolean;
+  enriched?: {
+    title: string;
+    author: string;
+    publisher?: string;
+    publish_year?: number;
+    category?: string;
+    summary?: string;
+  };
+}
+
+export interface NormalizedBookItem {
+  id: string;
+  title: string;
+  author: string;
+  publisher: string;
+  category: string;
+  is_ai_normalized: boolean;
+}
+
+export interface KeyQuotaState {
+  key: string;
+  cooldownUntil: number;
+  backoffFactor: number;
+  isRpdExhausted: boolean;
+  rpdExhaustedDate: string;
+  apiCallTimestamps: number[];
+}
+
+export interface KeyQuotaMetrics {
+  keyCount: number;
+  healthyKeyCount: number;
+  microBatchSize: number;
+  concurrency: number;
+  maxRpm: number;
+  maxRpd: number;
+}
+
+export interface GoogleGisTokenResponse {
+  access_token?: string;
+  expires_in?: string | number;
+  error?: string;
+  error_description?: string;
+}

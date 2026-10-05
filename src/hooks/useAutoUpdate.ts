@@ -18,18 +18,6 @@ export function compareVersions(v1: string, v2: string): number {
   return 0;
 }
 
-const getApiUrl = (path: string): string => {
-  if (typeof window !== 'undefined') {
-    const origin = window.location.origin;
-    if (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.startsWith('file:')) {
-      // Dành cho môi trường di động local/Capacitor hoặc localhost dev
-      return `https://ais-pre-6xd4hn5ourvlmjugqheam6-546075383474.asia-southeast1.run.app${path}`;
-    }
-    return `${origin}${path}`;
-  }
-  return path;
-};
-
 export function useAutoUpdate() {
   const [isChecking, setIsChecking] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -64,53 +52,30 @@ export function useAutoUpdate() {
     }
 
     const timestamp = Date.now();
-    const sources = [
-      {
-        type: 'proxy',
-        name: 'Server API Proxy (CORS-Free & Anti-Block)',
-        url: `${getApiUrl('/api/app-update/check')}?t=${timestamp}`,
-      },
-      {
-        type: 'raw',
-        name: 'GitHub Raw version.json',
-        url: `https://raw.githubusercontent.com/tuanta3012/khosach/refs/heads/main/version.json?t=${timestamp}`,
-      }
-    ];
+    // 100% Client-Side: Kiểm tra trực tiếp qua GitHub Raw version.json
+    const updateUrl = `https://raw.githubusercontent.com/tuanta3012/khosach/refs/heads/main/version.json?t=${timestamp}`;
 
     let latestInfo: UpdateInfo | null = null;
 
-    for (const src of sources) {
-      try {
-        console.log(`[useAutoUpdate] Checking update via source: ${src.name}`);
-        const res = await fetch(src.url);
+    try {
+      console.log(`[useAutoUpdate] Đang kiểm tra cập nhật trực tiếp từ GitHub: ${updateUrl}`);
+      const res = await fetch(updateUrl, { cache: 'no-store' });
 
-        if (res.ok) {
-          const data = await res.json();
-          if (src.type === 'proxy' && data && data.success && data.version) {
-            latestInfo = {
-              version: data.version.trim(),
-              apkUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
-              downloadUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
-              changelog: data.notes ? [data.notes] : ['Bản cập nhật tối ưu hóa hiệu năng và sửa lỗi.'],
-              notes: data.notes,
-            };
-            console.log(`[useAutoUpdate] Succeeded via proxy source! Latest version is v${latestInfo.version}`);
-            break;
-          } else if (src.type === 'raw' && data && data.version) {
-            latestInfo = {
-              version: data.version.trim(),
-              apkUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
-              downloadUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
-              changelog: data.notes ? [data.notes] : ['Bản cập nhật tối ưu hóa hiệu năng và sửa lỗi.'],
-              notes: data.notes,
-            };
-            console.log(`[useAutoUpdate] Succeeded via raw source! Latest version is v${latestInfo.version}`);
-            break;
-          }
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.version) {
+          latestInfo = {
+            version: data.version.trim(),
+            apkUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
+            downloadUrl: data.apkUrl || `https://github.com/tuanta3012/khosach/releases/download/v${data.version}/khosach_v${data.version}.apk`,
+            changelog: data.notes ? [data.notes] : ['Bản cập nhật tối ưu hóa hiệu năng và sửa lỗi.'],
+            notes: data.notes,
+          };
+          console.log(`[useAutoUpdate] Kiểm tra thành công! Phiên bản mới nhất trên GitHub là v${latestInfo.version}`);
         }
-      } catch (err) {
-        console.warn(`[useAutoUpdate] Thử nguồn ${src.name} thất bại:`, err);
       }
+    } catch (err) {
+      console.warn('[useAutoUpdate] Kiểm tra cập nhật từ GitHub thất bại:', err);
     }
 
     setIsChecking(false);

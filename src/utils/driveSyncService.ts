@@ -303,30 +303,11 @@ export function parseGoogleSheetCsvText(csvText: string): BookRecord[] {
 }
 
 /**
- * Universal smart fetch helper:
- * - Trong môi trường Web Preview: Gọi qua backend proxy /api/drive/proxy để tránh CORS
- * - Trong môi trường Mobile Android APK / Standalone: Gọi trực tiếp Google Apps Script / Sheet
+ * Universal client fetch helper cho Google Drive / Apps Script (100% Client-Side):
+ * - Hỗ trợ follow redirect an toàn
+ * - Với POST lên Google Apps Script, dùng text/plain để tránh preflight CORS OPTIONS
  */
 export async function smartDriveFetch(targetUrl: string, options?: RequestInit): Promise<Response> {
-  const isWebPreview = typeof window !== 'undefined' && (
-    window.location.port === '3000' || 
-    window.location.hostname.includes('run.app')
-  );
-
-  // 1. Thử Proxy trên Web Preview
-  if (isWebPreview) {
-    try {
-      const proxyUrl = `/api/drive/proxy?url=${encodeURIComponent(targetUrl)}`;
-      const proxyResp = await fetch(proxyUrl, options);
-      if (proxyResp.ok) {
-        return proxyResp;
-      }
-    } catch (err) {
-      console.warn('[smartDriveFetch] Proxy preview failed, fallback to direct fetch...', err);
-    }
-  }
-
-  // 2. Gọi Trực Tiếp (Dùng cho Mobile Android APK, Capacitor hoặc khi Proxy lỗi)
   const fetchOptions: RequestInit = {
     ...options,
     redirect: 'follow',
