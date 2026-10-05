@@ -23,7 +23,7 @@ export const DEFAULT_CATEGORIES = [
 ];
 
 export const DEFAULT_SETTINGS: LibrarySettings = {
-  autoEnrichEnabled: true,
+  autoEnrichEnabled: false,
   categoriesList: DEFAULT_CATEGORIES,
   autoNormalizeEnabled: false,
 };

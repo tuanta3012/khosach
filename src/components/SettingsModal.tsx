@@ -130,6 +130,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // Mặc định tính năng AI tự động luôn là OFF khi cài app mới
   const [autoNormalize, setAutoNormalize] = useState<boolean>(() => !!settings.autoNormalizeEnabled);
 
+  useEffect(() => {
+    setAutoNormalize(!!settings.autoNormalizeEnabled);
+  }, [settings.autoNormalizeEnabled, isOpen]);
+
   const handleToggleAutoNormalize = async (val: boolean) => {
     setAutoNormalize(val);
     await onSaveSettings({ ...settings, autoNormalizeEnabled: val });
