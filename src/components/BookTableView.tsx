@@ -12,12 +12,17 @@ import {
   User,
   Building,
   Sparkles,
-  RefreshCw,
+  Upload,
+  Camera,
+  Plus,
+  ArrowUpDown,
+  PlusCircle,
 } from 'lucide-react';
 import { BookRecord } from '../types';
 import { removeVietnameseTones } from '../utils/fuzzyMatcher';
 import { useToast } from '../context/ToastContext';
 import { CategoryBubbleChart } from './CategoryBubbleChart';
+import { SortSelectDropdown, BookSortOption } from './SortSelectDropdown';
 
 interface BookTableViewProps {
   books: BookRecord[];
@@ -26,7 +31,31 @@ interface BookTableViewProps {
   onDeleteBook: (id: string) => Promise<void>;
   onOpenAddModal: () => void;
   onOpenImportModal: () => void;
-  onResetMasterData?: () => Promise<void>;
+  onSwitchToScanner?: () => void;
+  appMode?: 'offline' | 'online';
+  isSyncingDrive?: boolean;
+}
+
+// Bảng màu Badge thể loại Warm Sienna & Accent Tones
+function getCategoryBadgeStyle(categoryName: string): { bg: string; text: string; border: string } {
+  const cat = (categoryName || '').toLowerCase();
+  if (cat.includes('văn học') || cat.includes('tiểu thuyết') || cat.includes('truyện')) {
+    return { bg: 'bg-[#fdf2f8]', text: 'text-[#88284c]', border: 'border-[#fbcfe8]' }; // Wine / Maroon
+  }
+  if (cat.includes('tâm lý') || cat.includes('triết học') || cat.includes('kỹ năng')) {
+    return { bg: 'bg-[#faf5ff]', text: 'text-[#653f96]', border: 'border-[#e9d5ff]' }; // Violet / Purple
+  }
+  if (cat.includes('kinh tế') || cat.includes('đầu tư') || cat.includes('kinh doanh')) {
+    return { bg: 'bg-[#f0fdfa]', text: 'text-[#165b4c]', border: 'border-[#ccfbf1]' }; // Pine Teal
+  }
+  if (cat.includes('lịch sử') || cat.includes('hồi ký') || cat.includes('tự truyện')) {
+    return { bg: 'bg-[#fffbeb]', text: 'text-[#9e5628]', border: 'border-[#fef3c7]' }; // Sienna Amber
+  }
+  if (cat.includes('khoa học') || cat.includes('công nghệ') || cat.includes('y học')) {
+    return { bg: 'bg-[#eff6ff]', text: 'text-[#295588]', border: 'border-[#bfdbfe]' }; // Denim Navy
+  }
+  // Mặc định: Warm Sienna Amber
+  return { bg: 'bg-[#fffbeb]', text: 'text-[#9e5628]', border: 'border-[#fef3c7]' };
 }
 
 export const BookTableView: React.FC<BookTableViewProps> = ({
@@ -34,7 +63,9 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
   categories,
   onSaveBook,
   onDeleteBook,
-  onResetMasterData,
+  onOpenAddModal,
+  onOpenImportModal,
+  onSwitchToScanner,
 }) => {
   const { showToast } = useToast();
   const [globalFilter, setGlobalFilter] = useState('');
@@ -48,18 +79,73 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(50);
 
+  // Sắp xếp
+  const [sortBy, setSortBy] = useState<BookSortOption>(() => {
+    try {
+      return (localStorage.getItem('book_library_sort_by') as BookSortOption) || 'newest';
+    } catch {
+      return 'newest';
+    }
+  });
+
+  const handleSortChange = (newSort: BookSortOption) => {
+    setSortBy(newSort);
+    try {
+      localStorage.setItem('book_library_sort_by', newSort);
+    } catch {}
+    setPageIndex(0);
+  };
+
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
-  // Bộ lọc thông minh + Fuzzy Match + Tự sắp xếp độ liên quan cao nhất lên đầu
+  // Bộ lọc thông minh + Fuzzy Match + Tự sắp xếp
   const filteredData = useMemo(() => {
-    let result = books;
+    let result = [...books];
 
     if (selectedCategory !== 'ALL') {
       result = result.filter((b) => (b.category || 'Chung') === selectedCategory);
     }
 
+    const getBookTime = (b: BookRecord): number => {
+      if (typeof b.created_at === 'number' && b.created_at > 0) return b.created_at;
+      if (typeof b.updated_at === 'number' && b.updated_at > 0) return b.updated_at;
+      if (b.id && b.id.startsWith('book_')) {
+        const parts = b.id.split('_');
+        const num = Number(parts[1]);
+        if (!isNaN(num) && num > 0) return num;
+      }
+      return 0;
+    };
+
+    const sortFn = (a: BookRecord, b: BookRecord) => {
+      if (sortBy === 'newest') {
+        const timeDiff = getBookTime(b) - getBookTime(a);
+        if (timeDiff !== 0) return timeDiff;
+        return (a.title || '').localeCompare(b.title || '', 'vi', { sensitivity: 'base' });
+      }
+      if (sortBy === 'oldest') {
+        const timeDiff = getBookTime(a) - getBookTime(b);
+        if (timeDiff !== 0) return timeDiff;
+        return (a.title || '').localeCompare(b.title || '', 'vi', { sensitivity: 'base' });
+      }
+      if (sortBy === 'title_asc') {
+        const comp = (a.title || '').localeCompare(b.title || '', 'vi', { sensitivity: 'base' });
+        if (comp !== 0) return comp;
+        return getBookTime(b) - getBookTime(a);
+      }
+      if (sortBy === 'title_desc') {
+        const comp = (b.title || '').localeCompare(a.title || '', 'vi', { sensitivity: 'base' });
+        if (comp !== 0) return comp;
+        return getBookTime(b) - getBookTime(a);
+      }
+      return 0;
+    };
+
     const query = globalFilter.trim();
-    if (!query) return result;
+    if (!query) {
+      result.sort(sortFn);
+      return result;
+    }
 
     const normQuery = removeVietnameseTones(query);
     const queryWords = normQuery.split(/\s+/).filter(Boolean);
@@ -79,7 +165,6 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
       let score = 0;
       let matchedWordsCount = 0;
 
-      // Đếm số lượng từ khóa tìm kiếm xuất hiện trong tựa sách, tác giả, nhà xuất bản hoặc thể loại
       for (const qw of queryWords) {
         const inTitle = titleWords.includes(qw) || normTitle.includes(qw);
         const inAuthor = authorWords.includes(qw) || normAuthor.includes(qw);
@@ -90,43 +175,27 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
         }
       }
 
-      // 1. Khớp chính xác hoàn toàn tác giả (Exact Author Match) -> Ưu tiên tuyệt đối
       if (normAuthor === normQuery) {
         score += 5000;
-      }
-      // 2. Khớp chính xác hoàn toàn tiêu đề (Exact Title Match) -> Ưu tiên cực cao
-      else if (normTitle === normQuery) {
+      } else if (normTitle === normQuery) {
         score += 4000;
-      }
-      // 3. Tác giả bắt đầu bằng cụm từ tìm kiếm (Author starts with query)
-      else if (normAuthor.startsWith(normQuery)) {
+      } else if (normAuthor.startsWith(normQuery)) {
         score += 2000;
-      }
-      // 4. Tiêu đề bắt đầu bằng cụm từ tìm kiếm (Title starts with query)
-      else if (normTitle.startsWith(normQuery)) {
+      } else if (normTitle.startsWith(normQuery)) {
         score += 1800;
-      }
-      // 5. Khớp cụm từ tìm kiếm đầy đủ theo ranh giới từ trong Tác giả
-      else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normAuthor)) {
+      } else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normAuthor)) {
         score += 1500;
-      }
-      // 6. Khớp cụm từ tìm kiếm đầy đủ theo ranh giới từ trong Tiêu đề
-      else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normTitle)) {
+      } else if (new RegExp(`\\b${escapeRegExp(normQuery)}\\b`).test(normTitle)) {
         score += 1300;
-      }
-      // 7. Khớp cụm từ tìm kiếm đầy đủ dạng substring trong Tác giả
-      else if (normAuthor.includes(normQuery)) {
+      } else if (normAuthor.includes(normQuery)) {
         score += 1000;
-      }
-      // 8. Khớp cụm từ tìm kiếm đầy đủ dạng substring trong Tiêu đề
-      else if (normTitle.includes(normQuery)) {
+      } else if (normTitle.includes(normQuery)) {
         score += 900;
       }
 
-      // 9. Điểm số khớp từng từ đơn lẻ (để tích lũy điểm khi gõ dài)
       for (const qw of queryWords) {
         const isWordMatchTitle = titleWords.includes(qw);
-        const isPrefixMatchTitle = qw.length >= 3 && titleWords.some(tw => tw.startsWith(qw));
+        const isPrefixMatchTitle = qw.length >= 3 && titleWords.some((tw) => tw.startsWith(qw));
 
         if (isWordMatchTitle) {
           score += 100;
@@ -135,9 +204,9 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
         }
 
         const isWordMatchAuthor = authorWords.includes(qw);
-        const isPrefixMatchAuthor = qw.length >= 3 && authorWords.some(aw => aw.startsWith(qw));
+        const isPrefixMatchAuthor = qw.length >= 3 && authorWords.some((aw) => aw.startsWith(qw));
         if (isWordMatchAuthor) {
-          score += 120; // Ưu tiên khớp từ tác giả hơn
+          score += 120;
         } else if (isPrefixMatchAuthor) {
           score += 60;
         }
@@ -146,10 +215,9 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
         if (normCat.includes(qw)) score += 10;
       }
 
-      // PHẠT NẶNG/THƯỞNG LỚN CHO ĐỘ PHỦ TỪ KHÓA (Phrase Grouping & Cohesive Lock)
       if (queryWords.length > 1) {
-        const containsExactPhrase = 
-          normTitle.includes(normQuery) || 
+        const containsExactPhrase =
+          normTitle.includes(normQuery) ||
           normAuthor.includes(normQuery) ||
           normPublisher.includes(normQuery) ||
           normCat.includes(normQuery);
@@ -157,12 +225,10 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
         const matchesAllWords = matchedWordsCount === queryWords.length;
 
         if (containsExactPhrase) {
-          score += 3000; // Thưởng cực lớn khi khóa nhóm từ đứng liền nhau
+          score += 3000;
         } else if (matchesAllWords) {
-          score += 600; // Khớp đủ toàn bộ từ nhưng không liền nhau
+          score += 600;
         } else {
-          // BẮT BUỘC KHÓA NHÓM TỪ: Nếu gõ nhiều từ khóa mà không khớp cụm từ liền nhau
-          // và không khớp đầy đủ 100% tất cả các từ, loại hoàn toàn khỏi kết quả tìm kiếm!
           score = 0;
         }
       }
@@ -172,18 +238,20 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
       }
     }
 
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return sortFn(a.book, b.book);
+    });
     return scored.map((s) => s.book);
-  }, [books, globalFilter, selectedCategory]);
+  }, [books, globalFilter, selectedCategory, sortBy]);
 
-  // Phân trang dữ liệu
+  // Phân trang
   const totalPages = Math.ceil(filteredData.length / pageSize) || 1;
   const paginatedBooks = useMemo(() => {
     const start = pageIndex * pageSize;
     return filteredData.slice(start, start + pageSize);
   }, [filteredData, pageIndex, pageSize]);
 
-  // Reset pageIndex khi bộ lọc thay đổi
   const handleFilterChange = (val: string) => {
     setGlobalFilter(val);
     setPageIndex(0);
@@ -198,10 +266,9 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
     setSelectedCategory(catName);
     setViewMode('list');
     setPageIndex(0);
-    showToast(`Đã lọc danh sách theo thể loại: ${catName}`, 'info');
+    showToast(`Đã lọc: ${catName}`, 'info');
   };
 
-  // Inline editing actions
   const handleStartEdit = (book: BookRecord) => {
     setEditingRowId(book.id);
     setEditingValues({ ...book });
@@ -228,153 +295,171 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
     await onSaveBook(updatedBook);
     setEditingRowId(null);
     setEditingValues({});
-    showToast('Cập nhật sách thành công!', 'success');
+    showToast('Đã lưu sách!', 'success');
   };
 
   const isSearching = Boolean(globalFilter.trim());
 
   return (
-    <div className="space-y-3">
-      {/* Search & View Switcher Bar */}
+    <div className="space-y-2.5">
+      {/* Search & Filter Bar - Warm Sienna Accents */}
       <div
         ref={searchContainerRef}
-        className="sticky top-14 z-30 bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200/90 shadow-xs p-2.5 space-y-2 transition-all"
+        className="sticky top-11 sm:top-12 z-30 bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200/90 shadow-2xs p-2 sm:p-2.5 space-y-2 transition-all"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
           {/* Main Search Input */}
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <form
+            role="search"
+            onSubmit={(e) => e.preventDefault()}
+            autoComplete="off"
+            className="relative flex-1"
+          >
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               type="search"
-              name="book_search_query"
-              autoComplete="off"
+              name="search"
+              id="book-catalog-search-input"
+              autoComplete="one-time-code"
               autoCorrect="off"
               autoCapitalize="none"
               spellCheck={false}
               inputMode="search"
+              data-lpignore="true"
+              data-form-type="other"
               value={globalFilter}
               onChange={(e) => handleFilterChange(e.target.value)}
-              placeholder="Gõ tên sách, tác giả... (không dấu)"
-              className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm bg-slate-50 focus:bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none transition font-medium"
+              placeholder="Tìm tên sách, tác giả..."
+              className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#9e5628] rounded-xl focus:ring-2 focus:ring-[#9e5628]/20 focus:outline-none transition font-medium"
             />
             {globalFilter && (
               <button
+                type="button"
                 onClick={() => handleFilterChange('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 rounded-full bg-slate-200/70"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 rounded-full bg-slate-200/60"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
-          </div>
+          </form>
 
-          {/* View Switcher: Thẻ Sách vs Thống Kê Thể Loại */}
+          {/* View Switcher: Thẻ Sách vs Thống Kê */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0">
             <button
               onClick={() => setViewMode('list')}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition ${
+              className={`p-1.5 rounded-lg text-xs transition ${
                 viewMode === 'list'
-                  ? 'bg-white text-emerald-700 shadow-xs font-bold'
-                  : 'text-slate-500 hover:text-slate-800 font-medium'
+                  ? 'bg-[#9e5628] text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-800'
               }`}
-              title="Thẻ Danh Sách"
+              title="Danh Sách"
             >
               <LayoutList className="w-4 h-4" />
-              <span className="hidden sm:inline">Thẻ Sách</span>
             </button>
             <button
               onClick={() => setViewMode('chart')}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition ${
+              className={`p-1.5 rounded-lg text-xs transition ${
                 viewMode === 'chart'
-                  ? 'bg-white text-emerald-700 shadow-xs font-bold'
-                  : 'text-slate-500 hover:text-slate-800 font-medium'
+                  ? 'bg-[#9e5628] text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-800'
               }`}
               title="Thống Kê Thể Loại"
             >
               <PieChart className="w-4 h-4" />
-              <span className="hidden sm:inline">Thống Kê</span>
             </button>
           </div>
         </div>
 
-        {/* Live Search Results Header or Category Horizontal Scroll */}
+        {/* Live Search Header or Category Horizontal Scroll */}
         {isSearching ? (
-          <div className="flex items-center justify-between text-xs bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200">
-            <span className="font-bold text-emerald-900 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+          <div className="flex items-center justify-between text-xs bg-amber-50 px-3 py-1.5 rounded-xl border border-amber-200/80">
+            <span className="font-bold text-[#85451e] flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-[#9e5628]" />
               <span>
-                Tìm thấy <strong className="text-emerald-700 font-extrabold">{filteredData.length}</strong> cuốn gần giống
+                Tìm thấy <strong className="text-[#85451e] font-black">{filteredData.length}</strong> cuốn
               </span>
             </span>
-            <button
-              onClick={() => handleFilterChange('')}
-              className="text-[11px] font-bold text-slate-500 hover:text-slate-800 underline"
-            >
-              Thoát tìm kiếm
-            </button>
+            <div className="flex items-center gap-2">
+              <SortSelectDropdown value={sortBy} onChange={handleSortChange} className="shrink-0" />
+              <button
+                onClick={() => handleFilterChange('')}
+                className="text-[11px] font-bold text-slate-500 hover:text-slate-800 underline cursor-pointer"
+              >
+                Thoát
+              </button>
+            </div>
           </div>
         ) : (
           viewMode === 'list' && (
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none text-xs">
-              <button
-                onClick={() => handleCategorySelect('ALL')}
-                className={`px-2.5 py-1 rounded-full text-xs font-bold shrink-0 transition ${
-                  selectedCategory === 'ALL'
-                    ? 'bg-slate-900 text-white shadow-xs'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                Tất cả ({books.length})
-              </button>
-              {categories.map((cat) => {
-                const count = books.filter(
-                  (b) => (b.category || 'Chung') === cat
-                ).length;
-                if (count === 0) return null;
-                const isSel = selectedCategory === cat;
-                return (
-                  <button
-                    key={cat}
-                    onClick={() => handleCategorySelect(cat)}
-                    className={`px-2.5 py-1 rounded-full text-xs font-medium shrink-0 transition ${
-                      isSel
-                        ? 'bg-emerald-600 text-white font-bold shadow-xs'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    {cat} ({count})
-                  </button>
-                );
-              })}
+            <div className="flex items-center gap-1.5 text-xs">
+              {/* Nút Sắp Xếp: Cố định bên trái, nằm ngoài thanh cuộn ngang để menu dropdown xổ xuống tự do */}
+              <SortSelectDropdown value={sortBy} onChange={handleSortChange} className="shrink-0" />
+
+              {/* Thanh cuộn ngang các thẻ phân loại */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none flex-1 min-w-0">
+                <button
+                  onClick={() => handleCategorySelect('ALL')}
+                  className={`px-3 py-1 rounded-full text-xs font-bold shrink-0 transition ${
+                    selectedCategory === 'ALL'
+                      ? 'bg-[#9e5628] text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Tất cả ({books.length})
+                </button>
+                {categories.map((cat) => {
+                  const count = books.filter((b) => (b.category || 'Chung') === cat).length;
+                  if (count === 0) return null;
+                  const isSel = selectedCategory === cat;
+                  return (
+                    <button
+                      key={cat}
+                      onClick={() => handleCategorySelect(cat)}
+                      className={`px-3 py-1 rounded-full text-xs font-medium shrink-0 transition ${
+                        isSel
+                          ? 'bg-[#9e5628] text-white font-bold shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {cat} ({count})
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )
         )}
       </div>
 
-      {/* Main Content: Card List View OR Dashboard Bubble Chart View */}
+      {/* Main Content Area */}
       {viewMode === 'list' ? (
-        <div className="space-y-3">
-          {/* Mobile Cards List */}
-          <div className="space-y-1.5">
+        <div className="space-y-2.5">
+          {/* Books List Cards (Khoảng cách gọn gàng) */}
+          <div className="space-y-1">
             {paginatedBooks.length > 0 ? (
               paginatedBooks.map((book, idx) => {
                 const isEditing = editingRowId === book.id;
                 const displayIndex = pageIndex * pageSize + idx + 1;
+                const badgeStyle = getCategoryBadgeStyle(book.category || '');
 
                 if (isEditing) {
                   return (
                     <div
                       key={book.id}
-                      className="bg-emerald-50/70 border border-emerald-400 rounded-xl p-2.5 space-y-1.5 shadow-xs"
+                      className="bg-amber-50/80 border border-amber-300 rounded-xl p-2.5 space-y-1.5 shadow-xs"
                     >
-                      <div className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
-                        Sửa nhanh cuốn #{displayIndex}
+                      <div className="text-[10px] font-bold text-[#85451e] uppercase tracking-wider">
+                        Sửa cuốn #{displayIndex}
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-500">
-                          Tên Sách
-                        </label>
+                        <label className="text-[10px] font-bold text-slate-500">Tên Sách</label>
                         <input
                           type="text"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          data-lpignore="true"
                           value={editingValues.title ?? book.title}
                           onChange={(e) =>
                             setEditingValues((prev) => ({
@@ -382,16 +467,19 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                               title: e.target.value,
                             }))
                           }
-                          className="w-full px-2 py-1 text-xs font-bold text-slate-900 bg-white border border-emerald-500 rounded-lg focus:outline-none"
+                          className="w-full px-2 py-1 text-xs font-bold text-slate-900 bg-white border border-[#9e5628] rounded-lg focus:outline-none"
                         />
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="text-[10px] font-bold text-slate-500">
-                            Tác Giả
-                          </label>
+                          <label className="text-[10px] font-bold text-slate-500">Tác Giả</label>
                           <input
                             type="text"
+                            autoComplete="off"
+                            autoCorrect="off"
+                            autoCapitalize="none"
+                            spellCheck={false}
+                            data-lpignore="true"
                             value={editingValues.author ?? book.author}
                             onChange={(e) =>
                               setEditingValues((prev) => ({
@@ -399,15 +487,18 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                                 author: e.target.value,
                               }))
                             }
-                            className="w-full px-2 py-0.5 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
+                            className="w-full px-2 py-0.5 text-xs bg-white border border-[#9e5628] rounded-lg focus:outline-none"
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-bold text-slate-500">
-                            Thể Loại
-                          </label>
+                          <label className="text-[10px] font-bold text-slate-500">Thể Loại</label>
                           <input
                             type="text"
+                            autoComplete="off"
+                            autoCorrect="off"
+                            autoCapitalize="none"
+                            spellCheck={false}
+                            data-lpignore="true"
                             value={editingValues.category ?? book.category}
                             onChange={(e) =>
                               setEditingValues((prev) => ({
@@ -415,16 +506,19 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                                 category: e.target.value,
                               }))
                             }
-                            className="w-full px-2 py-0.5 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
+                            className="w-full px-2 py-0.5 text-xs bg-white border border-[#9e5628] rounded-lg focus:outline-none"
                           />
                         </div>
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-slate-500">
-                          Nhà Xuất Bản
-                        </label>
+                        <label className="text-[10px] font-bold text-slate-500">Nhà Xuất Bản</label>
                         <input
                           type="text"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          data-lpignore="true"
                           value={editingValues.publisher ?? book.publisher}
                           onChange={(e) =>
                             setEditingValues((prev) => ({
@@ -432,7 +526,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                               publisher: e.target.value,
                             }))
                           }
-                          className="w-full px-2 py-0.5 text-xs bg-white border border-emerald-500 rounded-lg focus:outline-none"
+                          className="w-full px-2 py-0.5 text-xs bg-white border border-[#9e5628] rounded-lg focus:outline-none"
                         />
                       </div>
                       <div className="flex items-center justify-end gap-2 pt-0.5">
@@ -444,9 +538,9 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                         </button>
                         <button
                           onClick={() => handleSaveInline(book)}
-                          className="px-2.5 py-0.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition shadow-xs"
+                          className="px-2.5 py-0.5 bg-[#9e5628] text-white rounded-lg text-xs font-bold hover:bg-[#85451e] transition shadow-xs"
                         >
-                          Lưu Cập Nhật
+                          Lưu
                         </button>
                       </div>
                     </div>
@@ -456,11 +550,11 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                 return (
                   <div
                     key={book.id}
-                    className="bg-white border border-slate-200/90 rounded-xl p-2.5 shadow-2xs hover:border-emerald-300 transition"
+                    className="bg-white border border-slate-200/90 rounded-xl px-2.5 py-1.5 shadow-2xs hover:border-amber-300 transition"
                   >
-                    {/* Top Row: Full Width Title + Action Buttons */}
+                    {/* Top Row: Index + Title + Quick Actions */}
                     <div className="flex items-start justify-between gap-1.5">
-                      <h2 className="text-xs sm:text-sm font-extrabold text-slate-900 leading-tight min-w-0 flex-1">
+                      <h2 className="text-xs sm:text-[13px] font-extrabold text-slate-900 leading-snug min-w-0 flex-1">
                         <span className="text-slate-400 font-mono font-bold mr-1">{displayIndex}.</span>
                         {book.title}
                       </h2>
@@ -468,19 +562,19 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                       <div className="flex items-center gap-0.5 shrink-0 pt-0.5">
                         {confirmDeleteId === book.id ? (
                           <div className="flex items-center gap-1 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded-lg animate-in fade-in duration-150">
-                            <span className="text-[10px] font-bold text-rose-700 shrink-0">Xóa?</span>
+                            <span className="text-[9.5px] font-bold text-rose-700 shrink-0">Xóa?</span>
                             <button
                               onClick={() => {
                                 onDeleteBook(book.id);
                                 setConfirmDeleteId(null);
                               }}
-                              className="px-1.5 py-0.5 bg-rose-600 text-white rounded text-[10px] font-bold hover:bg-rose-700 transition"
+                              className="px-1.5 py-0.2 bg-rose-600 text-white rounded text-[9.5px] font-bold hover:bg-rose-700 transition"
                             >
                               Có
                             </button>
                             <button
                               onClick={() => setConfirmDeleteId(null)}
-                              className="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded text-[10px] font-bold hover:bg-slate-300 transition"
+                              className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded text-[9.5px] font-bold hover:bg-slate-300 transition"
                             >
                               Không
                             </button>
@@ -489,14 +583,14 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                           <>
                             <button
                               onClick={() => handleStartEdit(book)}
-                              className="p-1 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
-                              title="Sửa nhanh"
+                              className="p-0.5 text-slate-400 hover:text-[#9e5628] hover:bg-amber-50 rounded-md transition"
+                              title="Sửa"
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => setConfirmDeleteId(book.id)}
-                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                              className="p-0.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition"
                               title="Xóa"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -506,8 +600,8 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Bottom Row: Left (Author/Publisher) | Right (Category Badge) */}
-                    <div className="flex items-center justify-between gap-2 mt-1.5 pt-1 border-t border-slate-100/80 text-[10.5px] text-slate-600">
+                    {/* Bottom Row: Author/Publisher + Category Badge */}
+                    <div className="flex items-center justify-between gap-2 mt-1 pt-0.5 border-t border-slate-100/80 text-[10px] text-slate-600">
                       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 min-w-0 flex-1">
                         {book.author && (
                           <span className="flex items-center gap-1 font-medium">
@@ -523,9 +617,10 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                         )}
                       </div>
 
-                      {/* Thể loại căn phải dòng dưới */}
                       <div className="shrink-0 ml-auto">
-                        <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 rounded text-[9.5px] font-bold border border-emerald-200/80">
+                        <span
+                          className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${badgeStyle.bg} ${badgeStyle.text} ${badgeStyle.border}`}
+                        >
                           {book.category || 'Chung'}
                         </span>
                       </div>
@@ -533,26 +628,90 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
                   </div>
                 );
               })
+            ) : books.length === 0 ? (
+              /* Kho Sách Đang Trống (0 cuốn) - Hiển thị Khối Đồng Bộ & Nhập Sách Nổi Bật */
+              <div className="bg-white rounded-3xl p-6 sm:p-8 text-center border border-slate-200/90 shadow-2xs space-y-4 my-2">
+                <div className="w-16 h-16 rounded-2xl bg-[#f7f0eb] border border-[#e8d5c8] text-[#9e5628] flex items-center justify-center mx-auto shadow-2xs">
+                  <Upload className="w-8 h-8" />
+                </div>
+
+                <div className="space-y-1">
+                  <h3 className="text-base sm:text-lg font-black text-slate-900">
+                    Kho sách của bạn đang trống!
+                  </h3>
+                  <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
+                    Hãy bắt đầu thêm sách vào kho của bạn bằng nhiều cách đa dạng và chính xác.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 max-w-xl mx-auto pt-2">
+                  {/* Nút 1: Nhập file / Đồng bộ (Icon: ArrowUpDown đồng bộ thanh bar dưới, Gam màu Sienna App Icon) */}
+                  <button
+                    type="button"
+                    onClick={onOpenImportModal}
+                    className="px-4 py-3 bg-[#9e5628] hover:bg-[#854720] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-amber-600/30"
+                  >
+                    <ArrowUpDown className="w-4 h-4 shrink-0" />
+                    <span>Nhập file / Đồng bộ</span>
+                  </button>
+
+                  {/* Nút 2: Thêm sách bằng ảnh (Icon: Camera + AI, Gam màu Tím App Icon) */}
+                  {onSwitchToScanner && (
+                    <button
+                      type="button"
+                      onClick={onSwitchToScanner}
+                      className="px-4 py-3 bg-[#6b21a8] hover:bg-[#581c87] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-purple-400/30"
+                    >
+                      <div className="relative inline-flex items-center shrink-0">
+                        <Camera className="w-4 h-4" />
+                        <span className="absolute -top-1.5 -right-2 bg-amber-400 text-slate-950 text-[7px] font-black px-0.5 rounded-xs leading-none shadow-xs">
+                          AI
+                        </span>
+                      </div>
+                      <span>Thêm sách bằng ảnh</span>
+                    </button>
+                  )}
+
+                  {/* Nút 3: Thêm sách mới (Icon: PlusCircle đồng bộ thanh bar dưới, Gam màu Xanh Ngọc App Icon) */}
+                  <button
+                    type="button"
+                    onClick={onOpenAddModal}
+                    className="px-4 py-3 bg-[#0d6e53] hover:bg-[#09523e] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-emerald-500/30"
+                  >
+                    <PlusCircle className="w-4 h-4 shrink-0" />
+                    <span>Thêm sách mới</span>
+                  </button>
+                </div>
+              </div>
             ) : (
-              <div className="bg-white rounded-2xl p-8 text-center text-slate-400 border border-slate-200 shadow-2xs">
-                <Database className="w-10 h-10 mx-auto mb-2 text-slate-300 opacity-60" />
-                <p className="text-xs font-bold text-slate-700">
-                  Không tìm thấy cuốn sách nào khớp với từ khóa
-                </p>
-                <p className="text-[11px] text-slate-400 mt-1">
-                  Thử chọn thể loại khác hoặc gõ tên sách/tác giả không dấu khác
-                </p>
+              /* Trường hợp đang Tìm Kiếm hoặc Lọc Thể Loại nhưng Không Có Kết Quả */
+              <div className="bg-white rounded-2xl p-8 text-center text-slate-400 border border-slate-200 shadow-2xs space-y-2">
+                <Database className="w-10 h-10 mx-auto text-slate-300 opacity-60" />
+                <p className="text-xs font-bold text-slate-700">Không tìm thấy sách phù hợp</p>
+                <p className="text-[11px] text-slate-400">Thử chọn thể loại khác hoặc gõ từ khóa không dấu</p>
+                {(globalFilter || selectedCategory !== 'ALL') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGlobalFilter('');
+                      setSelectedCategory('ALL');
+                    }}
+                    className="mt-2 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition cursor-pointer"
+                  >
+                    Xóa tìm kiếm & Bộ lọc
+                  </button>
+                )}
               </div>
             )}
           </div>
 
-          {/* Pagination Controls */}
+          {/* Pagination */}
           {filteredData.length > 0 && (
             <div className="bg-white rounded-2xl border border-slate-200/90 p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-600 shadow-2xs">
               <div className="flex items-center justify-between sm:justify-start gap-2">
                 <span>
-                  Hiển thị <span className="font-bold text-slate-900">{paginatedBooks.length}</span> /{' '}
-                  <span className="font-bold text-slate-900">{filteredData.length}</span> cuốn
+                  <strong className="text-slate-900">{paginatedBooks.length}</strong> /{' '}
+                  <strong className="text-slate-900">{filteredData.length}</strong> cuốn
                 </span>
                 <div className="flex items-center gap-1 text-[11px]">
                   <span>Mỗi trang:</span>
@@ -575,8 +734,8 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
 
               <div className="flex items-center justify-between sm:justify-end gap-2">
                 <span className="text-[11px]">
-                  Trang <span className="font-bold text-slate-900">{pageIndex + 1}</span> /{' '}
-                  <span className="font-bold text-slate-900">{totalPages}</span>
+                  Trang <strong className="text-slate-900">{pageIndex + 1}</strong> /{' '}
+                  <strong className="text-slate-900">{totalPages}</strong>
                 </span>
 
                 <div className="flex items-center gap-1">
@@ -600,11 +759,7 @@ export const BookTableView: React.FC<BookTableViewProps> = ({
           )}
         </div>
       ) : (
-        /* Category Bubble Chart View */
-        <CategoryBubbleChart
-          books={books}
-          onSelectCategory={handleSelectCategoryFromChart}
-        />
+        <CategoryBubbleChart books={books} onSelectCategory={handleSelectCategoryFromChart} />
       )}
     </div>
   );

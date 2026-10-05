@@ -11,8 +11,18 @@ const config: CapacitorConfig = {
   plugins: {
     StatusBar: {
       overlaysWebView: false,
-      backgroundColor: '#0f172a',
+      backgroundColor: '#2b170e',
       style: 'DARK',
+    },
+    GoogleAuth: {
+      scopes: [
+        'profile',
+        'email',
+        'https://www.googleapis.com/auth/drive.file',
+        'https://www.googleapis.com/auth/spreadsheets'
+      ],
+      serverClientId: '742077941372-fk4ef96nfj54dqjov8vhpgum2tsq9dep.apps.googleusercontent.com',
+      forceCodeForRefreshToken: true,
     },
   },
 };

@@ -15,6 +15,7 @@ import {
 import { BookRecord, DraftBookItem } from '../types';
 import { flagDuplicateDrafts, checkDuplicateBook } from '../utils/fuzzyMatcher';
 import { scanImages, enrichBook } from '../utils/geminiService';
+import { ImageCropModal } from './ImageCropModal';
 
 interface BatchScannerProps {
   existingBooks: BookRecord[];
@@ -111,6 +112,10 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
   const [isSaving, setIsSaving] = useState(false);
   const [enrichingId, setEnrichingId] = useState<string | null>(null);
+
+  // States cho tính năng Cắt ảnh (Crop) trước khi OCR
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null);
 
   // Đồng bộ hóa trạng thái ra LocalStorage để tránh mất mát dữ liệu khi chuyển Tab
   React.useEffect(() => {
@@ -310,14 +315,49 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     setIsScanning(false);
   };
 
-  // TỰ ĐỘNG OCR NGAY KHI CHỌN HOẶC CHỤP ẢNH MỚI
-  const handleAddAndScanFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Xử lý khi Chụp Ảnh bằng Camera: Mở Modal cho phép Cắt ảnh (Crop) đúng phần muốn OCR
+  const handleCameraCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const file = files[0];
+    e.target.value = ''; // Reset input để có thể chụp tiếp
+
+    try {
+      // Nén ảnh sơ bộ kích thước chuẩn (1600x1600) để hiển thị crop mượt mà, sắc nét
+      const compressed = await compressImage(file, 1600, 1600, 0.9);
+      if (compressed) {
+        setCropImageSrc(compressed);
+        setCropModalOpen(true);
+      }
+    } catch (err) {
+      console.error('Lỗi khi đọc ảnh camera:', err);
+    }
+  };
+
+  // Xử lý khi Chọn Ảnh từ Thư Viện
+  const handleLibraryUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
     const fileList = Array.from(files);
     e.target.value = ''; // Reset input để có thể chọn tiếp
 
+    // Nếu chọn đúng 1 ảnh -> Mở Modal Cắt ảnh (Crop) để tối ưu vùng OCR
+    if (fileList.length === 1) {
+      try {
+        const compressed = await compressImage(fileList[0], 1600, 1600, 0.9);
+        if (compressed) {
+          setCropImageSrc(compressed);
+          setCropModalOpen(true);
+          return;
+        }
+      } catch (err) {
+        console.error('Lỗi khi đọc ảnh:', err);
+      }
+    }
+
+    // Nếu chọn nhiều ảnh cùng lúc (2 ảnh trở lên) -> Chạy trực tiếp bóc tách hàng loạt
     setIsScanning(true);
     setScanProgress((prev) => ({
       ...prev,
@@ -325,7 +365,6 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     }));
 
     try {
-      // 1. Nén ảnh siêu tốc trên Canvas
       const compressedImages = await Promise.all(fileList.map((file) => compressImage(file)));
       const validImages = compressedImages.filter((img) => img.length > 0);
 
@@ -334,12 +373,33 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
         return;
       }
 
-      // 2. Chạy quy trình bóc tách từng Lô có tự động Retry & Resume
       await processImageArrayChunked(validImages);
     } catch (err: any) {
       console.error('Lỗi khi nén hoặc nhận diện ảnh:', err);
       setIsScanning(false);
     }
+  };
+
+  // Xác nhận cắt ảnh và tiến hành OCR
+  const handleConfirmCrop = async (croppedSrc: string) => {
+    setCropModalOpen(false);
+    setCropImageSrc(null);
+    if (!croppedSrc) return;
+    await processImageArrayChunked([croppedSrc]);
+  };
+
+  // Bỏ qua cắt ảnh, dùng toàn bộ ảnh gốc để OCR
+  const handleSkipCrop = async (originalSrc: string) => {
+    setCropModalOpen(false);
+    setCropImageSrc(null);
+    if (!originalSrc) return;
+    await processImageArrayChunked([originalSrc]);
+  };
+
+  // Hủy crop ảnh
+  const handleCancelCrop = () => {
+    setCropModalOpen(false);
+    setCropImageSrc(null);
   };
 
   // THỬ LẠI CÁC ẢNH BỊ LỖI (RESUME)
@@ -444,11 +504,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       {/* 1. Nút Chụp Ảnh / Thư Viện */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3.5 sm:p-4">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-base font-black text-slate-900 flex items-center gap-2">
-            <span className="p-1.5 bg-emerald-100 text-emerald-800 rounded-xl">
+          <h2 className="text-base font-black text-slate-900 flex items-center gap-2.5">
+            <span className="p-1.5 bg-purple-100 text-[#6b21a8] rounded-xl relative inline-flex items-center justify-center">
               <Camera className="w-4 h-4" />
+              <span className="absolute -top-1.5 -right-1.5 bg-amber-400 text-slate-950 text-[6.5px] font-black px-0.5 rounded leading-tight shadow-xs">
+                AI
+              </span>
             </span>
-            <span>Nhập sách nhanh</span>
+            <span>Thêm sách bằng ảnh</span>
           </h2>
 
           <div className="flex items-center gap-2">
@@ -458,7 +521,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
               ref={cameraInputRef}
               accept="image/*"
               capture="environment"
-              onChange={handleAddAndScanFiles}
+              onChange={handleCameraCapture}
               className="hidden"
             />
             {/* Input Thư viện */}
@@ -467,14 +530,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
               ref={fileInputRef}
               accept="image/*"
               multiple
-              onChange={handleAddAndScanFiles}
+              onChange={handleLibraryUpload}
               className="hidden"
             />
 
             <button
               onClick={() => cameraInputRef.current?.click()}
               disabled={isScanning}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#9e5628] hover:bg-[#85451e] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
             >
               <Camera className="w-4 h-4" />
               <span>Chụp Ảnh</span>
@@ -483,20 +546,20 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isScanning}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 active:scale-98 text-slate-700 text-xs font-bold rounded-xl transition disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#1b6b5b] hover:bg-[#165b4c] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
             >
-              <UploadCloud className="w-4 h-4 text-slate-600" />
+              <UploadCloud className="w-4 h-4" />
               <span>Thư Viện</span>
             </button>
           </div>
         </div>
 
-        {/* Thanh Tiến Trình Bóc Tách Theo Lô (Real-time Streamed Chunking) */}
+        {/* Thanh Tiến Trình Bóc Tách Theo Lô */}
         {isScanning && (
           <div className="mt-3 p-3 bg-purple-50/90 border border-purple-200 rounded-xl space-y-2">
             <div className="flex items-center justify-between text-xs font-bold text-purple-950">
               <div className="flex items-center gap-1.5 truncate">
-                <Loader2 className="w-4 h-4 animate-spin text-purple-600 shrink-0" />
+                <Loader2 className="w-4 h-4 animate-spin text-[#653f96] shrink-0" />
                 <span className="truncate">{scanProgress.statusMessage}</span>
               </div>
               <button
@@ -512,7 +575,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             {/* Thanh Progress */}
             <div className="w-full bg-purple-200/60 rounded-full h-2 overflow-hidden">
               <div
-                className="bg-purple-600 h-full rounded-full transition-all duration-300"
+                className="bg-[#653f96] h-full rounded-full transition-all duration-300"
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
@@ -524,7 +587,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
           </div>
         )}
 
-        {/* Thẻ Cảnh báo & Nút THỬ LẠI / RESUME các ảnh bị lỗi */}
+        {/* Thẻ Cảnh báo & Nút THỬ LẠI các ảnh bị lỗi */}
         {!isScanning && failedImagesQueue.length > 0 && (
           <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-amber-950 text-xs font-bold">
@@ -534,7 +597,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             <button
               type="button"
               onClick={handleRetryFailedImages}
-              className="flex items-center gap-1 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-2xs transition active:scale-95 shrink-0"
+              className="flex items-center gap-1 px-3 py-1.5 bg-[#9e5628] hover:bg-[#85451e] text-white rounded-lg text-xs font-bold shadow-2xs transition active:scale-95 shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Thử lại {failedImagesQueue.length} ảnh</span>
@@ -547,7 +610,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3.5 sm:p-4">
         <div className="flex items-center justify-between gap-3 pb-2.5 border-b border-slate-100">
           <div className="flex items-center gap-2">
-            <span className="p-1.5 bg-amber-100 text-amber-700 rounded-xl">
+            <span className="p-1.5 bg-amber-100 text-[#9e5628] rounded-xl">
               <Layers className="w-4 h-4" />
             </span>
             <h3 className="text-sm font-black text-slate-900">
@@ -568,7 +631,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             <button
               onClick={handleSaveAllDrafts}
               disabled={draftItems.filter((d) => !d.isDuplicate).length === 0 || isSaving}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-40"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#9e5628] hover:bg-[#85451e] text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-40"
             >
               {isSaving ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -602,7 +665,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     className={`transition ${
                       draft.isDuplicate
                         ? 'bg-slate-50/70 hover:bg-slate-100 border-l-4 border-l-slate-300 text-slate-400'
-                        : 'bg-emerald-50/80 hover:bg-emerald-100/90 border-l-4 border-l-emerald-500 text-emerald-950'
+                        : 'bg-amber-50/70 hover:bg-amber-100/80 border-l-4 border-l-[#9e5628] text-slate-900'
                     }`}
                   >
                     <td className="py-1.5 px-2 text-center font-mono text-slate-500 font-bold text-[11px]">
@@ -613,13 +676,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 min-w-[170px]">
                       <input
                         type="text"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        data-lpignore="true"
                         value={draft.title}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { title: e.target.value })}
-                        className={`w-full px-2 py-1 border border-slate-200/80 rounded-lg font-bold focus:outline-none transition text-xs shadow-2xs ${
-                          draft.isDuplicate
-                            ? 'bg-slate-50/40 focus:bg-white text-slate-800'
-                            : 'bg-emerald-50/30 focus:bg-white text-emerald-950'
-                        }`}
+                        className="w-full px-2 py-1 border border-slate-200 rounded-lg font-bold focus:outline-none transition text-xs shadow-2xs bg-white text-slate-900"
                       />
                     </td>
 
@@ -627,13 +691,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 min-w-[130px]">
                       <input
                         type="text"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        data-lpignore="true"
                         value={draft.author}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { author: e.target.value })}
-                        className={`w-full px-2 py-1 border border-slate-200/80 rounded-lg focus:outline-none transition text-xs shadow-2xs ${
-                          draft.isDuplicate
-                            ? 'bg-slate-50/40 focus:bg-white text-slate-800'
-                            : 'bg-emerald-50/30 focus:bg-white text-emerald-950'
-                        }`}
+                        className="w-full px-2 py-1 border border-slate-200 rounded-lg focus:outline-none transition text-xs shadow-2xs bg-white text-slate-900"
                       />
                     </td>
 
@@ -641,14 +706,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 min-w-[110px]">
                       <input
                         type="text"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        data-lpignore="true"
                         list="cat-suggestions"
                         value={draft.category || 'Chung'}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { category: e.target.value })}
-                        className={`w-full px-2 py-1 border border-slate-200/80 rounded-lg focus:outline-none transition text-xs shadow-2xs ${
-                          draft.isDuplicate
-                            ? 'bg-slate-50/40 focus:bg-white text-slate-800'
-                            : 'bg-emerald-50/30 focus:bg-white text-emerald-950'
-                        }`}
+                        className="w-full px-2 py-1 border border-slate-200 rounded-lg focus:outline-none transition text-xs shadow-2xs bg-white text-slate-900"
                       />
                       <datalist id="cat-suggestions">
                         {categories.map((c) => (
@@ -661,13 +727,14 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 min-w-[100px]">
                       <input
                         type="text"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        data-lpignore="true"
                         value={draft.publisher || ''}
                         onChange={(e) => handleUpdateDraft(draft.tempId, { publisher: e.target.value })}
-                        className={`w-full px-2 py-1 border border-slate-200/80 rounded-lg focus:outline-none transition text-xs shadow-2xs ${
-                          draft.isDuplicate
-                            ? 'bg-slate-50/40 focus:bg-white text-slate-800'
-                            : 'bg-emerald-50/30 focus:bg-white text-emerald-950'
-                        }`}
+                        className="w-full px-2 py-1 border border-slate-200 rounded-lg focus:outline-none transition text-xs shadow-2xs bg-white text-slate-900"
                         placeholder="NXB..."
                       />
                     </td>
@@ -676,15 +743,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                     <td className="py-1.5 px-2 whitespace-nowrap">
                       {draft.isDuplicate ? (
                         <div
-                          className="inline-flex items-center gap-1 text-slate-900 bg-slate-200/80 px-2 py-0.5 rounded-md text-[10px] font-bold border border-slate-350 shadow-2xs"
+                          className="inline-flex items-center gap-1 text-slate-700 bg-slate-200 px-2 py-0.5 rounded-md text-[10px] font-bold border border-slate-300"
                           title={`Trùng với: "${draft.duplicateMatchTitle}"`}
                         >
-                          <AlertTriangle className="w-3 h-3 text-slate-700 shrink-0" />
+                          <AlertTriangle className="w-3 h-3 text-slate-600 shrink-0" />
                           <span>Trùng kho</span>
                         </div>
                       ) : (
-                        <div className="inline-flex items-center gap-1 text-emerald-900 bg-emerald-100/90 px-2 py-0.5 rounded-md text-[10px] font-bold border border-emerald-300 shadow-2xs">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-700 shrink-0" />
+                        <div className="inline-flex items-center gap-1 text-[#9e5628] bg-amber-100 px-2 py-0.5 rounded-md text-[10px] font-bold border border-amber-300">
+                          <CheckCircle2 className="w-3 h-3 text-[#9e5628] shrink-0" />
                           <span>Sách mới</span>
                         </div>
                       )}
@@ -727,6 +794,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
           </div>
         )}
       </div>
+
+      {/* Modal Cắt ảnh (Crop) trước khi OCR */}
+      <ImageCropModal
+        isOpen={cropModalOpen}
+        imageSrc={cropImageSrc || ''}
+        onConfirmCrop={handleConfirmCrop}
+        onSkipCrop={handleSkipCrop}
+        onCancel={handleCancelCrop}
+      />
     </div>
   );
 };

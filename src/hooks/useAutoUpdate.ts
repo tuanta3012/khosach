@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { App } from '@capacitor/app';
 import { CURRENT_APP_VERSION } from '../version';
 import { UpdateInfo } from '../components/AppUpdateModal';
+import { IS_BUILD_AAB } from '../config/buildConfig';
 
 export function compareVersions(v1: string, v2: string): number {
   const clean1 = (v1 || '').replace(/[^0-9.]/g, '').split('.').map(Number);
@@ -35,6 +36,16 @@ export function useAutoUpdate() {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const checkForUpdate = useCallback(async (isManual = false): Promise<{ hasUpdate: boolean; currentVersion: string; latestVersion: string }> => {
+    // Nếu là bản AAB xuất bản lên Google Play Store: Vô hiệu hóa 100% việc kiểm tra và cập nhật APK
+    if (IS_BUILD_AAB) {
+      console.log('[useAutoUpdate] Chế độ Google Play Store (AAB): Bỏ qua kiểm tra Auto Update.');
+      return {
+        hasUpdate: false,
+        currentVersion: CURRENT_APP_VERSION,
+        latestVersion: CURRENT_APP_VERSION,
+      };
+    }
+
     setIsChecking(true);
     let appVersion = CURRENT_APP_VERSION;
 

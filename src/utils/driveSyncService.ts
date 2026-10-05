@@ -19,7 +19,7 @@ export const GOOGLE_APPS_SCRIPT_CODE = `/**
  */
 
 // DÁN LINK GOOGLE SHEET CỦA BẠN VÀO ĐÂY (NẾU CÓ):
-const TARGET_FILE_URL = "https://docs.google.com/spreadsheets/d/1WmvnebrW2NwMAc5rIJMu_v9YJa8PxqtMkd-_jtK3uqg/edit";
+const TARGET_FILE_URL = "";
 
 const SHEET_NAME = "KhoSachClean";
 

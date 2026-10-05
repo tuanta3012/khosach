@@ -1,14 +1,26 @@
 import { BookRecord, LibrarySettings } from '../types';
-import { USER_MASTER_BOOKS } from '../data/sampleBooks';
 
 const BOOKS_STORAGE_KEY = 'local_books_cache_v2';
 const SETTINGS_STORAGE_KEY = 'library_settings_v2';
 const LAST_SYNC_KEY = 'local_drive_last_sync_timestamp';
 
-// Danh mục mặc định từ 591 cuốn sách gốc
-export const DEFAULT_CATEGORIES = Array.from(
-  new Set(USER_MASTER_BOOKS.map((b) => b.category || 'Chung').filter(Boolean))
-);
+// Danh mục mặc định
+export const DEFAULT_CATEGORIES = [
+  'Văn học Việt Nam',
+  'Văn học kinh điển',
+  'Văn học thiếu nhi',
+  'Tiểu thuyết lãng mạn',
+  'Trinh thám',
+  'Giả tưởng',
+  'Lịch sử',
+  'Triết học',
+  'Tâm lý',
+  'Khoa học',
+  'Hồi ký',
+  'Tản văn',
+  'Kinh tế',
+  'Chung',
+];
 
 export const DEFAULT_SETTINGS: LibrarySettings = {
   autoEnrichEnabled: true,
@@ -18,23 +30,20 @@ export const DEFAULT_SETTINGS: LibrarySettings = {
 
 /**
  * 1. NẠP TOÀN BỘ SÁCH TỪ BỘ NHỚ MÁY (LOCAL STORAGE)
- * Nếu chưa từng lưu gì, khởi tạo mặc định 591 cuốn sách gốc
  */
 export function loadLocalBooks(): BookRecord[] {
   try {
     const raw = localStorage.getItem(BOOKS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         return parsed;
       }
     }
   } catch (err) {
-    console.warn('[LocalStorage] Lỗi đọc bộ nhớ máy, khởi tạo sách gốc:', err);
+    console.warn('[LocalStorage] Lỗi đọc bộ nhớ máy:', err);
   }
-  // Mặc định nạp 591 cuốn sách gốc
-  saveAllLocalBooks(USER_MASTER_BOOKS);
-  return USER_MASTER_BOOKS;
+  return [];
 }
 
 /**
@@ -134,14 +143,6 @@ export function clearAllLocalBooks(): void {
   try {
     localStorage.removeItem(BOOKS_STORAGE_KEY);
   } catch {}
-}
-
-/**
- * 7. KHÔI PHỤC LẠI 591 CUỐN SÁCH GỐC
- */
-export function resetLocalToMasterBooks(): BookRecord[] {
-  saveAllLocalBooks(USER_MASTER_BOOKS);
-  return USER_MASTER_BOOKS;
 }
 
 /**

@@ -51,7 +51,7 @@ function sanitizeSingleCategory(rawCategory: string): string {
   return first || 'Chung';
 }
 
-const ALL_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+const ALL_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
 const modelCooldownMap = new Map<string, number>();
 const lastCallTimestamps = new Map<string, number>();
 
@@ -69,23 +69,14 @@ function markModelCooldown(model: string, durationMs: number) {
   modelCooldownMap.set(model, Date.now() + durationMs);
 }
 
-let serverRotationCounter = 0;
-const DUAL_SERVER_ENGINES = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'];
-
 function getAvailableModels(preferredModel?: string): string[] {
-  const currentIdx = serverRotationCounter++;
-  const primaryEngine = DUAL_SERVER_ENGINES[currentIdx % DUAL_SERVER_ENGINES.length];
-  const secondaryEngine = DUAL_SERVER_ENGINES[(currentIdx + 1) % DUAL_SERVER_ENGINES.length];
-
   let initialOrder: string[];
-  if (preferredModel) {
-    const fallbackEngine = preferredModel === 'gemini-3.1-flash-lite' ? 'gemini-3.5-flash-lite' : 'gemini-3.1-flash-lite';
-    initialOrder = [preferredModel, fallbackEngine, 'gemini-3.8-flash'];
+  if (preferredModel === 'gemini-3.1-flash-lite') {
+    initialOrder = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'];
   } else {
-    initialOrder = [primaryEngine, secondaryEngine, 'gemini-3.8-flash'];
+    initialOrder = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
   }
 
-  // Filter healthy models first, cooling models last
   const healthy = initialOrder.filter((m) => !isModelInCooldown(m));
   const cooling = initialOrder.filter((m) => isModelInCooldown(m));
   return [...healthy, ...cooling];
@@ -141,16 +132,29 @@ app.post('/api/ai/test-key', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Vui lòng cung cấp API Key để kiểm tra.' });
     }
     
-    // Sử dụng cơ chế Fallback tự động quay vòng qua các model để thử
-    const response = await generateContentWithFallback({
-      contents: 'Ping',
-      apiKey: customKey.trim(),
-    });
+    const aiClient = getAiClient(customKey.trim());
+    let response: any = null;
+    let lastErr: any = null;
+
+    // Thử lần lượt các model tối ưu
+    const testModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+    for (const m of testModels) {
+      try {
+        response = await aiClient.models.generateContent({
+          model: m,
+          contents: 'Ping',
+        });
+        if (response && response.text) break;
+      } catch (e: any) {
+        lastErr = e;
+      }
+    }
 
     if (response && response.text) {
-      return res.json({ success: true, message: 'Kết nối Google Gemini thành công!' });
+      return res.json({ success: true, message: 'Kết nối Google Gemini thành công! Key hoạt động tốt.' });
     }
-    return res.json({ success: true, message: 'API Key hợp lệ và sẵn sàng sử dụng!' });
+
+    throw lastErr || new Error('Không nhận được phản hồi từ AI.');
   } catch (err: any) {
     console.warn('[Server AI] Test API Key failed:', err.message || err);
     let readableError = 'API Key không hợp lệ hoặc đã hết hạn mức.';
@@ -160,6 +164,16 @@ app.post('/api/ai/test-key', async (req, res) => {
     } catch {
       readableError = err.message || readableError;
     }
+
+    const lower = readableError.toLowerCase();
+    if (lower.includes('api key not valid') || lower.includes('api_key_invalid')) {
+      readableError = 'API Key không hợp lệ. Vui lòng kiểm tra lại mã Key.';
+    } else if (lower.includes('quota') || lower.includes('429') || lower.includes('resource_exhausted') || lower.includes('exceeded')) {
+      readableError = 'API Key này đã chạm hạn ngạch (429 Quota). Hãy kiểm tra lại gói dịch vụ trên Google AI Studio.';
+    } else if (lower.includes('permission_denied') || lower.includes('403')) {
+      readableError = 'API Key không có quyền truy cập Gemini API.';
+    }
+
     return res.status(400).json({
       success: false,
       message: readableError,

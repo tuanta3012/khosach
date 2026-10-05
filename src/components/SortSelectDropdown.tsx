@@ -1,18 +1,31 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowUpDown, ChevronDown, Check } from 'lucide-react';
+import {
+  ArrowUpDown,
+  ChevronDown,
+  Check,
+  Clock,
+  History,
+  ArrowDownAZ,
+  ArrowUpZA,
+} from 'lucide-react';
 
-export type SortOption = 'maturity' | 'principal' | 'rate';
+export type BookSortOption = 'newest' | 'title_asc' | 'oldest' | 'title_desc';
 
 interface SortSelectDropdownProps {
-  value: SortOption;
-  onChange: (sort: SortOption) => void;
+  value: BookSortOption;
+  onChange: (sort: BookSortOption) => void;
   className?: string;
 }
 
-const SORT_OPTIONS: { id: SortOption; label: string; desc: string }[] = [
-  { id: 'maturity', label: 'Ngày đáo hạn', desc: 'Đáo hạn gần nhất xếp trước' },
-  { id: 'principal', label: 'Tiền gốc', desc: 'Số tiền gửi lớn nhất xếp trước' },
-  { id: 'rate', label: 'Lãi suất', desc: 'Lãi suất % cao nhất xếp trước' },
+export const SORT_OPTIONS: {
+  id: BookSortOption;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { id: 'newest', label: 'Mới nhất', icon: Clock },
+  { id: 'title_asc', label: 'A → Z', icon: ArrowDownAZ },
+  { id: 'oldest', label: 'Cũ nhất', icon: History },
+  { id: 'title_desc', label: 'Z → A', icon: ArrowUpZA },
 ];
 
 export const SortSelectDropdown: React.FC<SortSelectDropdownProps> = ({
@@ -23,93 +36,79 @@ export const SortSelectDropdown: React.FC<SortSelectDropdownProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Đóng dropdown khi click/chạm ra ngoài
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setIsOpen(false);
       }
     };
     if (isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('touchstart', handleClickOutside);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
     };
   }, [isOpen]);
 
   const selectedItem = SORT_OPTIONS.find((s) => s.id === value) || SORT_OPTIONS[0];
+  const CurrentIcon = selectedItem.icon;
 
-  const handleSelect = (sortId: SortOption) => {
+  const handleSelect = (sortId: BookSortOption) => {
     onChange(sortId);
     setIsOpen(false);
   };
 
   return (
-    <div ref={containerRef} className={`relative ${className}`}>
-      {/* Trigger Button */}
+    <div ref={containerRef} className={`relative inline-block ${className}`}>
+      {/* Nút bấm Dropdown: Hiển thị đúng biểu tượng của tiêu chí đang chọn */}
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full min-h-[42px] px-3 py-2 bg-white hover:bg-slate-50 border border-slate-300 hover:border-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 rounded-xl text-xs font-semibold text-slate-900 transition-all flex items-center justify-between gap-2 shadow-2xs text-left cursor-pointer"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="h-7 w-7 bg-white hover:bg-slate-50 border border-slate-300 hover:border-slate-400 focus:border-[#9e5628] focus:ring-2 focus:ring-[#9e5628]/20 rounded-full text-slate-700 transition-all flex items-center justify-center shadow-2xs cursor-pointer select-none active:scale-95 shrink-0"
         aria-haspopup="listbox"
         aria-expanded={isOpen}
+        title={`Sắp xếp: ${selectedItem.label}`}
+        aria-label={`Sắp xếp: ${selectedItem.label}`}
       >
-        <div className="flex items-center space-x-2 min-w-0 flex-1">
-          <div className="w-6 h-6 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center shrink-0">
-            <ArrowUpDown className="w-3.5 h-3.5 text-emerald-600" />
-          </div>
-          <div className="truncate">
-            <span className="font-bold text-slate-900 block truncate text-xs">
-              {selectedItem.label}
-            </span>
-          </div>
-        </div>
-
-        <ChevronDown
-          className={`w-4 h-4 text-slate-400 shrink-0 transition-transform duration-200 ${
-            isOpen ? 'rotate-180' : ''
-          }`}
-        />
+        <CurrentIcon className="w-3.5 h-3.5 text-[#9e5628] shrink-0" />
       </button>
 
-      {/* Dropdown Menu */}
+      {/* Menu Xổ Xuống chuẩn: Thả xuống ngay dưới nút bấm */}
       {isOpen && (
-        <>
-          {/* Mobile backdrop */}
-          <div
-            className="fixed inset-0 bg-slate-950/40 backdrop-blur-[2px] z-40 sm:hidden"
-            onClick={() => setIsOpen(false)}
-          />
+        <div className="absolute left-0 top-full mt-1.5 w-36 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-1 space-y-0.5 animate-in fade-in zoom-in-95 duration-100">
+          {SORT_OPTIONS.map((opt) => {
+            const isSelected = opt.id === value;
+            const IconComponent = opt.icon;
 
-          <div className="fixed left-3 right-3 bottom-3 sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-1.5 sm:w-64 bg-white border border-slate-200 rounded-2xl shadow-2xl z-50 p-2 space-y-1 animate-in fade-in zoom-in-95 duration-100">
-            <div className="px-2 py-1.5 text-[11px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 mb-1 flex items-center justify-between">
-              <span>Sắp xếp danh sách</span>
-              <span className="text-[10px] text-slate-400 font-normal">Xếp theo tiêu chí</span>
-            </div>
-
-            {SORT_OPTIONS.map((opt) => {
-              const isSelected = opt.id === value;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => handleSelect(opt.id)}
-                  className={`w-full px-3 py-2.5 rounded-xl text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
-                    isSelected
-                      ? 'bg-emerald-50 text-emerald-900 border border-emerald-200 shadow-2xs'
-                      : 'text-slate-700 hover:bg-slate-100'
-                  }`}
-                >
-                  <div>
-                    <div className="font-bold text-slate-900">{opt.label}</div>
-                    <div className="text-[10px] text-slate-500 font-normal">{opt.desc}</div>
-                  </div>
-                  {isSelected && <Check className="w-4 h-4 text-emerald-600 shrink-0 ml-2" />}
-                </button>
-              );
-            })}
-          </div>
-        </>
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => handleSelect(opt.id)}
+                className={`w-full px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer active:scale-95 ${
+                  isSelected
+                    ? 'bg-amber-50 text-[#85451e] font-black'
+                    : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <IconComponent
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      isSelected ? 'text-[#9e5628]' : 'text-slate-400'
+                    }`}
+                  />
+                  <span className="truncate">{opt.label}</span>
+                </div>
+                {isSelected && (
+                  <Check className="w-3.5 h-3.5 text-[#9e5628] stroke-[3] shrink-0 ml-1.5" />
+                )}
+              </button>
+            );
+          })}
+        </div>
       )}
     </div>
   );

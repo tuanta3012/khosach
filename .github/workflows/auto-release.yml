@@ -1,4 +1,4 @@
-name: Auto Build & Release APK from AI Studio Code
+name: Auto Build & Release APK & AAB from AI Studio
 
 on:
   push:
@@ -95,17 +95,12 @@ jobs:
           }
           EOF
 
-      # 4. Cài đặt các thư viện & Build Web
+      # 4. Cài đặt các thư viện Node.js
       - name: Install Dependencies
         run: |
           npm install --legacy-peer-deps
 
-      - name: Build Web Assets
-        run: |
-          echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
-          npm run build
-
-      # 5. Khởi tạo lại thư mục Android nếu cần & đồng bộ
+      # 5. Khởi tạo lại thư mục Android nếu cần
       - name: Generate Fresh Android Project
         run: |
           if [ ! -f "android/build.gradle" ]; then
@@ -113,9 +108,8 @@ jobs:
             rm -rf android
             npx cap add android
           fi
-          npx cap sync android
 
-      # 6. Cập nhật SDK, strings.xml & Phiên bản
+      # 6. Cập nhật SDK, strings.xml & Phiên bản Android
       - name: Update Android Config, SDK & Strings
         env:
           VERSION_CODE: ${{ steps.auto_version.outputs.CODE }}
@@ -149,18 +143,15 @@ jobs:
           fi
 
       # 7. Copy google-services.json & Tạo icon
-      - name: Copy google-services.json
+      - name: Copy google-services.json & Generate Icons
         run: |
           if [ -f "google-services.json" ]; then
             mkdir -p android/app
             cp google-services.json android/app/google-services.json
           fi
-
-      - name: Generate App Icons
-        run: |
           npx @capacitor/assets generate --android || true
 
-      # 8. Khởi tạo & Sử dụng Keystore cố định trong Repo
+      # 8. Khởi tạo & Cấu hình Keystore cố định trong Repo cho cả Release và Debug
       - name: Setup Permanent Fixed Keystore
         run: |
           mkdir -p keystore ~/.android android/app
@@ -191,6 +182,12 @@ jobs:
               let content = fs.readFileSync("android/app/build.gradle", "utf8");
               if (!content.includes("signingConfigs")) {
                 content = content.replace("buildTypes {", `signingConfigs {
+                    release {
+                        storeFile file("debug.keystore")
+                        storePassword "android"
+                        keyAlias "androiddebugkey"
+                        keyPassword "android"
+                    }
                     debug {
                         storeFile file("debug.keystore")
                         storePassword "android"
@@ -200,33 +197,49 @@ jobs:
                 }
                 buildTypes {`);
               }
-              content = content.replace("minifyEnabled false", "minifyEnabled true\n            shrinkResources true");
+              if (content.includes("buildTypes {") && !content.includes("signingConfig signingConfigs.release")) {
+                content = content.replace(/release\s*\{/, "release {\n            signingConfig signingConfigs.release");
+              }
               fs.writeFileSync("android/app/build.gradle", content, "utf8");
             '
           fi
           
           SHA1_VAL=$(keytool -list -v -keystore keystore/debug.keystore -alias androiddebugkey -storepass android | grep "SHA1:" | head -1 | awk '{print $2}')
-          
           echo "===================================================="
-          echo "=== PERMANENT SHA-1 FINGERPRINT FOR FIREBASE ======="
+          echo "=== PERMANENT SHA-1 FINGERPRINT ===================="
           echo "SHA-1: $SHA1_VAL"
           echo "===================================================="
 
-      # 9. Đóng gói APK bằng Gradle
-      - name: Build Android APK
+      # =======================================================================
+      # LUỒNG 1: BUILD BẢN APK (PUBLIC GITHUB RELEASE + AUTO UPDATE BẬT)
+      # =======================================================================
+      - name: [Luồng 1 - APK] Build Web Assets (Auto Update ENABLED)
+        run: |
+          echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
+          VITE_BUILD_AAB=false npm run build
+          npx cap sync android
+
+      - name: [Luồng 1 - APK] Assemble Android APK
         run: |
           cd android
           echo "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8" >> gradle.properties
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon || ./gradlew assembleDebug --no-daemon
+          cd ..
 
-      # 10. Đổi tên tệp APK
-      - name: Rename APK
+      - name: [Luồng 1 - APK] Collect and Rename APK
         run: |
-          mv android/app/build/outputs/apk/debug/app-debug.apk khosach_v${{ steps.auto_version.outputs.NAME }}.apk
+          mkdir -p output_artifacts
+          if [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk khosach_v${{ steps.auto_version.outputs.NAME }}.apk
+          elif [ -f "android/app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk khosach_v${{ steps.auto_version.outputs.NAME }}.apk
+          elif [ -f "android/app/build/outputs/apk/debug/app-debug.apk" ]; then
+            cp android/app/build/outputs/apk/debug/app-debug.apk khosach_v${{ steps.auto_version.outputs.NAME }}.apk
+          fi
+          echo "APK created: khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
 
-      # 11. Tự động tạo GitHub Release & đính kèm APK
-      - name: Create GitHub Release
+      - name: [Luồng 1 - APK] Create/Update GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
@@ -234,12 +247,12 @@ jobs:
           name: Phiên bản v${{ steps.auto_version.outputs.NAME }}
           body: |
             Bản dựng APK Android tự động cho ứng dụng Quản Lý Kho Sách Cá Nhân.
+            - Hỗ trợ tính năng tự động phát hiện và cài đặt bản cập nhật mới trực tiếp.
           files: khosach_v${{ steps.auto_version.outputs.NAME }}.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 12. Cập nhật version.json
-      - name: Update version.json
+      - name: [Luồng 1 - APK] Update version.json
         run: |
           APK_URL="https://github.com/tuanta3012/khosach/releases/download/v${{ steps.auto_version.outputs.NAME }}/khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
           cat <<EOF > version.json
@@ -255,3 +268,38 @@ jobs:
           git add version.json keystore/debug.keystore.b64 2>/dev/null || git add version.json
           git commit -m "chore: auto-update version.json & keystore [skip ci]" || echo "No changes to commit"
           git push
+
+      # =======================================================================
+      # LUỒNG 2: BUILD BẢN AAB (GOOGLE PLAY STORE - AUTO UPDATE CLEANED & ARTIFACT ONLY)
+      # =======================================================================
+      - name: [Luồng 2 - AAB] Build Web Assets (Auto Update DISABLED / Play Store Compliance)
+        run: |
+          echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
+          VITE_BUILD_AAB=true npm run build
+          npx cap sync android
+
+      - name: [Luồng 2 - AAB] Bundle Android App Bundle (AAB)
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew bundleRelease --no-daemon || ./gradlew bundleDebug --no-daemon
+          cd ..
+
+      - name: [Luồng 2 - AAB] Collect and Rename AAB
+        run: |
+          if [ -f "android/app/build/outputs/bundle/release/app-release.aab" ]; then
+            cp android/app/build/outputs/bundle/release/app-release.aab khosach_v${{ steps.auto_version.outputs.NAME }}.aab
+          elif [ -f "android/app/build/outputs/bundle/release/app-release-unsigned.aab" ]; then
+            cp android/app/build/outputs/bundle/release/app-release-unsigned.aab khosach_v${{ steps.auto_version.outputs.NAME }}.aab
+          elif [ -f "android/app/build/outputs/bundle/debug/app-debug.aab" ]; then
+            cp android/app/build/outputs/bundle/debug/app-debug.aab khosach_v${{ steps.auto_version.outputs.NAME }}.aab
+          fi
+          echo "AAB created: khosach_v${{ steps.auto_version.outputs.NAME }}.aab"
+
+      - name: [Luồng 2 - AAB] Upload AAB to Private GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: khosach-v${{ steps.auto_version.outputs.NAME }}-aab
+          path: khosach_v${{ steps.auto_version.outputs.NAME }}.aab
+          retention-days: 30
+          if-no-files-found: error

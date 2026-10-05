@@ -36,6 +36,19 @@ export interface AuthUser {
   isOffline?: boolean;
 }
 
+export interface Settings {
+  autoEnrichEnabled?: boolean;
+  driveBackupFolder?: string;
+  driveSyncUrl?: string;
+  driveTargetFileUrl?: string;
+  autoSyncDrive?: boolean;
+  lastBackupTime?: string;
+  categoriesList?: string[];
+  autoNormalizeEnabled?: boolean;
+  geminiApiKeys: string[];
+  selectedModel?: string;
+}
+
 export interface LibrarySettings {
   autoEnrichEnabled: boolean;
   driveBackupFolder?: string;
@@ -45,6 +58,8 @@ export interface LibrarySettings {
   lastBackupTime?: string;
   categoriesList: string[];
   autoNormalizeEnabled?: boolean;
+  geminiApiKeys?: string[];
+  selectedModel?: string;
 }
 
 export interface DriveBackupPayload {

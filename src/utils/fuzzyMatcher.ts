@@ -172,9 +172,9 @@ export function extractBookMetadata(rawTitle: string): {
   // Chuẩn hóa dấu gạch ngang
   const normTitle = removeVietnameseTones(title).toLowerCase().replace(/[–—−]/g, '-');
 
-  // 2. Nhận diện từ khóa tập rõ ràng: tập, vol, volume, quyển, phần, cuốn, part, book, hồi, bộ
+  // 2. Nhận diện từ khóa tập rõ ràng: tập, vol, volume, quyển, phần, cuốn, part, book, hồi, bộ, đợt
   // Ví dụ: "Tập 1", "Tập I", "Vol. 2", "Phần 3", "Quyển Thượng", "Tập một"
-  const keywordRegex = /\b(?:tap|vol(?:ume)?|quyen|phan|cuon|part|book|hoi|bo)\s*(?:so\s*)?([0-9]+|[ivxlcdm]+|thuong|trung|ha|mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b/i;
+  const keywordRegex = /\b(?:tap|vol(?:ume)?|quyen|phan|cuon|part|book|hoi|bo|dot|season|ss)\s*(?:so\s*)?([0-9]+|[ivxlcdm]+|thuong|trung|ha|mot|hai|ba|bon|nam|sau|bay|tam|chin|muoi)\b/i;
   const matchKeyword = normTitle.match(keywordRegex);
 
   if (matchKeyword) {
@@ -183,20 +183,20 @@ export function extractBookMetadata(rawTitle: string): {
     if (canon) {
       volume = canon;
       // Xóa phần tập ra khỏi title
-      const origKeywordRegex = /(?:[-–—\s,(:/[]+)?\b(?:t[aậ]p|vol(?:ume)?|quy[eể]n|ph[aầ]n|cu[oố]n|part|book|h[oồ]i|b[oộ])\s*(?:s[oố]\s*)?(?:[0-9]+|[ivxlcdm]+|th[uư][oợ]ng|trung|h[aạ]|m[oộ]t|hai|ba|b[oố]n|n[aă]m|s[aá]u|b[aả]y|t[aá]m|ch[ií]n|m[uư][oờ]i)\b[\)\]]?/i;
+      const origKeywordRegex = /(?:[-–—\s,(:/[]+)?\b(?:t[aậ]p|vol(?:ume)?|quy[eể]n|ph[aầ]n|cu[oố]n|part|book|h[oồ]i|b[oộ]|đ[oợ]t|season|ss)\s*(?:s[oố]\s*)?(?:[0-9]+|[ivxlcdm]+|th[uư][oợ]ng|trung|h[aạ]|m[oộ]t|hai|ba|b[oố]n|n[aă]m|s[aá]u|b[aả]y|t[aá]m|ch[ií]n|m[uư][oờ]i)\b[\)\]]?/i;
       title = title.replace(origKeywordRegex, ' ').trim();
     }
   } else {
-    // 3. Nhận diện ký hiệu viết tắt ở cuối tiêu đề: ví dụ " - T1", " - T.2", " - Q1", " #1", " - 1", " - 2"
+    // 3. Nhận diện ký hiệu viết tắt ở cuối tiêu đề: ví dụ " - T1", " - T.2", " - Q1", " - P1", " - Vol 1", " #1", " - 1", " - 2"
     // Chú ý: [0-9]{1,2} chỉ lấy số từ 1 đến 99, TUYỆT ĐỐI không lấy năm 2023!
-    const shorthandRegex = /(?:[-–—\s,(:/[]+)(?:t|q|v)?\.?\s*#?\s*([0-9]{1,2}|[ivxlcdm]{1,5})\s*[\)\]]?$/i;
+    const shorthandRegex = /(?:[-–—\s,(:/[]+)(?:t|q|v|p|b|vol)?\.?\s*#?\s*([0-9]{1,2}|[ivxlcdm]{1,5})\s*[\)\]]?$/i;
     const matchShorthand = normTitle.match(shorthandRegex);
     if (matchShorthand) {
       const rawVol = matchShorthand[1];
       const canon = canonicalizeVolume(rawVol);
       if (canon) {
         volume = canon;
-        title = title.replace(/(?:[-–—\s,(:/[]+)(?:t|q|v)?\.?\s*#?\s*(?:[0-9]{1,2}|[ivxlcdm]{1,5})\s*[\)\]]?$/i, ' ').trim();
+        title = title.replace(/(?:[-–—\s,(:/[]+)(?:t|q|v|p|b|vol)?\.?\s*#?\s*(?:[0-9]{1,2}|[ivxlcdm]{1,5})\s*[\)\]]?$/i, ' ').trim();
       }
     }
   }
@@ -254,6 +254,13 @@ export function areAuthorsCompatible(
   // Tên giống hệt nhau
   if (a1 === a2) {
     return { compatible: true, confidence: 1.0, isKnownDifferent: false };
+  }
+
+  // Tác giả này là tiền tố hoặc chứa trọn vẹn tác giả kia (ví dụ do dính thể loại từ PDF: "Alexander Belyaev Khoa học viễn tưởng" vs "Alexander Belyaev")
+  if (a1.length >= 3 && a2.length >= 3) {
+    if (a1.startsWith(a2) || a2.startsWith(a1) || a1.includes(a2) || a2.includes(a1)) {
+      return { compatible: true, confidence: 0.90, isKnownDifferent: false };
+    }
   }
 
   // Kiểm tra tên viết tắt / họ tên: ví dụ "j k rowling" vs "rowling" hoặc "dale carnegie" vs "d carnegie"
@@ -376,40 +383,60 @@ export function isTrueDuplicate(
     }
   }
 
-  // 5. BẪY CHUỖI CON (SUBSTRING TRAP):
-  // "Kinh tế học" vs "Kinh tế học vi mô"
-  // "Tâm lý học" vs "Tâm lý học tội phạm"
+  // 5. BẪY CHUỖI CON & BẢN GHI PHỤ ĐỀ / TIỀN TỐ (PREFIX / SUFFIX MATCH):
+  // Ví dụ 1 (Suffix): "Tottochan bên cửa sổ – truyện thiếu nhi..." vs "Tottochan bên cửa sổ"
+  // Ví dụ 2 (Prefix/Năm): "1941 – Những khám phá mới về Châu Mỹ..." vs "Những khám phá mới về Châu Mỹ..."
   if (normCleanA !== normCleanB) {
     const isSubstring = normCleanA.includes(normCleanB) || normCleanB.includes(normCleanA);
     if (isSubstring) {
       const shortStr = normCleanA.length < normCleanB.length ? normCleanA : normCleanB;
       const longStr = normCleanA.length < normCleanB.length ? normCleanB : normCleanA;
+      const shortBook = normCleanA.length < normCleanB.length ? bookA : bookB;
+      const longBook = normCleanA.length < normCleanB.length ? bookB : bookA;
 
-      const diffWords = longStr.replace(shortStr, '').trim().split(/\s+/).filter(Boolean);
-      const stopWords = new Set(['tap', 'quyen', 'phan', 'cuon', 'vol', 'nxb', 'ban', 'sach', 'nam', 'in']);
-      const meaningfulDiffWords = diffWords.filter((w) => !stopWords.has(w) && w.length >= 2);
+      const shortTokens = shortStr.split(/\s+/).filter(Boolean);
+      if (shortStr.length >= 8 && shortTokens.length >= 2 && authorCheck.compatible) {
+        const rawLong = (longBook.title || '').trim();
+        const rawShort = (shortBook.title || '').trim();
 
-      if (meaningfulDiffWords.length >= 1) {
-        return {
-          isDuplicate: false,
-          score: 0,
-          reason: `Tiêu đề khác biệt từ ngữ trọng yếu: "${meaningfulDiffWords.join(' ')}"`,
-        };
+        // TH 1: Tiêu đề dài bắt đầu bằng tiêu đề ngắn (Phụ đề / thông tin ấn bản phía sau)
+        // Ví dụ: "Tottochan bên cửa sổ – truyện..." vs "Tottochan bên cửa sổ"
+        if (longStr.startsWith(shortStr)) {
+          const remainder = longStr.slice(shortStr.length).trim();
+          const hasSeparator = /[-–—:/(]/.test(rawLong.slice(rawShort.length)) || /^[–—\-:/(]/.test(remainder);
+          const stopWords = new Set(['tap', 'quyen', 'phan', 'cuon', 'vol', 'nxb', 'ban', 'sach', 'nam', 'in', 'dich', 'tai', 'truyen', 'tieu', 'thuyet']);
+          const diffWords = remainder.split(/\s+/).filter(w => !stopWords.has(w) && w.length >= 2);
+
+          if (hasSeparator || diffWords.length === 0) {
+            return {
+              isDuplicate: true,
+              score: 92,
+              reason: 'Một bản ghi chứa tựa đề gốc có thêm phụ đề hoặc thông tin ấn bản phía sau',
+            };
+          }
+        }
+
+        // TH 2: Tiêu đề dài kết thúc bằng tiêu đề ngắn (Mã số / Năm / Tựa đề tiếng Anh / Tiền tố phía trước)
+        // Ví dụ: "1941 – Những khám phá mới về Châu Mỹ..." vs "Những khám phá mới về Châu Mỹ..."
+        if (longStr.endsWith(shortStr)) {
+          const prefixPart = longStr.slice(0, longStr.length - shortStr.length).trim();
+          const rawPrefixPart = rawLong.slice(0, rawLong.length - rawShort.length);
+          const hasSeparator = /[-–—:/(]/.test(rawPrefixPart) || /[-–—:/(]$/.test(prefixPart);
+          const isNumericOrShortPrefix = /^\d+$/.test(prefixPart) || prefixPart.length <= 10;
+
+          if (hasSeparator || isNumericOrShortPrefix) {
+            return {
+              isDuplicate: true,
+              score: 92,
+              reason: 'Một bản ghi chứa tựa đề gốc có thêm mã số/năm/tiền tố phía trước',
+            };
+          }
+        }
       }
     }
   }
 
   // 6. SO SÁNH ĐỘ TƯƠNG ĐỒNG THỰC SỰ TRÊN CLEAN TITLE
-  const titleSim = stringSimilarity(normCleanA, normCleanB);
-
-  // So sánh thêm tên gốc nếu có ngoặc đơn song ngữ: ví dụ "Nhà Giả Kim (The Alchemist)" vs "Nhà Giả Kim"
-  const rawSim = stringSimilarity(
-    normalizeForComparison(bookA.title),
-    normalizeForComparison(bookB.title)
-  );
-
-  const bestTitleScore = Math.max(titleSim, rawSim);
-
   // 1. Clean Title giống hệt nhau sau khi chuẩn hóa (100%) -> TRÙNG
   if (normCleanA === normCleanB && normCleanA.length > 0) {
     return {
@@ -420,10 +447,9 @@ export function isTrueDuplicate(
   }
 
   // 2. Trùng tên chính sau khi lược bỏ toàn bộ phần trong ngoặc đơn/ngoặc vuông (như phụ đề song ngữ)
-  // Ví dụ: "Nhà Giả Kim (The Alchemist)" vs "Nhà Giả Kim"
   const noParensA = normalizeForComparison(metaA.cleanTitle.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, ''));
   const noParensB = normalizeForComparison(metaB.cleanTitle.replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, ''));
-  if (noParensA && noParensB && noParensA === noParensB) {
+  if (noParensA && noParensB && noParensA === noParensB && noParensA.length >= 4) {
     return {
       isDuplicate: true,
       score: 98,
@@ -431,17 +457,17 @@ export function isTrueDuplicate(
     };
   }
 
-  // Kiểm tra tên trong ngoặc khớp tên cuốn kia (ví dụ: "The Alchemist" vs "Nhà Giả Kim (The Alchemist)")
+  // 3. Kiểm tra tên trong ngoặc khớp tên cuốn kia (ví dụ: "The Alchemist" vs "Nhà Giả Kim (The Alchemist)")
   const parenMatchA = metaA.cleanTitle.match(/\((.*?)\)/)?.[1];
   const parenMatchB = metaB.cleanTitle.match(/\((.*?)\)/)?.[1];
-  if (parenMatchA && normalizeForComparison(parenMatchA) === normCleanB) {
+  if (parenMatchA && normalizeForComparison(parenMatchA) === normCleanB && normCleanB.length >= 4) {
     return {
       isDuplicate: true,
       score: 95,
       reason: 'Trùng tên tiếng nước ngoài trong ngoặc',
     };
   }
-  if (parenMatchB && normalizeForComparison(parenMatchB) === normCleanA) {
+  if (parenMatchB && normalizeForComparison(parenMatchB) === normCleanA && normCleanA.length >= 4) {
     return {
       isDuplicate: true,
       score: 95,
@@ -449,53 +475,92 @@ export function isTrueDuplicate(
     };
   }
 
-  // 3. KIỂM TRA CHÍNH TẢ CẤP ĐỘ TỪ (Strict Word-Level Integrity):
-  // BẢO VỆ CHỐNG TRÙNG NHẦM: "Không gia đình" vs "Trong gia đình" (Hector Malot)
-  // Trong tiếng Việt, các từ ngắn (< 6 ký tự như "không" vs "trong", "đỏ" vs "đen", "đất" vs "cát")
-  // là các TỪ HOÀN TOÀN KHÁC NHAU VỀ NGHĨA. Tuyệt đối không được coi là lỗi chính tả!
+  // 4. KIỂM TRA CHÍNH TẢ CẤP ĐỘ TỪ (Strict Word-Level Integrity):
+  // BẢO VỆ CHỐNG TRÙNG NHẦM: "Không gia đình" vs "Trong gia đình" (Hector Malot), "Bạch Mã" vs "Rạch mặt" (Đỗ Quyên)
   const tokensA = normCleanA.split(/\s+/).filter(Boolean);
   const tokensB = normCleanB.split(/\s+/).filter(Boolean);
 
-  if (tokensA.length === tokensB.length && tokensA.length > 0) {
+  // Nếu số lượng từ bằng nhau (tối thiểu 2 từ)
+  if (tokensA.length === tokensB.length && tokensA.length >= 2) {
     let diffWordCount = 0;
-    let diffA = '';
-    let diffB = '';
+    let diffWordA = '';
+    let diffWordB = '';
 
     for (let i = 0; i < tokensA.length; i++) {
       const wA = tokensA[i];
       const wB = tokensB[i];
 
       if (wA !== wB) {
-        // Chỉ chấp nhận là lỗi gõ / lỗi OCR nếu từ đó là từ dài (>= 6 ký tự) và chỉ sai khác tối đa 1 ký tự
+        // Chỉ chấp nhận là lỗi gõ chữ nếu từ dài >= 6 ký tự VÀ khoảng cách gõ sai đúng 1 ký tự
         const isMinorTypoInLongWord = wA.length >= 6 && wB.length >= 6 && levenshteinDistance(wA, wB) <= 1;
-        if (!isMinorTypoInLongWord) {
+        if (isMinorTypoInLongWord) {
           diffWordCount++;
-          diffA = wA;
-          diffB = wB;
+          diffWordA = wA;
+          diffWordB = wB;
+        } else {
+          // Bất kể cùng tác giả hay khác tác giả: từ ngữ cốt lõi khác nhau -> TUYỆT ĐỐI KHÔNG TRÙNG!
+          return {
+            isDuplicate: false,
+            score: 0,
+            reason: `Khác biệt từ ngữ: "${wA}" vs "${wB}"`,
+          };
         }
       }
     }
 
-    // Nếu chỉ có đúng 1 từ dài có lỗi chính tả 1 ký tự (ví dụ tên riêng nước ngoài), các từ khác giống hệt 100%
-    if (diffWordCount === 0 && tokensA.length >= 2) {
+    if (diffWordCount === 1 && authorCheck.compatible && authorCheck.confidence >= 0.7) {
       return {
         isDuplicate: true,
         score: 90,
         reason: 'Trùng tên sách (sai khác 1 ký tự gõ nhầm ở từ dài)',
       };
-    } else if (diffWordCount > 0) {
-      return {
-        isDuplicate: false,
-        score: Math.round(titleSim * 100),
-        reason: `Khác biệt từ ngữ: "${diffA}" vs "${diffB}"`,
-      };
     }
   }
 
+  // 5. TRƯỜNG HỢP CÙNG TÁC GIẢ & CHÊNH LỆCH ĐÚNG 1 TỪ BỔ TRỢ / TỪ NỐI:
+  // Ví dụ thực tế: "Nhật ký làm bánh" vs "Nhật ký học làm bánh" (Linh Trang)
+  if (
+    authorCheck.compatible &&
+    authorCheck.confidence >= 0.7 &&
+    Math.abs(tokensA.length - tokensB.length) === 1
+  ) {
+    const shortTokens = tokensA.length < tokensB.length ? tokensA : tokensB;
+    const longTokens = tokensA.length < tokensB.length ? tokensB : tokensA;
+
+    if (shortTokens.length >= 3) {
+      let diffIdx = -1;
+      let sIdx = 0;
+      for (let lIdx = 0; lIdx < longTokens.length; lIdx++) {
+        if (sIdx < shortTokens.length && longTokens[lIdx] === shortTokens[sIdx]) {
+          sIdx++;
+        } else if (diffIdx === -1) {
+          diffIdx = lIdx;
+        } else {
+          diffIdx = -2;
+          break;
+        }
+      }
+
+      if (sIdx === shortTokens.length && diffIdx !== -2) {
+        const extraWord = longTokens[diffIdx >= 0 ? diffIdx : longTokens.length - 1];
+        // Nếu từ thừa là số thứ tự hoặc từ chỉ tập/series (1, 2, tap, phan, vol, i, ii...) -> Không phải trùng
+        const isVolOrNumber = /^\d+$/.test(extraWord) || ['tap', 'phan', 'vol', 'quyen', 'thuong', 'ha', 'trung', 'cuon', 'i', 'ii', 'iii', 'iv', 'v'].includes(extraWord);
+        if (!isVolOrNumber) {
+          return {
+            isDuplicate: true,
+            score: 88,
+            reason: `Cùng tác giả, tên sách chỉ thêm 1 từ bổ trợ ("${extraWord}")`,
+          };
+        }
+      }
+    }
+  }
+
+  // MỌI TRƯỜNG HỢP CÒN LẠI: TUYỆT ĐỐI KHÔNG COI LÀ TRÙNG!
   return {
     isDuplicate: false,
-    score: Math.round(bestTitleScore * 100),
-    reason: `Độ tương đồng không đủ điều kiện trùng (${Math.round(bestTitleScore * 100)}%)`,
+    score: 0,
+    reason: 'Hai cuốn sách khác nhau',
   };
 }
 
@@ -564,12 +629,31 @@ export function flagDuplicateDrafts(
  */
 export function calculateBookRichness(book: BookRecord): number {
   let score = 0;
-  if (book.title && book.title.trim().length > 0) score += 5;
-  // Chuỗi có dấu tiếng Việt chuẩn được ưu tiên hơn chuỗi không dấu
-  if (/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(book.title)) score += 2;
-  if (book.author && book.author !== 'Khuyết danh' && book.author !== 'Chưa rõ') score += 4;
-  if (book.publisher && book.publisher.trim().length > 0) score += 3;
-  if (book.category && book.category !== 'Chung' && book.category.trim().length > 0) score += 2;
+  const title = (book.title || '').trim();
+  const author = (book.author || '').trim();
+  const category = (book.category || '').trim();
+  const publisher = (book.publisher || '').trim();
+
+  // Độ dài tựa đề (ưu tiên tựa đề đầy đủ không bị cắt cụt)
+  score += Math.min(title.length, 40);
+  if (/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(title)) score += 5;
+
+  // Tác giả chuẩn xác và ngắn gọn (1-4 từ) được điểm cao hơn tác giả bị dính thể loại
+  if (author && author !== 'Khuyết danh' && author !== 'Chưa rõ') {
+    const authorWords = author.split(/\s+/).length;
+    if (authorWords <= 4) {
+      score += 15;
+    } else {
+      score += 6;
+    }
+  }
+
+  // Thể loại thực (khác rỗng và khác 'Chung')
+  if (category && category !== 'Chung') {
+    score += 10;
+  }
+
+  if (publisher && publisher.trim().length > 0) score += 5;
   if (book.is_ai_normalized) score += 5;
   return score;
 }
@@ -669,19 +753,58 @@ export function groupDuplicateBooks(books: BookRecord[]): DuplicateGroup[] {
 }
 
 /**
+ * Tạo danh sách các khóa chữ ký (signatures) duy nhất cho 1 cặp sách đã xác nhận không trùng lặp
+ */
+export function getBookPairSignatures(
+  bookA: { id?: string; title: string; author?: string },
+  bookB: { id?: string; title: string; author?: string }
+): string[] {
+  const sigs: string[] = [];
+  if (bookA.id && bookB.id) {
+    const sortedIds = [bookA.id, bookB.id].sort();
+    sigs.push(`id:${sortedIds[0]}:::${sortedIds[1]}`);
+  }
+  const normA = `${normalizeForComparison(bookA.title)}|${normalizeForComparison(bookA.author || '')}`;
+  const normB = `${normalizeForComparison(bookB.title)}|${normalizeForComparison(bookB.author || '')}`;
+  const sortedNorms = [normA, normB].sort();
+  sigs.push(`sig:${sortedNorms[0]}:::${sortedNorms[1]}`);
+  return sigs;
+}
+
+/**
+ * Kiểm tra xem cặp sách này đã từng được người dùng xác nhận là KHÔNG TRÙNG LẶP hay chưa
+ */
+export function isPairIgnored(
+  bookA: { id?: string; title: string; author?: string },
+  bookB: { id?: string; title: string; author?: string },
+  ignoredSet?: Set<string>
+): boolean {
+  if (!ignoredSet || ignoredSet.size === 0) return false;
+  const sigs = getBookPairSignatures(bookA, bookB);
+  return sigs.some((s) => ignoredSet.has(s));
+}
+
+/**
  * Phân nhóm tất cả các sách trùng lặp bất đồng bộ có báo cáo tiến độ % (Non-blocking Progressive Scanner)
  * Nhường quyền xử lý cho UI Event Loop để giao diện không bị giật lag, hiển thị tiến trình mượt mà
+ * Hỗ trợ whitelist bỏ qua các cặp sách người dùng đã chủ động xác nhận giữ lại (không phải trùng)
  */
 export async function groupDuplicateBooksAsync(
   books: BookRecord[],
-  onProgress?: (percent: number, current: number, total: number) => void
+  onProgress?: (percent: number, current: number, total: number) => void,
+  ignoredPairSignatures?: Set<string> | string[]
 ): Promise<DuplicateGroup[]> {
   const groups: DuplicateGroup[] = [];
   const visited = new Set<string>();
   const total = books.length;
+  const ignoredSet = ignoredPairSignatures
+    ? ignoredPairSignatures instanceof Set
+      ? ignoredPairSignatures
+      : new Set(ignoredPairSignatures)
+    : new Set<string>();
 
   for (let i = 0; i < total; i++) {
-    // Nhường quyền cho giao diện React sau mỗi 8 cuốn để cập nhật % mượt mà trên nút
+    // Nhường quyền cho giao diện React sau mỗi 8 cuốn để cập nhật tiến trình mượt mà
     if (i % 8 === 0 || i === total - 1) {
       const percent = Math.min(100, Math.round(((i + 1) / total) * 100));
       if (onProgress) {
@@ -699,6 +822,9 @@ export async function groupDuplicateBooksAsync(
     for (let j = i + 1; j < total; j++) {
       const other = books[j];
       if (visited.has(other.id)) continue;
+
+      // Nếu cặp sách này đã được người dùng xác nhận giữ lại (đánh dấu không trùng) -> Bỏ qua
+      if (isPairIgnored(book, other, ignoredSet)) continue;
 
       const res = isTrueDuplicate(
         { title: book.title, author: book.author, publisher: book.publisher },
@@ -730,4 +856,79 @@ export async function groupDuplicateBooksAsync(
   }
 
   return groups;
+}
+
+/**
+ * Kiểm tra xem một đề xuất thay đổi Tiêu đề / Tác giả có phải là thay đổi ngữ nghĩa lớn
+ * cần người dùng duyệt hay chỉ là chuẩn hóa định dạng / sửa chính tả / viết hoa / dấu ngăn cách.
+ * 
+ * Trả về:
+ * - false (Không cần duyệt, tự động áp dụng): Trình bày lại chữ hoa/thường, chuẩn hóa dấu gạch ngang '-', dấu phẩy ',',
+ *   sửa lỗi chính tả nhẹ / dấu tiếng Việt (tương đồng >= 82%), điền tác giả khi bản gốc là khuyết danh/trống.
+ * - true (Cần duyệt): Tên sách bị đổi thành một tác phẩm hoàn toàn khác, tác giả bị thay thế bởi người khác.
+ */
+export function isMeaningfulChange(
+  origText: string,
+  proposedText: string,
+  isAuthor = false
+): boolean {
+  const origTrim = (origText || '').trim();
+  const propTrim = (proposedText || '').trim();
+
+  // Nếu cả 2 đều rỗng hoặc giống hệt nhau
+  if (!propTrim || origTrim === propTrim) return false;
+
+  // Nếu bản gốc rỗng hoặc mang tính placeholder ("Chưa rõ", "Khuyết danh", "Nhiều tác giả")
+  if (!origTrim) return false;
+  const origLower = origTrim.toLowerCase();
+  if (
+    isAuthor &&
+    (origLower === 'khuyết danh' ||
+      origLower === 'nhiều tác giả' ||
+      origLower === 'chưa rõ' ||
+      origLower === 'unknown' ||
+      origLower === 'đang cập nhật')
+  ) {
+    return false;
+  }
+
+  // 1. So sánh sau khi loại bỏ dấu cách và ký tự đặc biệt / phân cách (-, _, –, —, ,, ;, :, /, ...)
+  const cleanOrig = origLower.replace(/[\s\-_–—,;:\/\.\(\)\[\]"']/gu, '');
+  const cleanProp = propTrim.toLowerCase().replace(/[\s\-_–—,;:\/\.\(\)\[\]"']/gu, '');
+  if (cleanOrig === cleanProp) {
+    // Chỉ khác biệt về viết hoa thường, dấu cách hoặc dấu phân cách (ví dụ "Bảo Ninh - Nguyễn Quang Lập" -> "Bảo Ninh, Nguyễn Quang Lập")
+    return false;
+  }
+
+  // 2. So sánh từ không dấu (bỏ qua dấu tiếng Việt & dấu phân cách)
+  const noDauOrig = normalizeForComparison(origTrim);
+  const noDauProp = normalizeForComparison(propTrim);
+  if (noDauOrig === noDauProp) {
+    // Cùng nội dung từ gốc, chỉ khác dấu tiếng Việt / hoa thường / định dạng
+    return false;
+  }
+
+  // 3. Với Tác giả: Tách danh sách tác giả theo các dấu phân cách (-, ,, ;, /, và, &)
+  if (isAuthor) {
+    const splitTokens = (str: string) =>
+      str
+        .split(/[\-,;\/\&]|(\bvà\b)/i)
+        .map((t) => (t ? normalizeForComparison(t) : ''))
+        .filter(Boolean)
+        .sort();
+    const tokensOrig = splitTokens(origTrim);
+    const tokensProp = splitTokens(propTrim);
+    if (tokensOrig.join('|') === tokensProp.join('|')) {
+      return false;
+    }
+  }
+
+  // 4. Tính độ tương đồng chuỗi: nếu tương đồng >= 82% (sửa lỗi chính tả nhẹ, ví dụ "đã quý" -> "đá quý")
+  const similarity = stringSimilarity(origTrim, propTrim);
+  if (similarity >= 0.82) {
+    return false;
+  }
+
+  // Nếu khác biệt lớn (< 82% tương đồng hoặc đổi tên tác phẩm/tác giả hoàn toàn) -> Bắt buộc duyệt
+  return true;
 }

@@ -30,17 +30,14 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [isEnriching, setIsEnriching] = useState(false);
 
-  // Kiểm tra trùng lặp TÊN SÁCH thời gian thực với kho sách hiện có
   const duplicateMatch = useMemo(() => {
     if (!title.trim() || !books || books.length === 0) return null;
     const existingOther = initialBook
       ? books.filter((b) => b.id !== initialBook.id)
       : books;
-    // Kiểm tra tiêu đề sách (title)
     const result = checkDuplicateBook({ title }, existingOther);
     if (!result.isDuplicate || !result.matchedBook) return null;
 
-    // Nếu người dùng ĐÃ nhập Tác giả, và tác giả này KHÁC tác giả cuốn sách trùng -> Bỏ cảnh báo!
     if (author.trim() && result.matchedBook.author) {
       const authorSim = stringSimilarity(author, result.matchedBook.author);
       if (authorSim < 0.6) {
@@ -67,10 +64,9 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Tự động nhập thông tin sách từ dịch vụ AI trung tâm (Gemini Service)
   const handleEnrichWithAI = async () => {
     if (!title.trim()) {
-      showToast('Vui lòng nhập tên sách trước khi tự động nhập!', 'warning');
+      showToast('Vui lòng nhập tên sách!', 'warning');
       return;
     }
 
@@ -84,13 +80,13 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
         if (enriched.author) setAuthor(enriched.author);
         if (enriched.category) setCategory(enriched.category);
         if (enriched.publisher) setPublisher(enriched.publisher);
-        showToast('Đã tự động điền thông tin chuẩn từ AI!', 'success');
+        showToast('Đã điền thông tin AI!', 'success');
       } else {
-        showToast('Không tìm thấy thông tin phù hợp cho sách này.', 'warning');
+        showToast('Không tìm thấy thông tin phù hợp lúc này.', 'info');
       }
     } catch (err: any) {
-      console.error('Error in enrichBook:', err);
-      showToast(`Lỗi tự động nhập: ${err?.message || 'Không thể tra cứu thông tin'}`, 'error');
+      console.warn('Lỗi tra cứu AI ngầm:', err);
+      showToast('Chưa thể tra cứu tự động lúc này.', 'info');
     } finally {
       setIsEnriching(false);
     }
@@ -117,7 +113,7 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
       };
 
       await onSave(bookToSave);
-      showToast(initialBook ? 'Đã cập nhật sách thành công!' : 'Đã thêm sách mới vào kho!', 'success');
+      showToast(initialBook ? 'Đã lưu thay đổi!' : 'Đã thêm sách!', 'success');
       onClose();
     } catch (err: any) {
       showToast(`Lỗi khi lưu sách: ${err.message}`, 'error');
@@ -130,91 +126,98 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
       <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="px-6 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+        <div className="px-5 py-3.5 bg-amber-50/50 border-b border-amber-100/60 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
-              <Book className="w-5 h-5" />
+            <div className="w-8 h-8 rounded-xl bg-amber-100 text-[#9e5628] flex items-center justify-center">
+              <Book className="w-4 h-4" />
             </div>
-            <div>
-              <h3 className="text-base font-black text-slate-900 leading-tight">
-                {initialBook ? 'Chỉnh sửa sách' : 'Nhập sách'}
-              </h3>
-            </div>
+            <h3 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+              {initialBook ? 'Chỉnh sửa sách' : 'Thêm sách mới'}
+            </h3>
           </div>
           <button
             onClick={onClose}
             className="p-1.5 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 transition"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-4">
+        <form onSubmit={handleSubmit} className="p-5 overflow-y-auto space-y-3.5">
           <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-bold text-slate-700 uppercase tracking-wide">
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-bold text-slate-700">
                 Tên Sách <span className="text-rose-500">*</span>
               </label>
               <button
                 type="button"
                 onClick={handleEnrichWithAI}
                 disabled={isEnriching || !title.trim()}
-                className="inline-flex items-center gap-1 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 px-2.5 py-1 rounded-lg transition disabled:opacity-40"
+                className="inline-flex items-center gap-1 text-[11px] font-bold text-[#653f96] bg-[#faf5ff] hover:bg-purple-100 px-2 py-0.5 rounded-lg transition disabled:opacity-40"
               >
                 {isEnriching ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 className="w-3 h-3 animate-spin" />
                 ) : (
-                  <Sparkles className="w-3.5 h-3.5" />
+                  <Sparkles className="w-3 h-3" />
                 )}
-                <span>Tự động nhập</span>
+                <span>AI gợi ý</span>
               </button>
             </div>
             <input
               type="text"
               autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              data-lpignore="true"
               required
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Nhập tên sách (ví dụ: Dế Mèn Phiêu Lưu Ký)"
-              className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none transition"
+              placeholder="Nhập tên sách..."
+              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#9e5628] focus:border-[#9e5628] focus:outline-none transition font-medium"
             />
-            {/* Cảnh báo trùng lặp TÊN SÁCH ngắn gọn ngay dưới ô Tên sách */}
             {duplicateMatch && duplicateMatch.matchedBook && (
-              <div className="mt-1.5 p-2 px-3 bg-amber-50 border border-amber-200/90 rounded-xl flex items-center gap-2 text-xs text-amber-900 animate-in fade-in">
+              <div className="mt-1.5 p-2 px-2.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-1.5 text-[11px] text-amber-900 animate-in fade-in">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                 <span className="truncate">
-                  <strong className="font-bold text-amber-950">Đã có trong kho:</strong> "{duplicateMatch.matchedBook.title}" ({duplicateMatch.score}%)
+                  Đã có: <strong>"{duplicateMatch.matchedBook.title}"</strong> ({duplicateMatch.score}%)
                 </span>
               </div>
             )}
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
-              Tác Giả
-            </label>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Tác Giả</label>
             <input
               type="text"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              data-lpignore="true"
               value={author}
               onChange={(e) => setAuthor(e.target.value)}
-              placeholder="Tên tác giả (ví dụ: Tô Hoài)"
-              className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none transition"
+              placeholder="Tên tác giả..."
+              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#9e5628] focus:border-[#9e5628] focus:outline-none transition font-medium"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
-              Thể Loại
-            </label>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Thể Loại</label>
             <div className="relative">
               <input
                 type="text"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                data-lpignore="true"
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
                 placeholder="Chọn hoặc nhập thể loại"
                 list="category-suggestions"
-                className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none transition"
+                className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#9e5628] focus:border-[#9e5628] focus:outline-none transition font-medium"
               />
               <datalist id="category-suggestions">
                 {categories.map((cat) => (
@@ -225,40 +228,43 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide mb-1.5">
-              Nhà Xuất Bản (NXB)
-            </label>
+            <label className="block text-xs font-bold text-slate-700 mb-1">Nhà Xuất Bản</label>
             <input
               type="text"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              data-lpignore="true"
               value={publisher}
               onChange={(e) => setPublisher(e.target.value)}
-              placeholder="NXB Trẻ, NXB Kim Đồng..."
-              className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none transition"
+              placeholder="NXB..."
+              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#9e5628] focus:border-[#9e5628] focus:outline-none transition font-medium"
             />
           </div>
 
           {/* Actions */}
-          <div className="pt-4 flex items-center justify-end gap-3 border-t border-slate-100">
+          <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
             <button
               type="button"
               onClick={onClose}
               disabled={isSaving}
-              className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition"
+              className="px-4 py-2 text-xs sm:text-sm font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition"
             >
               Hủy
             </button>
             <button
               type="submit"
               disabled={isSaving}
-              className="px-6 py-2.5 text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-98 rounded-xl shadow-md transition flex items-center gap-2 disabled:opacity-50"
+              className="px-5 py-2 text-xs sm:text-sm font-bold text-white bg-[#9e5628] hover:bg-[#85451e] active:scale-95 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-50"
             >
               {isSaving ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>Đang lưu...</span>
                 </>
               ) : (
-                <span>{initialBook ? 'Lưu Thay Đổi' : 'Thêm Vào Kho'}</span>
+                <span>{initialBook ? 'Lưu Thay Đổi' : 'Thêm Sách'}</span>
               )}
             </button>
           </div>

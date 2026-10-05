@@ -1,4 +1,5 @@
 import { CURRENT_APP_VERSION } from '../version';
+import { IS_BUILD_AAB } from '../config/buildConfig';
 
 export interface RemoteVersionInfo {
   version: string;
@@ -78,6 +79,17 @@ const getApiUrl = (path: string): string => {
  * Kiểm tra phiên bản mới từ GitHub repository (Bằng Proxy Server-Side và Client-Side Fallback)
  */
 export async function checkForAppUpdate(): Promise<UpdateCheckResult> {
+  // Nếu là bản AAB dành cho Google Play Store: Vô hiệu hóa tính năng tự động tải APK
+  if (IS_BUILD_AAB) {
+    return {
+      hasUpdate: false,
+      currentVersion: CURRENT_APP_VERSION,
+      latestVersion: CURRENT_APP_VERSION,
+      notes: '',
+      apkUrl: '',
+    };
+  }
+
   // BƯỚC 1: Ưu tiên gọi qua Proxy API (Không bị dính lỗi CORS ở phía client)
   try {
     const proxyUrl = getApiUrl('/api/app-update/check');
