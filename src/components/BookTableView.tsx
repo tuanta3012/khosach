@@ -702,7 +702,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                   <button
                     type="button"
                     onClick={onOpenAddModal}
-                    className="px-4 py-3 bg-[#0d6e53] hover:bg-[#09523e] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-emerald-500/30"
+                    className="px-4 py-3 bg-[#9e5628] hover:bg-[#854720] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-amber-500/30"
                   >
                     <PlusCircle className="w-4 h-4 shrink-0" />
                     <span>Thêm sách mới</span>

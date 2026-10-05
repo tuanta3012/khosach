@@ -35,24 +35,24 @@ const MODEL_STORAGE_KEY = 'gemini_selected_model_v1';
 export const AVAILABLE_GEMINI_MODELS: GeminiModelInfo[] = [
   { 
     id: 'auto', 
-    name: 'Tự động (3.5 Flash Lite + 3.1 Flash Lite)', 
-    desc: 'Ưu tiên 3.5 Flash Lite chính, tự động dự phòng 3.1 Flash Lite khi gặp quá tải/429' 
+    name: 'Tự động (Gemini 3.8 Flash + 3.1 Flash Lite)', 
+    desc: 'Ưu tiên Gemini 3.8 Flash chính xác cao, tự động dự phòng 3.1 Flash Lite khi gặp quá tải/429' 
   },
   { 
-    id: 'gemini-3.5-flash-lite', 
-    name: 'Gemini 3.5 Flash Lite', 
-    desc: 'Engine chính: Tối ưu hạn ngạch & xử lý siêu tốc' 
+    id: 'gemini-3.8-flash', 
+    name: 'Gemini 3.8 Flash', 
+    desc: 'Engine chính: Thông minh, chuẩn hóa ngữ pháp, văn học & dịch thuật xuất sắc' 
   },
   { 
     id: 'gemini-3.1-flash-lite', 
     name: 'Gemini 3.1 Flash Lite', 
-    desc: 'Engine dự phòng: Bền bỉ & ổn định cao' 
+    desc: 'Engine dự phòng: Bền bỉ, tiết kiệm hạn ngạch' 
   },
 ];
 
-// Danh sách thứ tự failover khi gặp lỗi quá tải (Chỉ gồm 2 model chuẩn hóa)
+// Danh sách thứ tự failover khi gặp lỗi quá tải
 const FAILOVER_CHAIN: GeminiModelId[] = [
-  'gemini-3.5-flash-lite',
+  'gemini-3.8-flash',
   'gemini-3.1-flash-lite',
 ];
 
@@ -433,16 +433,16 @@ export async function testGeminiApiKey(
     return { success: false, message: 'Vui lòng nhập API Key để kiểm tra!' };
   }
 
-  // Thử trực tiếp phía Client qua GoogleGenAI SDK với model 3.5 Flash Lite
+  // Thử trực tiếp phía Client qua GoogleGenAI SDK với model 3.8 Flash
   try {
     const ai = new GoogleGenAI({ apiKey: cleanKey });
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash-lite',
+      model: 'gemini-3.8-flash',
       contents: 'Ping test. Reply with word OK.',
     });
 
     if (response?.text) {
-      return { success: true, message: 'Kết nối thành công! Key hoạt động tốt (Gemini 3.5 Flash Lite).' };
+      return { success: true, message: 'Kết nối thành công! Key hoạt động tốt (Gemini 3.8 Flash).' };
     }
   } catch (err35: unknown) {
     // Dự phòng kiểm tra bằng 3.1 Flash Lite
@@ -714,7 +714,7 @@ export async function enrichBook(
 - NXB: "${publisher || 'Chưa rõ'}"
 
 Hãy trả về JSON gồm:
-- title: Tên sách chuẩn hóa tiếng Việt
+- title: Tên sách chuẩn hóa. ĐẶC BIỆT: Nếu là sách có tựa tiếng nước ngoài (tiếng Anh, Pháp...), BẮT BUỘC giữ nguyên tựa gốc tiếng nước ngoài kèm bản dịch tiếng Việt trong ngoặc đơn dạng "Tên Tiếng Nước Ngoài (Tên Tiếng Việt)", ví dụ "The Good Earth (Đất mẹ)", "The Quiet American (Người Mỹ trầm lặng)".
 - author: Tác giả chuẩn
 - publisher: Nhà xuất bản uy tín
 - publish_year: Năm phát hành bản in phổ biến
@@ -775,14 +775,56 @@ async function processChunk(
     category: (b.category || '').trim(),
   }));
 
-  const prompt = `Bạn là chuyên gia biên tập thư viện sách xuất sắc.
-Hãy sửa lỗi chính tả, chuẩn hóa tiếng Việt có dấu chuẩn xác, viết hoa đúng quy tắc cho danh sách ${cleanInput.length} cuốn sách sau.
+  const prompt = `Bạn là chuyên gia biên tập thư viện và hiệu đính văn học xuất sắc.
+Hãy chuẩn hóa, sửa lỗi chính tả, dịch thuật và hoàn thiện thông tin cho danh sách ${cleanInput.length} cuốn sách sau theo tiêu chuẩn xuất bản thư viện Việt Nam.
 
-YÊU CẦU:
-1. TÊN SÁCH (title): Sửa lỗi chính tả, viết hoa chữ cái đầu và tên riêng đúng chuẩn ngữ pháp.
-2. TÁC GIẢ (author): Viết hoa đầy đủ có dấu hoặc tên La-tinh chuẩn mực.
-3. NHÀ XUẤT BẢN (publisher): Tên NXB chính quy (NXB Trẻ, Nhã Nam, NXB Kim Đồng, NXB Hội Nhà Văn, NXB Phụ Nữ...).
-4. THỂ LOẠI (category): BẮT BUỘC chỉ chọn 1 trong 13 thể loại sau:
+QUY TẮC BẮT BUỘC:
+
+1. TÊN SÁCH (title):
+   a. SÁCH CÓ TỰA GỐC TIẾNG NƯỚC NGOÀI (Tiếng Anh, Pháp, Trung, Nhật, v.v.):
+      - BẮT BUỘC GIỮ NGUYÊN TÊN TIẾNG NƯỚC NGOÀI GỐC + DỊCH KÈM TỰA TIẾNG VIỆT TRONG NGOẶC ĐƠN.
+      - Định dạng chuẩn bắt buộc: "Tên Tiếng Nước Ngoài (Tên Tiếng Việt)"
+      - Ví dụ mẫu:
+        * "The Good Earth" -> "The Good Earth (Đất mẹ)"
+        * "The Quiet American" hoặc "The Quiet American (Bản tiếng Anh)" -> "The Quiet American (Người Mỹ trầm lặng)"
+        * "The Devil Wears Prada" -> "The Devil Wears Prada (Yêu nữ thích hàng hiệu)"
+        * "The Great Gatsby" -> "The Great Gatsby (Đại gia Gatsby)"
+        * "To Kill a Mockingbird" -> "To Kill a Mockingbird (Giết con chim nhại)"
+        * "Norwegian Wood" -> "Norwegian Wood (Rừng Na Uy)"
+        * "Rich Dad Poor Dad" -> "Rich Dad Poor Dad (Dạy con làm giàu)"
+        * "How to Win Friends and Influence People" -> "How to Win Friends and Influence People (Đắc nhân tâm)"
+      - LƯU Ý QUAN TRỌNG: Nếu tựa sách người dùng nhập vốn đã là tiếng Việt phát hành tại VN (ví dụ: "Người Mỹ trầm lặng", "Đất mẹ", "Đắc nhân tâm", "Rừng Na Uy") thì GIỮ NGUYÊN tên tiếng Việt, TUYỆT ĐỐI KHÔNG tự ý dịch ngược sang tiếng Anh.
+
+   b. QUY TẮC VIẾT HOA CHỮ TRONG TIẾNG VIỆT (TRÁNH LỖI TITLE CASE CỦA TIẾNG ANH):
+      - Tiếng Việt CHỈ viết hoa chữ cái đầu tiên của tựa đề và các Tên riêng / Danh từ riêng (ví dụ: tên người, địa danh, nhân vật).
+      - TUYỆT ĐỐI KHÔNG VIẾT HOA TẤT CẢ CÁC TỪ như "Những Cuộc Phiêu Lưu Của Mít Đặc Và Các Bạn" hay "Mọi Nơi Vụn Vỡ" (đây là lỗi viết hoa sai ngữ pháp tiếng Việt).
+      - Ví dụ đúng chuẩn:
+        * "Những cuộc phiêu lưu của Mít Đặc và các bạn"
+        * "Mọi nơi vụn vỡ"
+        * "Vòng quanh thế giới trong 80 ngày"
+        * "Kính vạn hoa"
+        * "Dế Mèn phiêu lưu ký"
+
+   c. BẢO TỒN THÔNG TIN TẬP / PHẦN / BỘ SÁCH CỦA NGƯỜI DÙNG:
+      - TUYỆT ĐỐI KHÔNG XÓA số tập, số quyển, khoảng tập hoặc phần bộ sách của người dùng! Người dùng lưu trữ sách theo tập cụ thể.
+      - Chuẩn hóa định dạng tập gọn gàng trong ngoặc đơn hoặc dấu gạch nối.
+      - Ví dụ:
+        * "Kính vạn hoa 1-18" -> "Kính vạn hoa (Tập 1-18)" hoặc "Kính vạn hoa - Tập 1-18" (CẤM xóa thành "Kính vạn hoa")
+        * "Mọi nơi vụn vỡ (phần 2 Chú bé mang Pyjama sọc)" -> "Mọi nơi vụn vỡ (Phần 2: Chú bé mang pyjama sọc)"
+        * "Harry Potter 1" -> "Harry Potter và Hòn đá Phù thủy (Tập 1)" hoặc "Harry Potter (Tập 1)"
+
+   d. SỬA LỖI GÕ PHÍM & CON SỐ BỊ NHẦM RÕ RÀNG:
+      - Nếu có lỗi gõ phím hoặc năm/số rõ ràng (như "1941 - Những khám phá mới về Châu Mỹ thời kỳ tiền Columbus" của Charles C. Mann -> sách thực tế là năm 1491, sửa thành "1491 – Những khám phá mới về châu Mỹ thời kỳ tiền Columbus").
+
+2. TÁC GIẢ (author):
+   - Tác giả Việt Nam: Viết hoa có dấu chuẩn xác (ví dụ: "Nguyễn Nhật Ánh", "Nam Cao", "Vũ Trọng Phụng", "Chu Lai", "Bảo Ninh").
+   - Tác giả nước ngoài: Giữ tên La-tinh chuẩn hoặc tên phiên âm quen thuộc trên bìa sách tiếng Việt (ví dụ: "Nikolay Nosov" hoặc "Nicolai Nôxốp", "Jules Verne", "Haruki Murakami", "Charles C. Mann", "Yuval Noah Harari", "Victor Hugo", "Dale Carnegie").
+
+3. NHÀ XUẤT BẢN (publisher):
+   - Tên NXB chính thống uy tín tại Việt Nam (NXB Trẻ, Nhã Nam, NXB Kim Đồng, NXB Hội Nhà Văn, NXB Văn Học, NXB Phụ Nữ...). Nếu không rõ thì giữ nguyên hoặc để trống.
+
+4. THỂ LOẠI (category):
+   - BẮT BUỘC chỉ chọn duy nhất 1 trong 13 thể loại chuẩn sau:
 ${CATEGORY_GUIDELINES}
 
 DANH SÁCH SÁCH CẦN CHUẨN HÓA:

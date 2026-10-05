@@ -177,12 +177,12 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
           ...prev,
           currentChunk: chunkIdx + 2,
           processedImages: processedImagesCount,
-          statusMessage: `Đang quét song song 2 Engine: Lô ${chunkIdx + 1} (3.1 Lite) & Lô ${chunkIdx + 2} (3.5 Lite)...`,
+          statusMessage: `Đang quét song song 2 Engine: Lô ${chunkIdx + 1} (3.1 Lite) & Lô ${chunkIdx + 2} (3.8 Flash)...`,
         }));
 
         const [resA, resB] = await Promise.allSettled([
           scanImages(chunkA, existingBooks, 'gemini-3.1-flash-lite'),
-          scanImages(chunkB, existingBooks, 'gemini-3.5-flash-lite'),
+          scanImages(chunkB, existingBooks, 'gemini-3.8-flash'),
         ]);
 
         const rawFound: any[] = [];
@@ -190,10 +190,10 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
         if (resA.status === 'fulfilled' && resA.value?.success && Array.isArray(resA.value.books)) {
           rawFound.push(...resA.value.books);
         } else {
-          // Tự động thử lại chunkA trên Engine B (3.5 Lite)
+          // Tự động thử lại chunkA trên Engine B (3.8 Flash)
           try {
-            console.log(`[BatchScanner] Lô ${chunkIdx + 1} gặp sự cố trên 3.1 Lite, tự động chuyển tải sang 3.5 Lite...`);
-            const recoverA = await scanImages(chunkA, existingBooks, 'gemini-3.5-flash-lite');
+            console.log(`[BatchScanner] Lô ${chunkIdx + 1} gặp sự cố trên 3.1 Lite, tự động chuyển tải sang 3.8 Flash...`);
+            const recoverA = await scanImages(chunkA, existingBooks, 'gemini-3.8-flash');
             if (recoverA?.success && Array.isArray(recoverA.books)) {
               rawFound.push(...recoverA.books);
             } else {

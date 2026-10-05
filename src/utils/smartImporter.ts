@@ -151,7 +151,7 @@ CHỈ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON NHƯ SAU, KHÔNG GIẢI THÍCH T
     let response: any;
     try {
       response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash-lite',
+        model: 'gemini-3.8-flash',
         contents: prompt,
       });
     } catch {
@@ -969,7 +969,7 @@ CHỈ TRẢ VỀ DUY NHẤT MẢNG JSON HỢP LỆ:
   let response: any;
   try {
     response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash-lite',
+      model: 'gemini-3.8-flash',
       contents: [
         {
           role: 'user',
