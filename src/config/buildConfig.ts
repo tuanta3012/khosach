@@ -1,4 +1,5 @@
 import pkg from '../../package.json';
+import buildSettings from '../../build_settings.json';
 
 /**
  * Cấu hình chế độ xuất bản ứng dụng:
@@ -9,7 +10,9 @@ import pkg from '../../package.json';
  *     Bật đầy đủ cơ chế tự động kiểm tra phiên bản mới và tải APK cập nhật.
  */
 export const IS_BUILD_AAB: boolean =
-  (pkg as any)?.buildAab !== undefined
+  buildSettings?.buildAab !== undefined
+    ? Boolean(buildSettings.buildAab)
+    : (pkg as any)?.buildAab !== undefined
     ? Boolean((pkg as any).buildAab)
     : import.meta.env.VITE_BUILD_AAB === 'true' || import.meta.env.VITE_BUILD_AAB === true;
 

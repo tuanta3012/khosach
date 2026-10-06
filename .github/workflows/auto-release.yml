@@ -30,12 +30,12 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
-      # 2. Tự động lấy versionName từ package.json & versionCode từ Git Commit Count
+      # 2. Tự động lấy versionName từ build_settings.json hoặc package.json & versionCode từ Git Commit Count
       - name: Determine Auto Version
         id: auto_version
         run: |
           BUILD_NUMBER=$(git rev-list --count HEAD)
-          PACKAGE_VERSION=$(node -p "require('./package.json').version || '1.0.0'")
+          PACKAGE_VERSION=$(node -p "try { require('./build_settings.json').version } catch(e) { require('./package.json').version } || '1.0.0'")
           echo "CODE=$BUILD_NUMBER" >> $GITHUB_OUTPUT
           echo "NAME=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
           echo "Auto Generated versionCode: $BUILD_NUMBER, versionName: $PACKAGE_VERSION"

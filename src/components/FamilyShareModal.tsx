@@ -9,7 +9,9 @@ import {
   addFamilyMember, 
   updateFamilyMemberRole,
   removeFamilyMember, 
-  SpreadsheetInfo 
+  SpreadsheetInfo,
+  getKnownSpreadsheets,
+  autoDiscoverSharedSpreadsheets
 } from '../services/driveSyncService';
 import { getAccessToken } from '../services/googleAuthService';
 import { useToast } from '../context/ToastContext';
@@ -34,17 +36,34 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [emailInput, setEmailInput] = useState('');
   const [roleInput, setRoleInput] = useState<'Editor' | 'Viewer'>('Viewer');
-  const [emailToRemoveConfirm, setEmailToRemoveConfirm] = useState<string | null>(null);
   const [updatingRoleEmail, setUpdatingRoleEmail] = useState<string | null>(null);
   const [isRemovingEmail, setIsRemovingEmail] = useState<string | null>(null);
 
-  const loadMembers = async () => {
-    if (!spreadsheetInfo?.id) return;
-    setIsLoading(true);
+  const resolveSheetId = async (): Promise<string | null> => {
+    if (spreadsheetInfo?.id) return spreadsheetInfo.id;
     try {
       const token = await getAccessToken();
+      if (!token) return null;
+      const known = getKnownSpreadsheets();
+      if (known.length > 0 && known[0].id) {
+        return known[0].id;
+      }
+      const discovered = await autoDiscoverSharedSpreadsheets(token, currentUser?.email || '');
+      if (discovered.length > 0 && discovered[0].id) {
+        return discovered[0].id;
+      }
+    } catch {}
+    return null;
+  };
+
+  const loadMembers = async () => {
+    setIsLoading(true);
+    try {
+      const sheetId = await resolveSheetId();
+      if (!sheetId) return;
+      const token = await getAccessToken();
       if (!token) return;
-      const list = await fetchFamilyMembers(token, spreadsheetInfo.id);
+      const list = await fetchFamilyMembers(token, sheetId);
       setMembers(list);
     } catch (err: any) {
       console.warn('[FamilyShare] Tải danh sách thành viên thất bại:', err);
@@ -54,7 +73,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
   };
 
   useEffect(() => {
-    if (isOpen && spreadsheetInfo?.id) {
+    if (isOpen) {
       loadMembers();
     }
   }, [isOpen, spreadsheetInfo?.id]);
@@ -63,13 +82,19 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
 
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    const email = emailInput.trim().toLowerCase();
-    if (!email || !email.includes('@')) {
-      showToast('Vui lòng nhập địa chỉ Gmail hợp lệ!', 'warning');
+    let email = emailInput.trim().toLowerCase();
+    if (!email) {
+      showToast('Vui lòng nhập email hoặc username!', 'warning');
       return;
     }
+    
+    // Tự động append @gmail.com nếu thiếu
+    if (!email.includes('@')) {
+      email = `${email}@gmail.com`;
+    }
 
-    if (!spreadsheetInfo?.id) {
+    const sheetId = await resolveSheetId();
+    if (!sheetId) {
       showToast('Chưa có file Google Sheet liên kết.', 'error');
       return;
     }
@@ -79,7 +104,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       const token = await getAccessToken();
       if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
-      await addFamilyMember(token, spreadsheetInfo.id, email, roleInput);
+      await addFamilyMember(token, sheetId, email, roleInput);
       showToast(`✅ Đã cấp quyền ${roleInput === 'Editor' ? 'Được sửa' : 'Chỉ xem'} cho ${email}!`, 'success');
       setEmailInput('');
       await loadMembers();
@@ -91,13 +116,14 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
   };
 
   const handleToggleRole = async (email: string, newRole: 'Editor' | 'Viewer') => {
-    if (!spreadsheetInfo?.id) return;
+    const sheetId = await resolveSheetId();
+    if (!sheetId) return;
     setUpdatingRoleEmail(email);
     try {
       const token = await getAccessToken();
       if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
-      await updateFamilyMemberRole(token, spreadsheetInfo.id, email, newRole);
+      await updateFamilyMemberRole(token, sheetId, email, newRole);
       showToast(`Đã chuyển quyền của ${email} sang "${newRole === 'Editor' ? 'Được sửa' : 'Chỉ xem'}"!`, 'success');
       await loadMembers();
     } catch (err: any) {
@@ -108,15 +134,15 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
   };
 
   const handleRemoveMember = async (email: string) => {
-    if (!spreadsheetInfo?.id) return;
+    const sheetId = await resolveSheetId();
+    if (!sheetId) return;
     setIsRemovingEmail(email);
     try {
       const token = await getAccessToken();
       if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
-      await removeFamilyMember(token, spreadsheetInfo.id, email);
+      await removeFamilyMember(token, sheetId, email);
       showToast(`Đã gỡ quyền truy cập của ${email}!`, 'success');
-      setEmailToRemoveConfirm(null);
       await loadMembers();
     } catch (err: any) {
       showToast(`Lỗi gỡ quyền: ${err.message || String(err)}`, 'error');
@@ -334,67 +360,41 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5">
-                            {emailToRemoveConfirm === m.email ? (
-                              <div className="flex items-center gap-1 animate-in fade-in duration-100">
-                                <button
-                                  type="button"
-                                  disabled={isRemovingEmail === m.email}
-                                  onClick={() => handleRemoveMember(m.email)}
-                                  className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold text-[10px] rounded-lg transition active:scale-95 cursor-pointer shadow-3xs flex items-center gap-1"
-                                >
-                                  {isRemovingEmail === m.email ? (
-                                    <>
-                                      <Loader2 className="w-3 h-3 animate-spin" />
-                                      <span>Đang gỡ...</span>
-                                    </>
-                                  ) : (
-                                    <span>Gỡ</span>
-                                  )}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={isRemovingEmail === m.email}
-                                  onClick={() => setEmailToRemoveConfirm(null)}
-                                  className="px-2 py-1 bg-slate-200 hover:bg-slate-300 disabled:opacity-50 text-slate-700 font-bold text-[10px] rounded-lg transition active:scale-95 cursor-pointer"
-                                >
-                                  Hủy
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  disabled={updatingRoleEmail === m.email || isRemovingEmail === m.email}
-                                  onClick={() => handleToggleRole(m.email, m.role === 'Editor' ? 'Viewer' : 'Editor')}
-                                  title={`Bấm để chuyển quyền sang "${m.role === 'Editor' ? 'Chỉ xem' : 'Được sửa'}"`}
-                                  className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold border transition active:scale-95 cursor-pointer shadow-3xs disabled:opacity-50 ${
-                                    m.role === 'Editor'
-                                      ? 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
-                                      : 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
-                                  }`}
-                                >
-                                  {updatingRoleEmail === m.email ? (
-                                    <Loader2 className="w-3 h-3 animate-spin text-slate-600" />
-                                  ) : (
-                                    <>
-                                      <span>{m.role === 'Editor' ? '✏️ Sửa' : '👁️ Xem'}</span>
-                                      <ChevronDown className="w-3 h-3 opacity-60" />
-                                    </>
-                                  )}
-                                </button>
+                            <button
+                              type="button"
+                              disabled={updatingRoleEmail === m.email || isRemovingEmail === m.email}
+                              onClick={() => handleToggleRole(m.email, m.role === 'Editor' ? 'Viewer' : 'Editor')}
+                              title={`Bấm để chuyển quyền sang "${m.role === 'Editor' ? 'Chỉ xem' : 'Được sửa'}"`}
+                              className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold border transition active:scale-95 cursor-pointer shadow-3xs disabled:opacity-50 ${
+                                m.role === 'Editor'
+                                  ? 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                                  : 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                            >
+                              {updatingRoleEmail === m.email ? (
+                                <Loader2 className="w-3 h-3 animate-spin text-slate-600" />
+                              ) : (
+                                <>
+                                  <span>{m.role === 'Editor' ? '✏️ Sửa' : '👁️ Xem'}</span>
+                                  <ChevronDown className="w-3 h-3 opacity-60" />
+                                </>
+                              )}
+                            </button>
 
-                                {!isSelf && (
-                                  <button
-                                    type="button"
-                                    disabled={!!isRemovingEmail || !!updatingRoleEmail}
-                                    onClick={() => setEmailToRemoveConfirm(m.email)}
-                                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
-                                    title="Gỡ thành viên"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
+                            {!isSelf && (
+                              <button
+                                type="button"
+                                disabled={!!isRemovingEmail || !!updatingRoleEmail}
+                                onClick={() => handleRemoveMember(m.email)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
+                                title="Xóa thành viên"
+                              >
+                                {isRemovingEmail === m.email ? (
+                                  <Loader2 className="w-4 h-4 animate-spin text-rose-600" />
+                                ) : (
+                                  <Trash2 className="w-4 h-4" />
                                 )}
-                              </div>
+                              </button>
                             )}
                           </div>
                         )}

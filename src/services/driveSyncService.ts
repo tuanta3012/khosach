@@ -192,7 +192,7 @@ export async function fetchUserSpreadsheetsFromDrive(
     return getKnownSpreadsheets();
   }
 
-  // 1. Quét từ Google Drive API: Lọc DUY NHẤT các file có appProperties.app == 'khosach_app'
+  // 1. Quét từ Google Drive API: Lọc theo appProperties.app == 'khosach_app' (Hoạt động tốt nhất cho Chủ sở hữu / Admin)
   try {
     const query = encodeURIComponent(
       `appProperties has { key='${APP_PROPERTY_KEY}' and value='${APP_PROPERTY_VALUE}' } and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`
@@ -208,7 +208,6 @@ export async function fetchUserSpreadsheetsFromDrive(
       const files: any[] = data.files || [];
       for (const f of files) {
         if (f.trashed) continue;
-        // Kiểm tra độc lập bổ sung cho chắc chắn
         if (f.appProperties && f.appProperties[APP_PROPERTY_KEY] === APP_PROPERTY_VALUE) {
           map.set(f.id, {
             id: f.id,
@@ -220,6 +219,38 @@ export async function fetchUserSpreadsheetsFromDrive(
     }
   } catch (err) {
     console.warn('[DriveSync] Quét danh sách Google Sheet từ Drive gặp lỗi:', err);
+  }
+
+  // 2. Quét Dự phòng (Fallback): Tìm kiếm theo Tên và MimeType (Cực kỳ quan trọng cho các thành viên được chia sẻ tệp)
+  // Vì Google Drive API không cho phép người không sở hữu tìm kiếm bằng thuộc tính appProperties riêng tư.
+  try {
+    const keywords = ['Kho Sách', 'Khosach', 'Tủ Sách', 'Tu Sach', 'Library'];
+    const nameConditions = keywords.map(kw => `name contains '${kw}'`).join(' or ');
+    const fallbackQuery = encodeURIComponent(
+      `mimeType='application/vnd.google-apps.spreadsheet' and (${nameConditions}) and trashed=false`
+    );
+    const fallbackUrl = `https://www.googleapis.com/drive/v3/files?q=${fallbackQuery}&fields=files(id,name,webViewLink,trashed,appProperties)&pageSize=100&orderBy=modifiedTime desc&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+
+    const fallbackResp = await fetch(fallbackUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (fallbackResp.ok) {
+      const data = await fallbackResp.json();
+      const files: any[] = data.files || [];
+      for (const f of files) {
+        if (f.trashed) continue;
+        if (!map.has(f.id)) {
+          map.set(f.id, {
+            id: f.id,
+            name: f.name || 'Tủ sách gia đình',
+            webViewLink: f.webViewLink || `https://docs.google.com/spreadsheets/d/${f.id}/edit`,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[DriveSync] Quét danh sách fallback từ Drive gặp lỗi:', err);
   }
 
   const verifiedList = Array.from(map.values());
