@@ -189,7 +189,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             {/* Desktop Navigation Tabs */}
-            <div className="hidden md:flex items-center gap-1 bg-[#0369a1] p-1 rounded-xl border border-sky-500/50">
+            <div className="hidden xl:flex items-center gap-1 bg-[#0369a1] p-1 rounded-xl border border-sky-500/50">
               <button
                 onClick={() => onTabChange('table')}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition ${
@@ -325,7 +325,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       </header>
 
       {/* Bottom Navigation Dock for Mobile - Tông màu Xanh Dương Hiện Đại (#0284C7) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0284C7]/95 backdrop-blur-md border-t border-sky-700/80 px-4 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
+      <nav className="xl:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0284C7]/95 backdrop-blur-md border-t border-sky-700/80 px-4 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
         <div className="flex items-center justify-around max-w-md mx-auto h-12">
           {/* 1. Kho Sách */}
           <button

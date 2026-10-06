@@ -344,7 +344,9 @@ export default function App() {
     const initStatusBar = async () => {
       try {
         if (Capacitor.isNativePlatform() || (typeof window !== 'undefined' && 'Capacitor' in window)) {
-
+          await StatusBar.setOverlaysWebView({ overlay: false });
+          await StatusBar.setBackgroundColor({ color: '#2b170e' });
+          await StatusBar.setStyle({ style: Style.Dark });
         }
       } catch {}
     };
@@ -802,7 +804,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f1f5f9] text-slate-900 flex flex-col font-sans pb-11 md:pb-0">
+    <div className="min-h-screen bg-[#f1f5f9] text-slate-900 flex flex-col font-sans pb-11 xl:pb-0">
       {/* Navbar Header & Bottom Dock */}
       <Navbar
         currentTab={currentTab}
