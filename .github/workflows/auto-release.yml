@@ -139,27 +139,28 @@ jobs:
           # Tạo thư mục res/xml và bộ quy tắc loại trừ sao lưu toàn diện cho Android 6 - Android 14+
           mkdir -p android/app/src/main/res/xml
           cat << 'EOF' > android/app/src/main/res/xml/data_extraction_rules.xml
-<?xml version="1.0" encoding="utf-8"?>
-<data-extraction-rules>
-    <cloud-backup>
-        <exclude path="." />
-    </cloud-backup>
-    <device-transfer>
-        <exclude path="." />
-    </device-transfer>
-</data-extraction-rules>
-EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <data-extraction-rules>
+              <cloud-backup>
+                  <exclude path="." />
+              </cloud-backup>
+              <device-transfer>
+                  <exclude path="." />
+              </device-transfer>
+          </data-extraction-rules>
+          EOF
 
           cat << 'EOF' > android/app/src/main/res/xml/backup_rules.xml
-<?xml version="1.0" encoding="utf-8"?>
-<full-backup-content>
-    <exclude domain="root" path="." />
-    <exclude domain="file" path="." />
-    <exclude domain="database" path="." />
-    <exclude domain="sharedpref" path="." />
-    <exclude domain="external" path="." />
-</full-backup-content>
-EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <full-backup-content>
+              <exclude domain="root" path="." />
+              <exclude domain="file" path="." />
+              <exclude domain="database" path="." />
+              <exclude domain="sharedpref" path="." />
+              <exclude domain="external" path="." />
+          </full-backup-content>
+          EOF
+
 
           if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
             if ! grep -q "REQUEST_INSTALL_PACKAGES" android/app/src/main/AndroidManifest.xml; then
