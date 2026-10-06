@@ -68,7 +68,7 @@ export interface MasterSyncState {
 
 export const KHOSACH_SHEET_TITLE = 'Khosach';
 export const MASTER_CONFIG_SHEET_TITLE = '__CONFIG__';
-export const CONFIG_SHEET_TITLE = 'Config';
+export const CONFIG_SHEET_TITLE = '__CONFIG__';
 const KNOWN_SPREADSHEETS_STORAGE_KEY = 'library_known_spreadsheets_v2';
 export const APP_PROPERTY_KEY = 'app';
 export const APP_PROPERTY_VALUE = 'khosach_app';
@@ -280,93 +280,6 @@ export async function fetchUserSpreadsheetsFromDrive(
   return verifiedList;
 }
 
-/**
- * Trích xuất Spreadsheet ID từ URL Google Sheet hoặc ID thô
- */
-export function extractSpreadsheetId(input: string): string {
-  if (!input) return '';
-  const trimmed = input.trim();
-  // Khớp định dạng: /spreadsheets/d/([a-zA-Z0-9-_]+)
-  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if (match && match[1]) {
-    return match[1];
-  }
-  // Khớp định dạng: id=([a-zA-Z0-9-_]+)
-  const idParamMatch = trimmed.match(/[?&]id=([a-zA-Z0-9-_]+)/);
-  if (idParamMatch && idParamMatch[1]) {
-    return idParamMatch[1];
-  }
-  // Hoặc chính là raw ID
-  return trimmed;
-}
-
-/**
- * Lấy thông tin bảng tính Google Sheet theo Link hoặc ID nhập thủ công
- */
-export async function fetchSpreadsheetById(
-  accessToken: string,
-  urlOrId: string
-): Promise<SpreadsheetInfo> {
-  const cleanId = extractSpreadsheetId(urlOrId);
-  if (!cleanId || cleanId.length < 10) {
-    throw new Error('Link hoặc ID Google Sheet không hợp lệ.');
-  }
-
-  // 1. Thử lấy thông tin từ Google Drive API
-  let name = 'Kho Sách Gia Đình';
-  let webViewLink = `https://docs.google.com/spreadsheets/d/${cleanId}/edit`;
-
-  try {
-    const driveRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${cleanId}?fields=id,name,webViewLink,trashed&supportsAllDrives=true`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (driveRes.ok) {
-      const data = await driveRes.json();
-      if (data.trashed) {
-        throw new Error('File Google Sheet này đang nằm trong thùng rác.');
-      }
-      if (data.name) name = data.name;
-      if (data.webViewLink) webViewLink = data.webViewLink;
-    }
-  } catch (driveErr: any) {
-    if (driveErr?.message?.includes('thùng rác')) throw driveErr;
-    console.warn('[DriveSync] Không lấy được metadata qua Drive API, thử Sheets API:', driveErr);
-  }
-
-  // 2. Kiểm tra quyền truy cập bằng Sheets API
-  const sheetsRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}?fields=properties.title`,
-    { headers: { Authorization: `Bearer ${accessToken}` } }
-  );
-
-  if (!sheetsRes.ok) {
-    if (sheetsRes.status === 404) {
-      throw new Error('Không tìm thấy file Google Sheet. Vui lòng kiểm tra lại Link/ID.');
-    }
-    if (sheetsRes.status === 403) {
-      throw new Error('Bạn chưa được cấp quyền truy cập file này trên Google Drive.');
-    }
-    const err = await sheetsRes.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Lỗi truy cập Google Sheet (${sheetsRes.status})`);
-  }
-
-  const sheetData = await sheetsRes.json();
-  if (sheetData?.properties?.title) {
-    name = sheetData.properties.title;
-  }
-
-  const result: SpreadsheetInfo = {
-    id: cleanId,
-    name,
-    webViewLink,
-    isNew: false,
-  };
-
-  saveKnownSpreadsheet(result);
-  return result;
-}
-
 export async function findOrCreateLibrarySpreadsheet(
   accessToken: string,
   userEmail: string,
@@ -501,8 +414,9 @@ export async function createNewLibrarySpreadsheet(
         },
         {
           properties: {
-            title: CONFIG_SHEET_TITLE,
-            gridProperties: { frozenRowCount: 1 },
+            title: MASTER_CONFIG_SHEET_TITLE,
+            hidden: false,
+            gridProperties: { rowCount: 30, columnCount: 5 },
           },
         },
       ],
@@ -602,14 +516,15 @@ async function ensureSpreadsheetTabs(accessToken: string, spreadsheetId: string,
     const meta = await metaResp.json();
     const sheets: any[] = meta.sheets || [];
     const hasKhosach = sheets.some((s) => s.properties?.title === KHOSACH_SHEET_TITLE);
-    const hasMasterConfig = sheets.some((s) => s.properties?.title === MASTER_CONFIG_SHEET_TITLE);
+    const masterConfigSheet = sheets.find((s) => s.properties?.title === MASTER_CONFIG_SHEET_TITLE);
+    const legacyConfigSheet = sheets.find((s) => s.properties?.title === 'Config');
 
     const requests: any[] = [];
 
     // 1. Nếu chưa có Tab Khosach:
     if (!hasKhosach) {
       const defaultSheet = sheets.find(
-        (s) => s.properties?.title !== MASTER_CONFIG_SHEET_TITLE && s.properties?.title !== CONFIG_SHEET_TITLE
+        (s) => s.properties?.title !== MASTER_CONFIG_SHEET_TITLE && s.properties?.title !== 'Config'
       );
       if (defaultSheet && defaultSheet.properties?.sheetId !== undefined) {
         requests.push({
@@ -632,16 +547,42 @@ async function ensureSpreadsheetTabs(accessToken: string, spreadsheetId: string,
       }
     }
 
-    // 2. Nếu chưa có Tab __CONFIG__, thêm Tab __CONFIG__ ẩn ở vị trí thứ 2
-    if (!hasMasterConfig) {
-      requests.push({
-        addSheet: {
-          properties: {
-            title: MASTER_CONFIG_SHEET_TITLE,
-            index: 1,
-            hidden: true,
-            gridProperties: { frozenRowCount: 1, rowCount: 30, columnCount: 5 },
+    // 2. Nếu chưa có Tab __CONFIG__:
+    if (!masterConfigSheet) {
+      if (legacyConfigSheet && legacyConfigSheet.properties?.sheetId !== undefined) {
+        // Chuyển đổi tab Config cũ sang __CONFIG__ chuẩn (hiện rõ ràng, không ẩn)
+        requests.push({
+          updateSheetProperties: {
+            properties: {
+              sheetId: legacyConfigSheet.properties.sheetId,
+              title: MASTER_CONFIG_SHEET_TITLE,
+              hidden: false,
+              gridProperties: { rowCount: 30, columnCount: 5 },
+            },
+            fields: 'title,hidden,gridProperties',
           },
+        });
+      } else {
+        requests.push({
+          addSheet: {
+            properties: {
+              title: MASTER_CONFIG_SHEET_TITLE,
+              index: 1,
+              hidden: false,
+              gridProperties: { rowCount: 30, columnCount: 5 },
+            },
+          },
+        });
+      }
+    } else if (masterConfigSheet.properties?.hidden) {
+      // Đảm bảo tab __CONFIG__ luôn hiển thị rõ ràng để người dùng dễ theo dõi
+      requests.push({
+        updateSheetProperties: {
+          properties: {
+            sheetId: masterConfigSheet.properties.sheetId,
+            hidden: false,
+          },
+          fields: 'hidden',
         },
       });
     }
@@ -658,7 +599,7 @@ async function ensureSpreadsheetTabs(accessToken: string, spreadsheetId: string,
       await initializeSheetHeaders(accessToken, spreadsheetId, userEmail);
     }
 
-    // 3. Quét lại để dọn dẹp các Tab rác ngoài Khosach, __CONFIG__ và Config
+    // 3. Dọn dẹp các Tab thừa ngoài Khosach và __CONFIG__ (xóa tab Config cũ nếu đã có __CONFIG__)
     const metaResp2 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
@@ -666,10 +607,7 @@ async function ensureSpreadsheetTabs(accessToken: string, spreadsheetId: string,
       const meta2 = await metaResp2.json();
       const sheets2: any[] = meta2.sheets || [];
       const extraSheets = sheets2.filter(
-        (s) =>
-          s.properties?.title !== KHOSACH_SHEET_TITLE &&
-          s.properties?.title !== MASTER_CONFIG_SHEET_TITLE &&
-          s.properties?.title !== CONFIG_SHEET_TITLE
+        (s) => s.properties?.title !== KHOSACH_SHEET_TITLE && s.properties?.title !== MASTER_CONFIG_SHEET_TITLE
       );
       if (extraSheets.length > 0 && sheets2.length > extraSheets.length) {
         const deleteRequests = extraSheets.map((s) => ({
@@ -834,7 +772,7 @@ export async function saveMasterSyncStateToGoogleSheet(
 
     let updateRes = await writeData();
 
-    // Nếu tab __CONFIG__ chưa tồn tại (HTTP 400), tự động tạo mới tab ẩn rồi thử ghi lại
+    // Nếu tab __CONFIG__ chưa tồn tại (HTTP 400), tự động tạo mới tab rồi thử ghi lại
     if (!updateRes.ok && updateRes.status === 400) {
       console.warn('[DriveSync] Tab __CONFIG__ chưa tồn tại, tự động tạo mới...');
       const createRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${fileId}:batchUpdate`, {
@@ -849,7 +787,7 @@ export async function saveMasterSyncStateToGoogleSheet(
               addSheet: {
                 properties: {
                   title: MASTER_CONFIG_SHEET_TITLE,
-                  hidden: true,
+                  hidden: false,
                   gridProperties: { rowCount: 30, columnCount: 5 },
                 },
               },
@@ -862,28 +800,6 @@ export async function saveMasterSyncStateToGoogleSheet(
         updateRes = await writeData();
       }
     }
-
-    // Đồng thời đồng bộ dữ liệu vào tab Config cũ (nếu có) để tương thích ngược 100%
-    try {
-      const legacyMetaRows = [
-        ['Key', 'Value'],
-        ['__METADATA_JSON__', coreMetadataPayload],
-        ['status', state.status || 'active'],
-        ['activeFileId', fileId],
-        ['activeFileName', state.activeFileName || 'Kho Sách Gia Đình'],
-        ['adminEmail', state.adminEmail || ''],
-        ['updatedAt', nowIso],
-        ['updatedAtVi', nowVi],
-      ];
-      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values/${CONFIG_SHEET_TITLE}!E1:F8?valueInputOption=USER_ENTERED`, {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ values: legacyMetaRows }),
-      }).catch(() => {});
-    } catch {}
 
     return updateRes.ok;
   } catch (err) {
@@ -984,7 +900,7 @@ export async function readMasterSyncStateFromGoogleSheet(
     }
 
     // 2. Fallback: Nếu chưa có tab __CONFIG__, thử đọc từ tab Config cũ
-    const legacyUrl = `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values/${CONFIG_SHEET_TITLE}!E1:F10`;
+    const legacyUrl = `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values/Config!E1:F10`;
     const legacyRes = await fetch(legacyUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
@@ -1015,7 +931,7 @@ export async function readMasterSyncStateFromGoogleSheet(
 
       if (fallbackStatus) {
         const membersResp = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values/${CONFIG_SHEET_TITLE}!A:C`,
+          `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values/Config!A:C`,
           { headers: { Authorization: `Bearer ${accessToken}` } }
         );
         const membersList: FamilyMember[] = [];
@@ -1106,19 +1022,7 @@ async function initializeSheetHeaders(
       ignoredDuplicatePairs: [],
     });
 
-    // 3. Tab Config cũ (dự phòng)
-    const configData = [
-      ['Email', 'Role', 'AddedAt'],
-      [cleanEmail, 'Owner', nowIso]
-    ];
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A1:C2?valueInputOption=USER_ENTERED`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ values: configData }),
-    }).catch(() => {});
+    // Tab __CONFIG__ đã được khởi tạo hoàn tất chuẩn xác theo mẫu A1:B10.
   } catch (err) {
     console.warn('[DriveSync] Khởi tạo Header dòng 1 hoàn tất có cảnh báo:', err);
   }
@@ -1247,7 +1151,7 @@ export async function fetchFamilyMembers(
     }
 
     // Fallback: Đọc từ tab Config cũ nếu chưa có __CONFIG__
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A:C`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Config!A:C`;
     const resp = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
@@ -1330,31 +1234,6 @@ export async function addFamilyMember(
     members: updatedMembers,
     updatedAt: new Date().toISOString(),
   });
-
-  // Đồng bộ tab Config cũ (dự phòng)
-  try {
-    const configRows = [
-      ['Email', 'Role', 'AddedAt'],
-      ...updatedMembers.map((m) => [m.email, m.role, m.addedAt]),
-    ];
-
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A:C:clear`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    }).catch(() => {});
-
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A1?valueInputOption=USER_ENTERED`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ values: configRows }),
-    });
-  } catch {}
 }
 
 export async function revokeFilePermission(
@@ -1462,31 +1341,6 @@ export async function updateFamilyMemberRole(
     members: updatedMembers,
     updatedAt: new Date().toISOString(),
   });
-
-  // Đồng bộ tab Config cũ (dự phòng)
-  try {
-    const configRows = [
-      ['Email', 'Role', 'AddedAt'],
-      ...updatedMembers.map((m) => [m.email, m.role, m.addedAt]),
-    ];
-
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A:C:clear`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    }).catch(() => {});
-
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A1?valueInputOption=USER_ENTERED`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ values: configRows }),
-    });
-  } catch {}
 }
 
 /**
@@ -1530,31 +1384,6 @@ export async function removeFamilyMember(
     members: remaining,
     updatedAt: new Date().toISOString(),
   });
-
-  // Đồng bộ tab Config cũ (dự phòng)
-  try {
-    const configRows = [
-      ['Email', 'Role', 'AddedAt'],
-      ...remaining.map((m) => [m.email, m.role, m.addedAt]),
-    ];
-
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A:C:clear`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    }).catch(() => {});
-
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!A1?valueInputOption=USER_ENTERED`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ values: configRows }),
-    });
-  } catch {}
 }
 
 /**
