@@ -3,16 +3,20 @@ import path from 'path';
 import sharp from 'sharp';
 
 async function generateAllIcons() {
-  console.log('[Icon Resizer] Bắt đầu kết xuất và đổi kích thước icon chuẩn xác 100%...');
+  console.log('[Icon Resizer] Bắt đầu kết xuất và đổi kích thước icon chuẩn xác 100% từ app_icon.png...');
 
-  const svgPath = path.resolve('resources/icon.svg');
-  const svgBuffer = fs.readFileSync(svgPath);
+  const srcIconPath = path.resolve('app_icon.png');
+  if (!fs.existsSync(srcIconPath)) {
+    console.error('LỖI: Không tìm thấy file app_icon.png tại thư mục gốc!');
+    process.exit(1);
+  }
 
   // 1. Tạo các thư mục đích
   const dirs = [
     'public',
     'src/assets/images',
     'resources/android',
+    'android/app/src/main/res/values',
     'android/app/src/main/res/mipmap-mdpi',
     'android/app/src/main/res/mipmap-hdpi',
     'android/app/src/main/res/mipmap-xhdpi',
@@ -26,8 +30,18 @@ async function generateAllIcons() {
     }
   });
 
-  // 2. Render master 1024x1024 PNG (Đúng chuẩn ks_app_icon.png)
-  const master1024Buffer = await sharp(svgBuffer)
+  // Cập nhật background color XML cho Android thành màu trắng (#FFFFFF)
+  const backgroundXmlPath = 'android/app/src/main/res/values/ic_launcher_background.xml';
+  const backgroundXmlContent = `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>
+`;
+  fs.writeFileSync(backgroundXmlPath, backgroundXmlContent);
+  console.log(' -> Đã cập nhật ic_launcher_background.xml thành #FFFFFF');
+
+  // 2. Render master 1024x1024 PNG
+  const master1024Buffer = await sharp(srcIconPath)
     .resize(1024, 1024, { kernel: sharp.kernel.lanczos3 })
     .png()
     .toBuffer();
@@ -35,14 +49,15 @@ async function generateAllIcons() {
   fs.writeFileSync('resources/icon.png', master1024Buffer);
   fs.writeFileSync('resources/icon-foreground.png', master1024Buffer);
   fs.writeFileSync('resources/android/icon-foreground.png', master1024Buffer);
+  console.log(' -> Đã tạo resources/icon.png, resources/icon-foreground.png');
 
-  // Background 1024x1024 chuẩn màu nền #d7c3b0
+  // Background 1024x1024 chuẩn màu nền #FFFFFF (trắng)
   const bg1024Buffer = await sharp({
     create: {
       width: 1024,
       height: 1024,
       channels: 4,
-      background: '#d7c3b0',
+      background: '#FFFFFF',
     },
   })
     .png()
@@ -50,8 +65,9 @@ async function generateAllIcons() {
 
   fs.writeFileSync('resources/icon-background.png', bg1024Buffer);
   fs.writeFileSync('resources/android/icon-background.png', bg1024Buffer);
+  console.log(' -> Đã tạo resources/icon-background.png');
 
-  // 3. Render Public Web & App Logo Assets (Chỉ thay đổi kích thước bằng Lanczos3)
+  // 3. Render Public Web & App Logo Assets (Chỉ thay đổi kích thước bằng Lanczos3 từ app_icon.png)
   const webSizes = [
     { file: 'public/stk_app_icon.png', size: 512 },
     { file: 'src/assets/images/stk_app_icon.png', size: 512 },
@@ -63,15 +79,15 @@ async function generateAllIcons() {
   ];
 
   for (const item of webSizes) {
-    await sharp(svgBuffer)
+    await sharp(srcIconPath)
       .resize(item.size, item.size, { kernel: sharp.kernel.lanczos3 })
       .png()
       .toFile(item.file);
     console.log(` -> Đã tạo ${item.file} (${item.size}x${item.size})`);
   }
 
-  // 4. Render Splash Screen 2732x2732 (Màu nền #d7c3b0 đồng bộ)
-  const logo800 = await sharp(svgBuffer)
+  // 4. Render Splash Screen 2732x2732 (Màu nền trắng #FFFFFF đồng bộ)
+  const logo800 = await sharp(srcIconPath)
     .resize(800, 800, { kernel: sharp.kernel.lanczos3 })
     .png()
     .toBuffer();
@@ -81,13 +97,13 @@ async function generateAllIcons() {
       width: 2732,
       height: 2732,
       channels: 4,
-      background: '#d7c3b0',
+      background: '#FFFFFF',
     },
   })
     .composite([{ input: logo800, gravity: 'center' }])
     .png()
     .toFile('resources/splash.png');
-  console.log(' -> Đã tạo resources/splash.png (2732x2732)');
+  console.log(' -> Đã tạo resources/splash.png (2732x2732) với màu nền trắng');
 
   // 5. Render Android Mipmap densities
   const densities = [
@@ -103,19 +119,19 @@ async function generateAllIcons() {
     const dirPath = path.join(baseRes, d.folder);
 
     // Standard square icon
-    await sharp(svgBuffer)
+    await sharp(srcIconPath)
       .resize(d.size, d.size, { kernel: sharp.kernel.lanczos3 })
       .png()
       .toFile(path.join(dirPath, 'ic_launcher.png'));
 
     // Round icon
-    await sharp(svgBuffer)
+    await sharp(srcIconPath)
       .resize(d.size, d.size, { kernel: sharp.kernel.lanczos3 })
       .png()
       .toFile(path.join(dirPath, 'ic_launcher_round.png'));
 
     // Adaptive Foreground (scaled 72% centered)
-    const scaledFg = await sharp(svgBuffer)
+    const scaledFg = await sharp(srcIconPath)
       .resize(Math.round(d.fgSize * 0.72), Math.round(d.fgSize * 0.72), { kernel: sharp.kernel.lanczos3 })
       .png()
       .toBuffer();
@@ -135,7 +151,7 @@ async function generateAllIcons() {
     console.log(` -> Đã tạo Android Mipmap cho ${d.folder}`);
   }
 
-  console.log('HOÀN TẤT: Toàn bộ icon, logo, favicon, splash screen và Android mipmaps đã được cập nhật thành công!');
+  console.log('HOÀN TẤT: Toàn bộ icon, logo, favicon, splash screen và Android mipmaps đã được cập nhật thành công từ app_icon.png!');
 }
 
 generateAllIcons().catch((err) => {
