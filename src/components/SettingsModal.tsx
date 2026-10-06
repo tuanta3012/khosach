@@ -29,7 +29,7 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
-import { LibrarySettings, BookRecord, AuthUser } from '../types';
+import { LibrarySettings, BookRecord, AuthUser, BookSource } from '../types';
 import { useToast } from '../context/ToastContext';
 import { CURRENT_APP_VERSION } from '../version';
 import { batchNormalize } from '../utils/geminiService';
@@ -63,6 +63,7 @@ export interface TitleAuthorProposal {
   authorChanged: boolean;
   category: string;
   publisher?: string;
+  sources: BookSource[];
   selected: boolean;
 }
 
@@ -116,6 +117,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // States cho duyệt đề xuất thay đổi Tên sách & Tác giả sau khi chạy xong hoặc bấm tạm dừng
   const [reviewProposals, setReviewProposals] = useState<TitleAuthorProposal[] | null>(null);
   const pendingReviewAccumulatorRef = useRef<TitleAuthorProposal[]>([]);
+  const sourceLookupWarningsRef = useRef(new Set<string>());
 
   // States cho chuẩn hóa bằng AI
   const [isNormalizing, setIsNormalizing] = useState(false);
@@ -213,19 +215,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     showToast('Đã xóa Gemini API Key!', 'info');
   };
 
-  // Tự động kiểm tra trạng thái tất cả các key khi mở bảng Cài Đặt nếu chưa có kết quả
-  const testedOnceRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (isOpen && apiKeys.length > 0) {
-      apiKeys.forEach((key) => {
-        if (!testedOnceRef.current.has(key)) {
-          testedOnceRef.current.add(key);
-          handleTestSingleKey(key, true);
-        }
-      });
-    }
-  }, [isOpen, apiKeys]);
-
   if (!isOpen) return null;
 
   const handleStartNormalize = async () => {
@@ -246,6 +235,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsNormalizing(true);
     stopNormalizingRef.current = false;
     pendingReviewAccumulatorRef.current = [];
+    sourceLookupWarningsRef.current.clear();
     let localPending = [...pendingBooks];
     let currentProcessed = 0;
 
@@ -257,6 +247,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const safeUpdatedList: BookRecord[] = [];
 
       normalizedChunk.forEach((normItem: any) => {
+        if (normItem.sourceWarning) sourceLookupWarningsRef.current.add(normItem.sourceWarning);
         const orig = pendingBooks.find((b) => b.id === normItem.id);
         if (!orig) return;
 
@@ -298,6 +289,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             authorChanged: authorMeaningfullyChanged,
             category: enrichedCategory,
             publisher: enrichedPublisher,
+            sources: normItem.sources || [],
             selected: true,
           });
         }
@@ -320,12 +312,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const res = await batchNormalize(localPending, {
         onChunkComplete,
         stopSignal: stopNormalizingRef,
+        categories: settings.categoriesList,
+        withSources: true,
       });
+      const sourceWarning = sourceLookupWarningsRef.current.size > 0
+        ? ' Một số lượt tra cứu nguồn thất bại; các đề xuất đó không có nguồn để đối chiếu.'
+        : '';
 
-      if (currentProcessed > 0) {
-        showToast(`Đã hoàn tất hiệu chỉnh ${currentProcessed} cuốn sách!`, 'success');
+      if (res.normalized.length > 0 && res.failedChunks.length > 0) {
+        const failedBookCount = res.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0);
+        showToast(`Đã hiệu chỉnh ${currentProcessed} cuốn; ${failedBookCount} cuốn chưa xử lý và có thể chạy lại thủ công.${sourceWarning}`, 'warning');
+      } else if (currentProcessed > 0 && res.success) {
+        showToast(`Đã hoàn tất hiệu chỉnh ${currentProcessed} cuốn sách!${sourceWarning}`, sourceWarning ? 'warning' : 'success');
+      } else if (res.stopped && currentProcessed > 0) {
+        showToast(`Đã dừng sau khi hiệu chỉnh ${currentProcessed} cuốn sách.${sourceWarning}`, 'info');
       } else if (!stopNormalizingRef.current) {
-        showToast('Không có sách nào được chuẩn hóa. Vui lòng kiểm tra lại API Key hoặc hạn ngạch!', 'warning');
+        const failure = res.failedChunks[0]?.message;
+        showToast(failure
+          ? `Không thể hiệu chỉnh ${res.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0)} cuốn: ${failure}.${sourceWarning}`
+          : `Không có sách nào được chuẩn hóa. Vui lòng kiểm tra lại API Key hoặc hạn ngạch!${sourceWarning}`, 'warning');
       }
     } catch (err: any) {
       console.error('Lỗi khi chuẩn hóa lô:', err);
@@ -654,6 +659,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <ArrowRight className="w-3 h-3 text-[#653f96] shrink-0" />
                               <span>{proposal.proposedAuthor}</span>
                             </div>
+                          </div>
+                        </div>
+                      )}
+                      {proposal.sources.length > 0 && (
+                        <div className="pt-1 border-t border-purple-100">
+                          <div className="text-[10px] font-bold text-slate-400 uppercase">Nguồn tra cứu (đối chiếu trước khi áp dụng):</div>
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                            {proposal.sources.slice(0, 3).map((source) => (
+                              <a
+                                key={`${source.provider}-${source.url}`}
+                                href={source.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(event) => event.stopPropagation()}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-700 underline"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                {source.provider}: {source.title}
+                              </a>
+                            ))}
                           </div>
                         </div>
                       )}
@@ -1071,7 +1096,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <span className="text-[11px] text-slate-500 block">
                     {autoNormalize
                       ? 'AI sẽ tự động rà soát và bổ sung thông tin ngầm'
-                      : 'Chỉnh sửa và làm giàu thông tin sách đầy đủ hơn'}
+                      : 'Hiệu chỉnh thủ công sẽ tra cứu Google Books/Open Library miễn phí và hiển thị nguồn khi có đề xuất cần duyệt.'}
                   </span>
                 )}
 
@@ -1117,9 +1142,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="space-y-0.5 min-w-0 flex-1">
                 <span className="text-xs font-black text-rose-900 block leading-tight">
                   Xóa dữ liệu sách trên máy
-                </span>
-                <span className="text-[10.5px] text-rose-700/80 block leading-tight">
-                  Làm sạch kho sách về 0 cuốn. Dữ liệu trên Google Sheet vẫn an toàn.
                 </span>
               </div>
 

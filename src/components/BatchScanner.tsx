@@ -66,7 +66,7 @@ function compressImage(file: File, maxWidth = 1200, maxHeight = 1200, quality = 
   });
 }
 
-const CHUNK_SIZE = 2; // Xử lý mỗi lần tối đa 2 ảnh để tránh timeout và tràn RAM
+const CHUNK_SIZE = 6; // scanImages kiểm soát micro-batch và concurrency bên trong
 const MAX_RETRIES_PER_CHUNK = 3; // Thử lại tối đa 3 lần cho mỗi lô bị lỗi
 
 export const BatchScanner: React.FC<BatchScannerProps> = ({
@@ -159,155 +159,67 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     });
 
     let chunkIdx = 0;
-    while (chunkIdx < chunks.length) {
-      if (stopScanRef.current) {
-        break; // Người dùng chủ động bấm Dừng
+    for (; chunkIdx < chunks.length; chunkIdx += 1) {
+      if (stopScanRef.current) break;
+
+      const chunk = chunks[chunkIdx];
+      let retryImages = chunk;
+      const rawFound: any[] = [];
+
+      setScanProgress((prev) => ({
+        ...prev,
+        currentChunk: chunkIdx + 1,
+        processedImages: processedImagesCount,
+        statusMessage: `Đang trích xuất lô ${chunkIdx + 1}/${totalChunks} (Ảnh ${processedImagesCount + 1}-${processedImagesCount + chunk.length}/${totalImages})...`,
+      }));
+
+      for (let attempt = 1; attempt <= MAX_RETRIES_PER_CHUNK && retryImages.length > 0; attempt += 1) {
+        if (stopScanRef.current) break;
+        if (attempt > 1) {
+          setScanProgress((prev) => ({
+            ...prev,
+            statusMessage: `Đang thử lại ${retryImages.length} ảnh thất bại ở lô ${chunkIdx + 1} (${attempt}/${MAX_RETRIES_PER_CHUNK})...`,
+          }));
+          await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
+        }
+
+        try {
+          const result = await scanImages(retryImages, existingBooks, {
+            categories,
+            stopSignal: stopScanRef,
+          });
+          rawFound.push(...(Array.isArray(result.books) ? result.books : []));
+          if (result.success) retryImages = [];
+          else if (result.failedImages?.length) retryImages = result.failedImages;
+        } catch (err) {
+          console.warn(`Lô ${chunkIdx + 1} lần thử ${attempt} thất bại:`, err);
+        }
       }
 
-      const chunkA = chunks[chunkIdx];
-      const chunkB = chunkIdx + 1 < chunks.length ? chunks[chunkIdx + 1] : null;
-
-      if (chunkB) {
-        // Có từ 2 lô trở lên -> Quét song song cả 2 Engine: 3.1 Lite & 3.5 Lite
-        const chunkAImgCount = chunkA.length;
-        const chunkBImgCount = chunkB.length;
-        const totalPairImages = chunkAImgCount + chunkBImgCount;
-
-        setScanProgress((prev) => ({
-          ...prev,
-          currentChunk: chunkIdx + 2,
-          processedImages: processedImagesCount,
-          statusMessage: `Đang quét song song 2 Engine: Lô ${chunkIdx + 1} (3.1 Lite) & Lô ${chunkIdx + 2} (3.8 Flash)...`,
+      if (rawFound.length > 0) {
+        const newDrafts: DraftBookItem[] = rawFound.map((item: any, idx: number) => ({
+          tempId: `draft_${Date.now()}_${chunkIdx}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
+          title: (item.title || 'Sách chưa đặt tên').trim(),
+          author: (item.author || 'Khuyết danh').trim(),
+          publisher: (item.publisher || '').trim(),
+          category: (item.category || 'Chung').trim(),
+          enriched: false,
         }));
-
-        const [resA, resB] = await Promise.allSettled([
-          scanImages(chunkA, existingBooks, 'gemini-3.1-flash-lite'),
-          scanImages(chunkB, existingBooks, 'gemini-3.8-flash'),
-        ]);
-
-        const rawFound: any[] = [];
-
-        if (resA.status === 'fulfilled' && resA.value?.success && Array.isArray(resA.value.books)) {
-          rawFound.push(...resA.value.books);
-        } else {
-          // Tự động thử lại chunkA trên Engine B (3.8 Flash)
-          try {
-            console.log(`[BatchScanner] Lô ${chunkIdx + 1} gặp sự cố trên 3.1 Lite, tự động chuyển tải sang 3.8 Flash...`);
-            const recoverA = await scanImages(chunkA, existingBooks, 'gemini-3.8-flash');
-            if (recoverA?.success && Array.isArray(recoverA.books)) {
-              rawFound.push(...recoverA.books);
-            } else {
-              currentFailedImages.push(...chunkA);
-            }
-          } catch {
-            currentFailedImages.push(...chunkA);
-          }
-        }
-
-        if (resB.status === 'fulfilled' && resB.value?.success && Array.isArray(resB.value.books)) {
-          rawFound.push(...resB.value.books);
-        } else {
-          // Tự động thử lại chunkB trên Engine A (3.1 Lite)
-          try {
-            console.log(`[BatchScanner] Lô ${chunkIdx + 2} gặp sự cố trên 3.5 Lite, tự động chuyển tải sang 3.1 Lite...`);
-            const recoverB = await scanImages(chunkB, existingBooks, 'gemini-3.1-flash-lite');
-            if (recoverB?.success && Array.isArray(recoverB.books)) {
-              rawFound.push(...recoverB.books);
-            } else {
-              currentFailedImages.push(...chunkB);
-            }
-          } catch {
-            currentFailedImages.push(...chunkB);
-          }
-        }
-
-        if (rawFound.length > 0) {
-          const newDrafts: DraftBookItem[] = rawFound.map((item: any, idx: number) => ({
-            tempId: `draft_${Date.now()}_${chunkIdx}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
-            title: (item.title || 'Sách chưa đặt tên').trim(),
-            author: (item.author || 'Khuyết danh').trim(),
-            publisher: (item.publisher || '').trim(),
-            category: (item.category || 'Chung').trim(),
-            enriched: false,
-          }));
-
-          totalExtractedBooks += newDrafts.length;
-          setDraftItems((prev) => flagDuplicateDrafts([...prev, ...newDrafts], existingBooks));
-        }
-
-        processedImagesCount += totalPairImages;
-        setScanProgress((prev) => ({
-          ...prev,
-          processedImages: processedImagesCount,
-          booksFound: totalExtractedBooks,
-        }));
-
-        chunkIdx += 2;
-      } else {
-        // Chỉ còn 1 lô lẻ -> Gửi đến Engine quay vòng tự động
-        const chunkImageCount = chunkA.length;
-
-        setScanProgress((prev) => ({
-          ...prev,
-          currentChunk: chunkIdx + 1,
-          processedImages: processedImagesCount,
-          statusMessage: `Đang trích xuất Lô ${chunkIdx + 1}/${totalChunks} (Ảnh ${processedImagesCount + 1}-${processedImagesCount + chunkImageCount}/${totalImages})...`,
-        }));
-
-        let success = false;
-        let rawBooks: any[] = [];
-
-        for (let attempt = 1; attempt <= MAX_RETRIES_PER_CHUNK; attempt++) {
-          if (stopScanRef.current) break;
-
-          try {
-            if (attempt > 1) {
-              setScanProgress((prev) => ({
-                ...prev,
-                statusMessage: `Lô ${chunkIdx + 1}/${totalChunks} gián đoạn, đang tự động thử lại (Lần ${attempt}/${MAX_RETRIES_PER_CHUNK})...`,
-              }));
-              await new Promise((res) => setTimeout(res, 1200 * attempt));
-            }
-
-            const res = await scanImages(chunkA, existingBooks);
-            if (res?.success && Array.isArray(res.books)) {
-              rawBooks = res.books;
-              success = true;
-              break;
-            }
-          } catch (err: any) {
-            console.warn(`Lô ${chunkIdx + 1} thử lần ${attempt} thất bại:`, err?.message || err);
-          }
-        }
-
-        if (success && rawBooks.length > 0) {
-          const newDrafts: DraftBookItem[] = rawBooks.map((item: any, idx: number) => ({
-            tempId: `draft_${Date.now()}_${chunkIdx}_${idx}_${Math.random().toString(36).substring(2, 5)}`,
-            title: (item.title || 'Sách chưa đặt tên').trim(),
-            author: (item.author || 'Khuyết danh').trim(),
-            publisher: (item.publisher || '').trim(),
-            category: (item.category || 'Chung').trim(),
-            enriched: false,
-          }));
-
-          totalExtractedBooks += newDrafts.length;
-          setDraftItems((prev) => flagDuplicateDrafts([...prev, ...newDrafts], existingBooks));
-        } else if (!success) {
-          currentFailedImages.push(...chunkA);
-        }
-
-        processedImagesCount += chunkImageCount;
-        setScanProgress((prev) => ({
-          ...prev,
-          processedImages: processedImagesCount,
-          booksFound: totalExtractedBooks,
-        }));
-
-        chunkIdx += 1;
+        totalExtractedBooks += newDrafts.length;
+        setDraftItems((prev) => flagDuplicateDrafts([...prev, ...newDrafts], existingBooks));
       }
+
+      if (retryImages.length > 0) currentFailedImages.push(...retryImages);
+      processedImagesCount += chunk.length;
+      setScanProgress((prev) => ({
+        ...prev,
+        processedImages: processedImagesCount,
+        booksFound: totalExtractedBooks,
+      }));
     }
 
-    // Cập nhật danh sách ảnh bị lỗi nếu có
+    if (stopScanRef.current) currentFailedImages.push(...chunks.slice(chunkIdx).flat());
+
     if (currentFailedImages.length > 0) {
       setFailedImagesQueue((prev) => [...prev, ...currentFailedImages]);
     }
@@ -437,7 +349,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
     setEnrichingId(draftId);
     try {
-      const data = await enrichBook(draft.title, draft.author, draft.publisher);
+      const data = await enrichBook(draft.title, draft.author, draft.publisher, categories);
       const enriched = data.enriched;
 
       if (enriched) {

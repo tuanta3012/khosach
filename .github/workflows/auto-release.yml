@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - package.json
   workflow_dispatch:
 
 jobs:
@@ -11,6 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: package-release-${{ github.ref }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout Repository
@@ -30,17 +35,11 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
-      # 2. Tự động lấy versionName từ build_settings.json hoặc package.json & versionCode từ Git Commit Count
+      # 2. Xác thực cấu hình phát hành và chỉ đọc version/buildAab từ package.json
       - name: Determine Auto Version
         id: auto_version
         run: |
-          BUILD_NUMBER=$(git rev-list --count HEAD)
-          PACKAGE_VERSION=$(node -p "require('./package.json').version || '1.0.0'")
-          BUILD_AAB=$(node -p "require('./package.json').buildAab === true ? 'true' : 'false'")
-          echo "CODE=$BUILD_NUMBER" >> $GITHUB_OUTPUT
-          echo "NAME=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
-          echo "BUILD_AAB=$BUILD_AAB" >> $GITHUB_OUTPUT
-          echo "Auto Generated versionCode: $BUILD_NUMBER, versionName: $PACKAGE_VERSION, buildAab: $BUILD_AAB"
+          node scripts/prepare-release.mjs >> "$GITHUB_OUTPUT"
 
       # 3. Tạo init.gradle cấp hệ thống giải quyết triệt để lỗi BouncyCastle (bcprov) và androidx.browser
       - name: Create Gradle Init Script for BouncyCastle and AndroidX
@@ -133,10 +132,11 @@ jobs:
             sed -i "s/compileSdkVersion = .*/compileSdkVersion = 34/g" android/variables.gradle
             sed -i "s/targetSdkVersion = .*/targetSdkVersion = 34/g" android/variables.gradle
           fi
-          if [ -f "android/app/build.gradle" ]; then
-            sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/g" android/app/build.gradle
-            sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION_NAME\"/g" android/app/build.gradle
-          fi
+          test -f "android/app/build.gradle"
+          sed -E -i "s/versionCode[[:space:]]+[0-9]+/versionCode $VERSION_CODE/g" android/app/build.gradle
+          sed -E -i "s/versionName[[:space:]]+\"[^\"]*\"/versionName \"$VERSION_NAME\"/g" android/app/build.gradle
+          grep -Eq "versionCode[[:space:]]+$VERSION_CODE" android/app/build.gradle
+          grep -Eq "versionName[[:space:]]+\"$VERSION_NAME\"" android/app/build.gradle
 
           # Tạo thư mục res/xml và bộ quy tắc loại trừ sao lưu toàn diện cho Android 6 - Android 14+
           mkdir -p android/app/src/main/res/xml
@@ -246,9 +246,9 @@ jobs:
       # LUỒNG 1: BUILD BẢN APK (PUBLIC GITHUB RELEASE + AUTO UPDATE BẬT)
       # =======================================================================
       - name: "[Luồng 1 - APK] Build Web Assets (Auto Update ENABLED)"
+        if: steps.auto_version.outputs.BUILD_AAB != 'true'
         run: |
-          echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
-          VITE_BUILD_AAB=${{ steps.auto_version.outputs.BUILD_AAB }} npm run build
+          npm run build
           npx cap sync android
           if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
             sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
@@ -258,26 +258,23 @@ jobs:
           fi
 
       - name: "[Luồng 1 - APK] Assemble Android APK"
+        if: steps.auto_version.outputs.BUILD_AAB != 'true'
         run: |
           cd android
           echo "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8" >> gradle.properties
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon || ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
           cd ..
 
       - name: "[Luồng 1 - APK] Collect and Rename APK"
+        if: steps.auto_version.outputs.BUILD_AAB != 'true'
         run: |
-          mkdir -p output_artifacts
-          if [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
-            cp android/app/build/outputs/apk/release/app-release.apk khosach_v${{ steps.auto_version.outputs.NAME }}.apk
-          elif [ -f "android/app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
-            cp android/app/build/outputs/apk/release/app-release-unsigned.apk khosach_v${{ steps.auto_version.outputs.NAME }}.apk
-          elif [ -f "android/app/build/outputs/apk/debug/app-debug.apk" ]; then
-            cp android/app/build/outputs/apk/debug/app-debug.apk khosach_v${{ steps.auto_version.outputs.NAME }}.apk
-          fi
+          test -f "android/app/build/outputs/apk/release/app-release.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
           echo "APK created: khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
 
       - name: "[Luồng 1 - APK] Create/Update GitHub Release"
+        if: steps.auto_version.outputs.BUILD_AAB != 'true'
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
@@ -291,6 +288,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: "[Luồng 1 - APK] Update version.json"
+        if: steps.auto_version.outputs.BUILD_AAB != 'true'
         run: |
           APK_URL="https://github.com/tuanta3012/khosach/releases/download/v${{ steps.auto_version.outputs.NAME }}/khosach_v${{ steps.auto_version.outputs.NAME }}.apk"
           cat <<EOF > version.json
@@ -311,9 +309,9 @@ jobs:
       # LUỒNG 2: BUILD BẢN AAB (GOOGLE PLAY STORE - AUTO UPDATE CLEANED & ARTIFACT ONLY)
       # =======================================================================
       - name: "[Luồng 2 - AAB] Build Web Assets (Auto Update DISABLED / Play Store Compliance)"
+        if: steps.auto_version.outputs.BUILD_AAB == 'true'
         run: |
-          echo "export const CURRENT_APP_VERSION = '${{ steps.auto_version.outputs.NAME }}';" > src/version.ts
-          VITE_BUILD_AAB=${{ steps.auto_version.outputs.BUILD_AAB }} npm run build
+          npm run build
           npx cap sync android
           if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
             sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
@@ -323,24 +321,22 @@ jobs:
           fi
 
       - name: "[Luồng 2 - AAB] Bundle Android App Bundle (AAB)"
+        if: steps.auto_version.outputs.BUILD_AAB == 'true'
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew bundleRelease --no-daemon || ./gradlew bundleDebug --no-daemon
+          ./gradlew bundleRelease --no-daemon
           cd ..
 
       - name: "[Luồng 2 - AAB] Collect and Rename AAB"
+        if: steps.auto_version.outputs.BUILD_AAB == 'true'
         run: |
-          if [ -f "android/app/build/outputs/bundle/release/app-release.aab" ]; then
-            cp android/app/build/outputs/bundle/release/app-release.aab khosach_v${{ steps.auto_version.outputs.NAME }}.aab
-          elif [ -f "android/app/build/outputs/bundle/release/app-release-unsigned.aab" ]; then
-            cp android/app/build/outputs/bundle/release/app-release-unsigned.aab khosach_v${{ steps.auto_version.outputs.NAME }}.aab
-          elif [ -f "android/app/build/outputs/bundle/debug/app-debug.aab" ]; then
-            cp android/app/build/outputs/bundle/debug/app-debug.aab khosach_v${{ steps.auto_version.outputs.NAME }}.aab
-          fi
+          test -f "android/app/build/outputs/bundle/release/app-release.aab"
+          cp android/app/build/outputs/bundle/release/app-release.aab "khosach_v${{ steps.auto_version.outputs.NAME }}.aab"
           echo "AAB created: khosach_v${{ steps.auto_version.outputs.NAME }}.aab"
 
-      - name: "[Luồng 2 - AAB] Upload AAB to Private GitHub Actions Artifacts"
+      - name: "[Luồng 2 - AAB] Upload AAB to GitHub Actions Artifacts"
+        if: steps.auto_version.outputs.BUILD_AAB == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: khosach-v${{ steps.auto_version.outputs.NAME }}-aab

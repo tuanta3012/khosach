@@ -92,6 +92,7 @@ export interface ScanImagesResult {
   success: boolean;
   count: number;
   books: ScannedBookItem[];
+  failedImages?: string[];
 }
 
 export interface ScanImagesProgressInfo {
@@ -107,10 +108,14 @@ export interface ScanImagesOptions {
   preferredModel?: string;
   onProgress?: ScanImagesProgressCallback;
   stopSignal?: { current: boolean };
+  categories?: string[];
 }
 
 export interface BookEnrichmentResult {
   success: boolean;
+  sources?: BookSource[];
+  sourceWarning?: string;
+  error?: string;
   enriched?: {
     title: string;
     author: string;
@@ -121,6 +126,16 @@ export interface BookEnrichmentResult {
   };
 }
 
+export interface BookSource {
+  provider: 'Google Books' | 'Open Library';
+  title: string;
+  url: string;
+  authors: string[];
+  publisher?: string;
+  publishedDate?: string;
+  description?: string;
+}
+
 export interface NormalizedBookItem {
   id: string;
   title: string;
@@ -128,6 +143,8 @@ export interface NormalizedBookItem {
   publisher: string;
   category: string;
   is_ai_normalized: boolean;
+  sources?: BookSource[];
+  sourceWarning?: string;
 }
 
 export interface KeyQuotaState {
@@ -137,6 +154,19 @@ export interface KeyQuotaState {
   isRpdExhausted: boolean;
   rpdExhaustedDate: string;
   apiCallTimestamps: number[];
+}
+
+export interface BatchNormalizeFailure {
+  chunkIndex: number;
+  bookIds: string[];
+  message: string;
+}
+
+export interface BatchNormalizeResult {
+  success: boolean;
+  normalized: NormalizedBookItem[];
+  failedChunks: BatchNormalizeFailure[];
+  stopped: boolean;
 }
 
 export interface KeyQuotaMetrics {

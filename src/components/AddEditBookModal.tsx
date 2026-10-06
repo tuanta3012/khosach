@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Book, Tag, Sparkles, Loader2, AlertTriangle } from 'lucide-react';
-import { BookRecord } from '../types';
+import { BookRecord, BookSource } from '../types';
 import { useToast } from '../context/ToastContext';
 import { checkDuplicateBook, stringSimilarity } from '../utils/fuzzyMatcher';
 import { enrichBook } from '../utils/geminiService';
@@ -29,6 +29,9 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
   const [publisher, setPublisher] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isEnriching, setIsEnriching] = useState(false);
+  const [lookupSources, setLookupSources] = useState<BookSource[]>([]);
+  const [lookupWarning, setLookupWarning] = useState('');
+  const [lookupChecked, setLookupChecked] = useState(false);
 
   const duplicateMatch = useMemo(() => {
     if (!title.trim() || !books || books.length === 0) return null;
@@ -71,18 +74,28 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
     }
 
     setIsEnriching(true);
+    setLookupSources([]);
+    setLookupWarning('');
+    setLookupChecked(false);
     try {
-      const data = await enrichBook(title.trim(), author.trim(), publisher.trim());
+      const data = await enrichBook(title.trim(), author.trim(), publisher.trim(), categories);
       const enriched = data?.enriched;
+      setLookupChecked(true);
+      setLookupSources(data?.sources || []);
+      setLookupWarning(data?.sourceWarning || '');
 
       if (enriched) {
         if (enriched.title) setTitle(enriched.title);
         if (enriched.author) setAuthor(enriched.author);
         if (enriched.category) setCategory(enriched.category);
         if (enriched.publisher) setPublisher(enriched.publisher);
-        showToast('Đã điền thông tin AI!', 'success');
+        showToast(data.sources?.length
+          ? 'Đã gợi ý thông tin và tìm thấy nguồn để đối chiếu.'
+          : 'Đã điền gợi ý AI; chưa tìm thấy nguồn thư mục khớp rõ để đối chiếu.', data.sources?.length ? 'success' : 'info');
       } else {
-        showToast('Không tìm thấy thông tin phù hợp lúc này.', 'info');
+        showToast(data?.error
+          ? `AI chưa thể gợi ý thông tin: ${data.error}`
+          : 'Không tìm thấy thông tin phù hợp lúc này.', data?.error ? 'warning' : 'info');
       }
     } catch (err: any) {
       console.warn('Lỗi tra cứu AI ngầm:', err);
@@ -164,6 +177,9 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
                 <span>AI gợi ý</span>
               </button>
             </div>
+            <p className="mb-1 text-[10px] text-slate-500">
+              Khi bấm, tên sách và tác giả sẽ được tra cứu miễn phí trên Google Books/Open Library.
+            </p>
             <input
               type="text"
               name="nomatch_title"
@@ -189,7 +205,35 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
               </div>
             )}
           </div>
-
+          {lookupChecked && (
+            <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-[11px]">
+              <div className="font-bold text-sky-900">Nguồn thư mục để đối chiếu</div>
+              {lookupSources.length > 0 ? (
+                <ul className="mt-1 space-y-1">
+                  {lookupSources.slice(0, 5).map((source) => (
+                    <li key={`${source.provider}-${source.url}`}>
+                      <a
+                        href={source.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-semibold text-sky-800 underline"
+                      >
+                        {source.provider}: {source.title}
+                      </a>
+                      <span className="ml-1 text-slate-600">
+                        {[source.authors.join(', '), source.publisher, source.publishedDate].filter(Boolean).join(' · ')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-amber-800">{lookupWarning || 'Không tìm thấy bản ghi có tiêu đề khớp đủ rõ. Hãy kiểm tra gợi ý trước khi lưu.'}</p>
+              )}
+              {lookupWarning && lookupSources.length > 0 && (
+                <p className="mt-1 text-amber-800">{lookupWarning}</p>
+              )}
+            </div>
+          )}
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">Tác Giả</label>
             <input

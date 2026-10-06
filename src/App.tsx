@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useEffect, useCallback } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { BookRecord, LibrarySettings, AuthUser } from './types';
@@ -26,7 +26,7 @@ const AppUpdateModal = lazy(() => import('./components/AppUpdateModal').then((mo
 import { useToast } from './context/ToastContext';
 import { useAutoUpdate } from './hooks/useAutoUpdate';
 import { CURRENT_APP_VERSION } from './version';
-import { IS_BUILD_AAB } from './utils/appConfig';
+import { IS_BUILD_AAB } from './config/buildConfig';
 import {
   googleSignIn,
   googleLogout,
@@ -44,6 +44,8 @@ import {
   synchronizeDrivePermissionsWithJsonMembers,
   autoDiscoverSharedSpreadsheets,
   updateSheetConfigStatus,
+  fetchSheetConfigMetadata,
+  unlinkWorkspace,
   SpreadsheetInfo,
   verifySpreadsheetWriteAccess,
   checkSpreadsheetStatusOnDrive,
@@ -133,6 +135,7 @@ export default function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isFamilyShareModalOpen, setIsFamilyShareModalOpen] = useState(false);
   const [isAutoNormalizing, setIsAutoNormalizing] = useState(false);
+  const autoNormalizeAttemptsRef = useRef(new Set<string>());
   
   // App Auto Update
   const {
@@ -189,7 +192,7 @@ export default function App() {
                 const activeSheet = discovered[0];
                 
                 // Nếu chưa có savedSheet, hoặc có savedSheet nhưng khác với file active chính trên Drive và máy chưa có sách
-                if (!savedSheet || (savedSheet.id !== activeSheet.id && loadLocalBooks().length === 0)) {
+                if (!savedSheet || savedSheet.id !== activeSheet.id) {
                   console.log(`[AutoDiscover] Tự động liên kết về file active chính của tài khoản: "${activeSheet.name}" (${activeSheet.id})`);
                   setSpreadsheetInfo(activeSheet);
                   try {
@@ -257,6 +260,8 @@ export default function App() {
         const fileStatus = await checkSpreadsheetStatusOnDrive(token, sheetInfo.id);
         if (fileStatus.trashed || fileStatus.error === 'FILE_NOT_FOUND') {
           console.warn(`[Sync] File liên kết "${sheetInfo.name}" (${sheetInfo.id}) đã bị xóa hoặc vào thùng rác trên Drive:`, fileStatus.error);
+          saveAllLocalBooks([]);
+          setBooks([]);
           setSpreadsheetInfo(null);
           localStorage.removeItem('library_spreadsheet_info_v2');
           localStorage.removeItem('last_drive_sync_time');
@@ -264,6 +269,22 @@ export default function App() {
           showToast(`⚠️ File "${sheetInfo.name}" đã bị xóa trên Google Drive. Đã hủy liên kết!`, 'warning');
           setIsSyncingDrive(false);
           return currentBooks;
+        }
+
+        const workspaceMetadata = await fetchSheetConfigMetadata(token, sheetInfo.id);
+        if (!workspaceMetadata) {
+          throw new Error('Không thể xác minh trạng thái Workspace. Đồng bộ đã bị dừng để bảo vệ dữ liệu.');
+        }
+        if (workspaceMetadata.status !== 'active' || workspaceMetadata.lastAction === 'unlink') {
+          console.info('[Sync] Workspace đã bị Admin hủy liên kết; xóa dữ liệu Workspace cục bộ.');
+          saveAllLocalBooks([]);
+          setBooks([]);
+          setSpreadsheetInfo(null);
+          localStorage.removeItem('library_spreadsheet_info_v2');
+          localStorage.removeItem('last_drive_sync_time');
+          removeKnownSpreadsheet(sheetInfo.id);
+          showToast('⚡ Admin đã hủy liên kết Workspace. Thiết bị này đã ngắt kết nối và xóa dữ liệu Workspace cục bộ.', 'warning');
+          return [];
         }
 
         // 1. Dynamic Authorization: Xác thực chéo vai trò thực tế từ Tab Config ẩn
@@ -308,12 +329,23 @@ export default function App() {
           err.message?.includes('Requested entity was not found') ||
           err.message?.includes('đã bị xóa')
         ) {
+          saveAllLocalBooks([]);
+          setBooks([]);
           setSpreadsheetInfo(null);
           localStorage.removeItem('library_spreadsheet_info_v2');
           localStorage.removeItem('last_drive_sync_time');
           if (spreadsheetInfo?.id) removeKnownSpreadsheet(spreadsheetInfo.id);
           showToast(`⚠️ File "${spreadsheetInfo?.name || 'liên kết'}" không còn tồn tại trên Google Drive. Đã tự động hủy liên kết!`, 'warning');
           return currentBooks;
+        } else if (err.message === 'Tài khoản Google hiện tại không có trong danh sách thành viên của Workspace.') {
+          saveAllLocalBooks([]);
+          setBooks([]);
+          setSpreadsheetInfo(null);
+          localStorage.removeItem('library_spreadsheet_info_v2');
+          localStorage.removeItem('last_drive_sync_time');
+          if (spreadsheetInfo?.id) removeKnownSpreadsheet(spreadsheetInfo.id);
+          showToast('⚡ Tài khoản này không còn quyền thành viên Workspace. Đã ngắt kết nối và xóa dữ liệu Workspace cục bộ.', 'warning');
+          return [];
         } else if (err.message === 'READ_ONLY_SCOPE_OR_PERMISSION') {
           showToast('⚠️ File này chỉ được cấp quyền Đọc (Read-Only). Đã lấy sách thành công, nhưng không thể đồng bộ 2 chiều ngược lên Drive. Hãy tạo File mới để đồng bộ đầy đủ!', 'warning');
           return currentBooks;
@@ -338,6 +370,60 @@ export default function App() {
     },
     [appMode, currentUser, spreadsheetInfo, showToast]
   );
+
+  // Kiểm tra lại khi app được mở lại và định kỳ để nhận biết unlink/thu hồi quyền từ thiết bị Admin.
+  useEffect(() => {
+    if (appMode !== 'online' || !spreadsheetInfo?.id) return;
+
+    let checkInProgress = false;
+    const checkWorkspaceLink = async () => {
+      if (checkInProgress) return;
+      checkInProgress = true;
+      try {
+        const token = await getAccessToken();
+        if (!token) return;
+
+        const driveStatus = await checkSpreadsheetStatusOnDrive(token, spreadsheetInfo.id);
+        if (driveStatus.error === 'FILE_NOT_FOUND' || driveStatus.trashed) {
+          saveAllLocalBooks([]);
+          setBooks([]);
+          setSpreadsheetInfo(null);
+          localStorage.removeItem('library_spreadsheet_info_v2');
+          localStorage.removeItem('last_drive_sync_time');
+          removeKnownSpreadsheet(spreadsheetInfo.id);
+          showToast('⚡ File Workspace không còn được chia sẻ hoặc đã bị xóa. Thiết bị này đã ngắt kết nối.', 'warning');
+          return;
+        }
+
+        const metadata = await fetchSheetConfigMetadata(token, spreadsheetInfo.id);
+        if (metadata && (metadata.status !== 'active' || metadata.lastAction === 'unlink')) {
+          saveAllLocalBooks([]);
+          setBooks([]);
+          setSpreadsheetInfo(null);
+          localStorage.removeItem('library_spreadsheet_info_v2');
+          localStorage.removeItem('last_drive_sync_time');
+          removeKnownSpreadsheet(spreadsheetInfo.id);
+          showToast('⚡ Admin đã hủy liên kết Workspace. Thiết bị này đã ngắt kết nối và xóa dữ liệu Workspace cục bộ.', 'warning');
+        }
+      } catch (err) {
+        console.warn('[Workspace] Không thể kiểm tra trạng thái liên kết:', err);
+      } finally {
+        checkInProgress = false;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void checkWorkspaceLink();
+    };
+    const timer = window.setInterval(() => void checkWorkspaceLink(), 60_000);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    void checkWorkspaceLink();
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [appMode, spreadsheetInfo?.id, showToast]);
 
   // 1. Khởi tạo Native Status Bar trên Android Capacitor
   useEffect(() => {
@@ -485,7 +571,7 @@ export default function App() {
               if (discovered.length > 0) {
                 const activeSheet = discovered[0];
                 // Nếu chưa có sheet hoặc sheet hiện tại khác với sheet active trên Drive và máy chưa có dữ liệu sách
-                if (!currentSheet || (currentSheet.id !== activeSheet.id && loadLocalBooks().length === 0)) {
+                if (!currentSheet || currentSheet.id !== activeSheet.id) {
                   currentSheet = activeSheet;
                   setSpreadsheetInfo(currentSheet);
                   try {
@@ -594,17 +680,26 @@ export default function App() {
   useEffect(() => {
     if (!settings.autoNormalizeEnabled || isAutoNormalizing || isLoading) return;
 
-    const pending = books.filter((b) => !b.is_ai_normalized);
+    const pending = books.filter((book) => (
+      !book.is_ai_normalized &&
+      !autoNormalizeAttemptsRef.current.has(JSON.stringify([
+        book.id, book.title, book.author, book.publisher, book.category,
+      ]))
+    ));
     if (pending.length === 0) return;
 
     const runAutoNormalize = async () => {
       setIsAutoNormalizing(true);
       try {
         const batchToProcess = pending.slice(0, 10);
-        const { batchNormalize } = await import('./utils/geminiService');
-        const result = await batchNormalize(batchToProcess);
+        batchToProcess.forEach((book) => {
+          autoNormalizeAttemptsRef.current.add(JSON.stringify([
+            book.id, book.title, book.author, book.publisher, book.category,
+          ]));
+        });
+        const result = await batchNormalize(batchToProcess, { categories: settings.categoriesList });
 
-        if (result && result.success && Array.isArray(result.normalized) && result.normalized.length > 0) {
+        if (result && Array.isArray(result.normalized) && result.normalized.length > 0) {
           const updatedList = books.map((b) => {
             const found = result.normalized.find((r: any) => r.id === b.id);
             if (found) {
@@ -624,8 +719,13 @@ export default function App() {
           await handleBatchUpdateBooks(updatedList);
           console.log(`[AutoNormalize] Đã tự động chuẩn hóa ${batchToProcess.length} cuốn sách.`);
         }
+        if (result.failedChunks.length > 0) {
+          const failedCount = result.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0);
+          showToast(`Tự động hiệu chỉnh chưa xử lý được ${failedCount} cuốn. Có thể thử lại thủ công trong Cài đặt.`, 'warning');
+        }
       } catch (err) {
         console.error('[AutoNormalize] Lỗi chuẩn hóa tự động ngầm:', err);
+        showToast(`Tự động hiệu chỉnh sách thất bại: ${err instanceof Error ? err.message : String(err)}`, 'warning');
       } finally {
         setTimeout(() => {
           setIsAutoNormalizing(false);
@@ -635,7 +735,7 @@ export default function App() {
 
     const timer = setTimeout(runAutoNormalize, 2000);
     return () => clearTimeout(timer);
-  }, [books, settings.autoNormalizeEnabled, isAutoNormalizing, isLoading, settings.categoriesList]);
+  }, [books, settings.autoNormalizeEnabled, isAutoNormalizing, isLoading, settings.categoriesList, showToast]);
 
   // Kiểm tra cập nhật thủ công khi người dùng bấm nút (Chỉ khả dụng ở bản APK)
   const handleManualCheckUpdates = async () => {
@@ -884,16 +984,13 @@ export default function App() {
         onSyncDriveNow={async () => { await syncWithGoogleDrive(books); }}
         isSyncingDrive={isSyncingDrive}
         spreadsheetInfo={spreadsheetInfo}
+        canUnlinkWorkspace={currentUser?.userRole === 'ADMIN'}
+        canManageDriveFiles={currentUser?.userRole === 'ADMIN'}
         onSelectSpreadsheet={async (sheet) => {
           if (!sheet) {
-            const token = await getAccessToken();
-            if (token && spreadsheetInfo?.id) {
-              await updateSheetConfigStatus(token, spreadsheetInfo.id, 'unlinked', currentUser?.email || '');
-            }
             setSpreadsheetInfo(null);
             localStorage.removeItem('library_spreadsheet_info_v2');
             localStorage.setItem('unlinked_spreadsheet_explicitly', 'true');
-            showToast('Đã hủy liên kết tệp Google Drive thành công.', 'info');
             return;
           }
           
@@ -919,6 +1016,25 @@ export default function App() {
             showToast(`Lỗi liên kết: ${err.message || String(err)}`, 'error');
           } finally {
             setIsSyncingDrive(false);
+          }
+        }}
+        onUnlinkWorkspace={async () => {
+          if (currentUser?.userRole !== 'ADMIN' || !currentUser.email || !spreadsheetInfo?.id) {
+            throw new Error('Chỉ Admin của Workspace mới có thể hủy liên kết.');
+          }
+          const token = await getAccessToken();
+          if (!token) throw new Error('Phiên đăng nhập Google đã hết hạn.');
+          const unlinkResult = await unlinkWorkspace(token, spreadsheetInfo.id, currentUser.email);
+          saveAllLocalBooks([]);
+          setBooks([]);
+          setSpreadsheetInfo(null);
+          localStorage.removeItem('library_spreadsheet_info_v2');
+          localStorage.removeItem('last_drive_sync_time');
+          removeKnownSpreadsheet(spreadsheetInfo.id);
+          if (unlinkResult.failedRevocations.length > 0) {
+            showToast(`Đã hủy liên kết, nhưng chưa thu hồi được quyền Drive của: ${unlinkResult.failedRevocations.join(', ')}. Trạng thái Workspace đã được cập nhật.`, 'warning');
+          } else {
+            showToast('Đã hủy liên kết Workspace và thu hồi quyền của các thành viên.', 'success');
           }
         }}
         onCreateSpreadsheet={async (customTitle) => {

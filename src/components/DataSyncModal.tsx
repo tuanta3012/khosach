@@ -38,6 +38,9 @@ interface DataSyncModalProps {
   isSyncingDrive?: boolean;
   spreadsheetInfo?: SpreadsheetInfo | null;
   onSelectSpreadsheet?: (sheet: SpreadsheetInfo | null) => Promise<void>;
+  onUnlinkWorkspace?: () => Promise<void>;
+  canUnlinkWorkspace?: boolean;
+  canManageDriveFiles?: boolean;
   onCreateSpreadsheet?: (customTitle: string) => Promise<SpreadsheetInfo>;
 }
 
@@ -52,6 +55,9 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   isSyncingDrive = false,
   spreadsheetInfo,
   onSelectSpreadsheet,
+  onUnlinkWorkspace,
+  canUnlinkWorkspace = false,
+  canManageDriveFiles = false,
   onCreateSpreadsheet,
 }) => {
   const { showToast } = useToast();
@@ -72,6 +78,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   const [newSheetTitle, setNewSheetTitle] = useState('Kho sach');
   const [isCreatingSheet, setIsCreatingSheet] = useState(false);
   const [deletingSheetId, setDeletingSheetId] = useState<string | null>(null);
+  const [isUnlinkingWorkspace, setIsUnlinkingWorkspace] = useState(false);
 
   const [sheetPendingDelete, setSheetPendingDelete] = useState<SpreadsheetInfo | null>(null);
 
@@ -763,19 +770,21 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                               )
                             )}
 
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteDriveSheet(sheet)}
-                              disabled={deletingSheetId === sheet.id}
-                              title={`Xóa file "${sheet.name}" khỏi Google Drive`}
-                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
-                            >
-                              {deletingSheetId === sheet.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-600" />
-                              ) : (
-                                <Trash2 className="w-3.5 h-3.5" />
-                              )}
-                            </button>
+                            {canManageDriveFiles && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteDriveSheet(sheet)}
+                                disabled={deletingSheetId === sheet.id}
+                                title={`Xóa file "${sheet.name}" khỏi Google Drive`}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
+                              >
+                                {deletingSheetId === sheet.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-600" />
+                                ) : (
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -873,7 +882,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                         <ExternalLink className="w-3.5 h-3.5 text-slate-500 rotate-45" />
                         <span className="truncate">Tạo, đổi file liên kết</span>
                       </button>
-                      {spreadsheetInfo && onSelectSpreadsheet && (
+                      {spreadsheetInfo && onSelectSpreadsheet && canUnlinkWorkspace && onUnlinkWorkspace && (
                         <button
                           type="button"
                           onClick={() => setShowUnlinkConfirm(true)}
@@ -1029,17 +1038,22 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
               <button
                 type="button"
                 onClick={async () => {
-                  setShowUnlinkConfirm(false);
-                  setLastSyncTime('');
-                  localStorage.removeItem('last_drive_sync_time');
-                  if (onSelectSpreadsheet) {
-                    await onSelectSpreadsheet(null);
+                  setIsUnlinkingWorkspace(true);
+                  try {
+                    await onUnlinkWorkspace?.();
+                    setShowUnlinkConfirm(false);
+                    setLastSyncTime('');
+                    localStorage.removeItem('last_drive_sync_time');
+                  } catch (err: any) {
+                    showToast(`Không thể hủy liên kết Workspace: ${err.message || String(err)}`, 'error');
+                  } finally {
+                    setIsUnlinkingWorkspace(false);
                   }
-                  showToast('Đã hủy liên kết Google Sheet thành công.', 'info');
                 }}
-                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer shadow-xs"
+                disabled={isUnlinkingWorkspace}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer shadow-xs"
               >
-                Xác nhận hủy
+                {isUnlinkingWorkspace ? 'Đang hủy...' : 'Xác nhận hủy'}
               </button>
             </div>
           </div>

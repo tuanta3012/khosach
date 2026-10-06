@@ -1,14 +1,14 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "buildAab": false,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "build:apk": "npm run build && npx cap sync android && cd android && ./gradlew assembleRelease",
-    "build:aab": "npm run build && npx cap sync android && cd android && ./gradlew bundleRelease",
+    "build:apk": "node scripts/validate-build-target.mjs apk && npm run build && npx cap sync android && cd android && ./gradlew assembleRelease",
+    "build:aab": "node scripts/validate-build-target.mjs aab && npm run build && npx cap sync android && cd android && ./gradlew bundleRelease",
     "start": "vite preview",
     "preview": "vite preview",
     "clean": "node -e \"fs.rmSync('dist', { recursive: true, force: true });\"",

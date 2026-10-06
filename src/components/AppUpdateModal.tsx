@@ -4,7 +4,7 @@ import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { FileOpener } from '@capacitor-community/file-opener';
 import { Share } from '@capacitor/share';
-import { IS_BUILD_AAB } from '../utils/appConfig';
+import { IS_BUILD_AAB } from '../config/buildConfig';
 
 export interface UpdateInfo {
   version: string;

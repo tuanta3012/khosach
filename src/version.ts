@@ -1,4 +1,3 @@
-import pkg from '../package.json';
-import buildSettings from '../build_settings.json';
+import pkg from '../package.json' with { type: 'json' };
 
-export const CURRENT_APP_VERSION = buildSettings?.version || pkg.version || '1.0.0';
+export const CURRENT_APP_VERSION: string = pkg.version;

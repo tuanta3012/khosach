@@ -180,8 +180,8 @@ export async function isBookLibrarySpreadsheet(
 }
 
 /**
- * Lấy danh sách các tệp Google Sheet thuộc ứng dụng Tủ Sách Gia Đình.
- * Lọc DUY NHẤT theo điều kiện: appProperties.app == 'khosach_app'
+ * Lấy các Google Sheet Drive API cho phép ứng dụng nhìn thấy, gồm file được chia sẻ,
+ * file có appProperties và file có tên thường dùng của ứng dụng.
  */
 export async function fetchUserSpreadsheetsFromDrive(
   accessToken: string
@@ -192,68 +192,65 @@ export async function fetchUserSpreadsheetsFromDrive(
     return getKnownSpreadsheets();
   }
 
-  // 1. Quét từ Google Drive API: Lọc theo appProperties.app == 'khosach_app' (Hoạt động tốt nhất cho Chủ sở hữu / Admin)
-  try {
-    const query = encodeURIComponent(
-      `appProperties has { key='${APP_PROPERTY_KEY}' and value='${APP_PROPERTY_VALUE}' } and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`
-    );
-    const driveSearchUrl = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,webViewLink,trashed,appProperties)&pageSize=100&orderBy=modifiedTime desc&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+  // drive.file chỉ liệt kê được những file đã được cấp cho ứng dụng; đây là best-effort
+  // discovery, không thể vượt qua giới hạn OAuth của các file chưa được app cấp quyền.
+  const queries = [
+    `sharedWithMe = true and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`,
+    `appProperties has { key='${APP_PROPERTY_KEY}' and value='${APP_PROPERTY_VALUE}' } and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`,
+    `mimeType='application/vnd.google-apps.spreadsheet' and (name contains 'Kho Sách' or name contains 'Khosach' or name contains 'Tủ Sách' or name contains 'Tu Sach' or name contains 'Library') and trashed=false`,
+  ];
 
-    const searchResp = await fetch(driveSearchUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+  for (const query of queries) {
+    try {
+      let pageToken: string | undefined;
+      let pageCount = 0;
+      do {
+        const params = new URLSearchParams({
+          q: query,
+          fields: 'nextPageToken,files(id,name,webViewLink,trashed,appProperties,modifiedTime)',
+          pageSize: '100',
+          orderBy: 'modifiedTime desc',
+          supportsAllDrives: 'true',
+          includeItemsFromAllDrives: 'true',
+        });
+        if (pageToken) params.set('pageToken', pageToken);
+        const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!response.ok) {
+          console.warn(`[DriveSync] Drive discovery query failed (HTTP ${response.status}).`);
+          break;
+        }
 
-    if (searchResp.ok) {
-      const data = await searchResp.json();
-      const files: any[] = data.files || [];
-      for (const f of files) {
-        if (f.trashed) continue;
-        if (f.appProperties && f.appProperties[APP_PROPERTY_KEY] === APP_PROPERTY_VALUE) {
-          map.set(f.id, {
-            id: f.id,
-            name: f.name || 'Tủ sách gia đình',
-            webViewLink: f.webViewLink || `https://docs.google.com/spreadsheets/d/${f.id}/edit`,
+        const data = await response.json();
+        for (const file of data.files || []) {
+          if (!file.id || file.trashed) continue;
+          map.set(file.id, {
+            id: file.id,
+            name: file.name || 'Tủ sách gia đình',
+            webViewLink: file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
           });
         }
-      }
+        pageToken = data.nextPageToken;
+        pageCount += 1;
+      } while (pageToken && pageCount < 5);
+    } catch (err) {
+      console.warn('[DriveSync] Quét danh sách Google Sheet từ Drive gặp lỗi:', err);
     }
-  } catch (err) {
-    console.warn('[DriveSync] Quét danh sách Google Sheet từ Drive gặp lỗi:', err);
   }
 
-  // 2. Quét Dự phòng (Fallback): Tìm kiếm theo Tên và MimeType (Cực kỳ quan trọng cho các thành viên được chia sẻ tệp)
-  // Vì Google Drive API không cho phép người không sở hữu tìm kiếm bằng thuộc tính appProperties riêng tư.
-  try {
-    const keywords = ['Kho Sách', 'Khosach', 'Tủ Sách', 'Tu Sach', 'Library'];
-    const nameConditions = keywords.map(kw => `name contains '${kw}'`).join(' or ');
-    const fallbackQuery = encodeURIComponent(
-      `mimeType='application/vnd.google-apps.spreadsheet' and (${nameConditions}) and trashed=false`
-    );
-    const fallbackUrl = `https://www.googleapis.com/drive/v3/files?q=${fallbackQuery}&fields=files(id,name,webViewLink,trashed,appProperties)&pageSize=100&orderBy=modifiedTime desc&supportsAllDrives=true&includeItemsFromAllDrives=true`;
-
-    const fallbackResp = await fetch(fallbackUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
-    if (fallbackResp.ok) {
-      const data = await fallbackResp.json();
-      const files: any[] = data.files || [];
-      for (const f of files) {
-        if (f.trashed) continue;
-        if (!map.has(f.id)) {
-          map.set(f.id, {
-            id: f.id,
-            name: f.name || 'Tủ sách gia đình',
-            webViewLink: f.webViewLink || `https://docs.google.com/spreadsheets/d/${f.id}/edit`,
-          });
-        }
-      }
+  const savedSheetId = (() => {
+    try {
+      return (JSON.parse(localStorage.getItem('library_spreadsheet_info_v2') || 'null') as SpreadsheetInfo | null)?.id;
+    } catch {
+      return undefined;
     }
-  } catch (err) {
-    console.warn('[DriveSync] Quét danh sách fallback từ Drive gặp lỗi:', err);
-  }
-
-  const verifiedList = Array.from(map.values());
+  })();
+  const verifiedList = Array.from(map.values()).sort((a, b) => {
+    if (a.id === savedSheetId) return -1;
+    if (b.id === savedSheetId) return 1;
+    return 0;
+  });
 
   // Làm sạch bộ nhớ LocalStorage
   try {
@@ -977,6 +974,37 @@ export async function addFamilyMember(
   });
 }
 
+export async function revokeFilePermission(
+  accessToken: string,
+  fileId: string,
+  userEmail: string
+): Promise<boolean> {
+  const cleanEmail = userEmail.trim().toLowerCase();
+  if (!accessToken || !fileId || !cleanEmail) return false;
+
+  const listResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}/permissions?fields=permissions(id,emailAddress,type)&supportsAllDrives=true`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!listResponse.ok) return false;
+
+  const data = await listResponse.json();
+  const permission = (data.permissions || []).find(
+    (item: { emailAddress?: string; type?: string }) =>
+      item.type === 'user' && item.emailAddress?.trim().toLowerCase() === cleanEmail
+  );
+  if (!permission?.id) return true;
+
+  const deleteResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}/permissions/${permission.id}?supportsAllDrives=true`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+  return deleteResponse.ok || deleteResponse.status === 204;
+}
+
 /**
  * 6. Cập nhật quyền của thành viên gia đình (Editor / Viewer)
  */
@@ -1221,22 +1249,23 @@ export async function determineCurrentUserRole(
   spreadsheetId: string,
   userEmail: string
 ): Promise<UserRole> {
-  try {
-    const cleanEmail = userEmail.trim().toLowerCase();
-    const members = await fetchFamilyMembers(accessToken, spreadsheetId);
-    
-    // Tìm kiếm email của chính mình trong danh sách thành viên của Google Sheet
-    const matched = members.find((m) => m.email.toLowerCase() === cleanEmail);
-    if (matched) {
-      if (matched.role === 'Owner') return 'ADMIN';
-      if (matched.role === 'Editor') return 'EDITOR';
-      return 'VIEWER';
-    }
-  } catch (err) {
-    console.warn('[DriveSync] determineCurrentUserRole error:', err);
+  const cleanEmail = userEmail.trim().toLowerCase();
+  if (!cleanEmail) throw new Error('Không xác định được email tài khoản Google hiện tại.');
+
+  const metadata = await fetchSheetConfigMetadata(accessToken, spreadsheetId);
+  if (!metadata) throw new Error('Không thể đọc cấu hình quyền của Google Sheet.');
+  if (metadata.status !== 'active' || metadata.lastAction === 'unlink') {
+    throw new Error('WORKSPACE_UNLINKED');
   }
-  // Mặc định ban đầu hoặc nếu là chủ sở hữu gốc (không có trong members) là ADMIN
-  return 'ADMIN';
+
+  const members = await fetchFamilyMembers(accessToken, spreadsheetId);
+  if (metadata.adminEmail?.trim().toLowerCase() === cleanEmail) return 'ADMIN';
+
+  const matched = members.find((member) => member.email.trim().toLowerCase() === cleanEmail);
+  if (matched?.role === 'Owner') return 'ADMIN';
+  if (matched?.role === 'Editor') return 'EDITOR';
+  if (matched?.role === 'Viewer') return 'VIEWER';
+  throw new Error('Tài khoản Google hiện tại không có trong danh sách thành viên của Workspace.');
 }
 
 /**
@@ -1254,22 +1283,27 @@ export async function fetchSheetConfigMetadata(
     if (!resp.ok) return null;
     const data = await resp.json();
     const rows: any[][] = data.values || [];
-    let fallbackStatus: 'active' | 'unlinked' = 'active';
+    let fallbackStatus: 'active' | 'unlinked' | null = null;
     let fallbackAdmin = '';
 
     for (const row of rows) {
-      if (row[0] === '__METADATA_JSON__' && row[1]) {
+      const key = String(row[0] || '').trim().toLowerCase();
+      if (key === '__metadata_json__' && row[1]) {
         try {
-          return JSON.parse(row[1]) as SheetConfigMetadata;
+          const parsed = JSON.parse(row[1]) as Partial<SheetConfigMetadata>;
+          if (parsed.status === 'active' || parsed.status === 'unlinked') {
+            return parsed as SheetConfigMetadata;
+          }
         } catch {}
       }
-      if (row[0] === 'Status' && row[1]) {
-        fallbackStatus = row[1] === 'unlinked' ? 'unlinked' : 'active';
+      if (key === 'status' && (row[1] === 'active' || row[1] === 'unlinked')) {
+        fallbackStatus = row[1];
       }
-      if (row[0] === 'AdminEmail' && row[1]) {
+      if (key === 'adminemail' && row[1]) {
         fallbackAdmin = row[1];
       }
     }
+    if (!fallbackStatus) return null;
     return {
       status: fallbackStatus,
       adminEmail: fallbackAdmin,
@@ -1292,12 +1326,18 @@ export async function updateSheetConfigStatus(
   adminEmail?: string,
   fileName?: string
 ): Promise<void> {
-  try {
     const existing = await fetchSheetConfigMetadata(accessToken, spreadsheetId);
+    const members = await fetchFamilyMembers(accessToken, spreadsheetId);
+    const adminFromMembers = members.find((member) => member.role === 'Owner')?.email;
+    const storedAdmin = (existing?.adminEmail || adminFromMembers || '').trim().toLowerCase();
+    const requestingUser = (adminEmail || '').trim().toLowerCase();
+    if (status === 'unlinked' && (!storedAdmin || !requestingUser || storedAdmin !== requestingUser)) {
+      throw new Error('Chỉ Admin đã đăng ký trong cấu hình mới được hủy liên kết Workspace.');
+    }
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
     const timeVi = formatVietnameseFullDate(nowMs);
-    const currentAdmin = adminEmail || existing?.adminEmail || '';
+    const currentAdmin = existing?.adminEmail || adminFromMembers || adminEmail || '';
     const currentFileName = fileName || existing?.activeFileName || 'Tu sach gia dinh';
     const fileUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?usp=drivesdk`;
 
@@ -1345,7 +1385,7 @@ export async function updateSheetConfigStatus(
       ['updatedAtVi', timeVi],
     ];
 
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!E1:F10?valueInputOption=USER_ENTERED`, {
+    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${CONFIG_SHEET_TITLE}!E1:F10?valueInputOption=USER_ENTERED`, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -1353,10 +1393,39 @@ export async function updateSheetConfigStatus(
       },
       body: JSON.stringify({ values: rows }),
     });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error?.error?.message || `Không thể cập nhật trạng thái Google Sheet (${response.status}).`);
+    }
     console.log(`[DriveSync] Đã cập nhật trạng thái sheet (${spreadsheetId}) thành: ${status}`);
-  } catch (err) {
-    console.warn('[DriveSync] updateSheetConfigStatus error:', err);
+}
+
+export async function unlinkWorkspace(
+  accessToken: string,
+  spreadsheetId: string,
+  userEmail: string
+): Promise<{ failedRevocations: string[] }> {
+  const metadata = await fetchSheetConfigMetadata(accessToken, spreadsheetId);
+  const members = await fetchFamilyMembers(accessToken, spreadsheetId);
+  const adminEmail = (metadata?.adminEmail || members.find((member) => member.role === 'Owner')?.email || '')
+    .trim()
+    .toLowerCase();
+  if (!adminEmail || adminEmail !== userEmail.trim().toLowerCase()) {
+    throw new Error('Chỉ Admin của Workspace mới có thể hủy liên kết.');
   }
+
+  await updateSheetConfigStatus(accessToken, spreadsheetId, 'unlinked', userEmail);
+  const failedRevocations: string[] = [];
+  for (const member of members) {
+    if (member.role === 'Owner' || member.email.trim().toLowerCase() === adminEmail) continue;
+    if (!(await revokeFilePermission(accessToken, spreadsheetId, member.email))) {
+      failedRevocations.push(member.email);
+    }
+  }
+  if (failedRevocations.length > 0) {
+    console.warn('[DriveSync] Workspace unlinked, but some Drive permissions could not be revoked:', failedRevocations);
+  }
+  return { failedRevocations };
 }
 
 /**
@@ -1486,10 +1555,7 @@ export async function syncIgnoredDuplicatePairsWithDrive(
 }
 
 /**
- * Tự động tìm kiếm các tệp Google Sheet trên Drive theo đúng tab Config ẩn:
- * - Chỉ chấp nhận các file có status == "active"
- * - Bỏ qua hoàn toàn các file có status == "unlinked"
- * - Luồng khám phá file thông minh (Auto-Discovery)
+ * Tự động tìm Workspace active mà tài khoản hiện tại được xác nhận là Admin/thành viên.
  */
 export async function autoDiscoverSharedSpreadsheets(
   accessToken: string,
@@ -1500,44 +1566,40 @@ export async function autoDiscoverSharedSpreadsheets(
     const spreadsheets = await fetchUserSpreadsheetsFromDrive(accessToken);
     const discovered: SpreadsheetInfo[] = [];
 
-    // Quét tối đa 15 file gần nhất để kiểm tra tab Config ẩn và trạng thái active
-    const limit = Math.min(spreadsheets.length, 15);
-    for (let i = 0; i < limit; i++) {
-      const sheet = spreadsheets[i];
+    const savedId = (() => {
       try {
-        const meta = await fetchSheetConfigMetadata(accessToken, sheet.id);
-        
-        // 1. Nếu file đã bị Admin chủ động hủy liên kết (status == "unlinked") -> BỎ QUA NGAY!
-        if (meta && meta.status === 'unlinked') {
-          console.log(`[AutoDiscover] File "${sheet.name}" có status unlinked -> Bỏ qua.`);
-          continue;
-        }
-
-        // 2. Nếu file có Tab Config với trạng thái active -> Bắt buộc nhận diện ngay!
-        if (meta?.status === 'active') {
-          console.log(`[AutoDiscover] Tìm thấy file active do app tạo: "${sheet.name}" (${sheet.id})`);
-          saveKnownSpreadsheet(sheet);
-          if (meta.adminEmail) {
-            synchronizeDrivePermissionsWithJsonMembers(accessToken, sheet.id, meta.adminEmail).catch(() => {});
-          }
-          discovered.push(sheet);
-        } else {
-          // Hoặc kiểm tra xem tài khoản có nằm trong danh sách thành viên không
-          const members = await fetchFamilyMembers(accessToken, sheet.id).catch(() => []);
-          const hasMember = members.some((m) => m.email.toLowerCase() === cleanEmail);
-          const isAdmin = meta?.adminEmail?.toLowerCase() === cleanEmail || 
-                          members.some(m => m.email.toLowerCase() === cleanEmail && m.role === 'Owner');
-
-          if (isAdmin || hasMember || members.length === 0) {
-            saveKnownSpreadsheet(sheet);
-            discovered.push(sheet);
-          }
-        }
+        return (JSON.parse(localStorage.getItem('library_spreadsheet_info_v2') || 'null') as SpreadsheetInfo | null)?.id;
       } catch {
-        // Nếu đọc tab Config gặp lỗi tạm thời nhưng là file của ứng dụng -> vẫn ưu tiên thêm vào
-        saveKnownSpreadsheet(sheet);
-        discovered.push(sheet);
+        return undefined;
       }
+    })();
+    const orderedSheets = [...spreadsheets].sort((a, b) => {
+      if (a.id === savedId) return -1;
+      if (b.id === savedId) return 1;
+      return 0;
+    });
+    const candidates = orderedSheets.slice(0, 100);
+    for (let i = 0; i < candidates.length; i += 8) {
+      const batch = candidates.slice(i, i + 8);
+      const verified = await Promise.all(batch.map(async (sheet) => {
+        const meta = await fetchSheetConfigMetadata(accessToken, sheet.id);
+        if (!meta || meta.status !== 'active' || meta.lastAction === 'unlink') return null;
+
+        const isAdmin = meta.adminEmail?.trim().toLowerCase() === cleanEmail;
+        const members = isAdmin ? [] : await fetchFamilyMembers(accessToken, sheet.id);
+        const matchedMember = members.find((member) => member.email.trim().toLowerCase() === cleanEmail);
+        if (!isAdmin && !matchedMember) return null;
+
+        saveKnownSpreadsheet(sheet);
+        if (isAdmin && meta.adminEmail) {
+          synchronizeDrivePermissionsWithJsonMembers(accessToken, sheet.id, meta.adminEmail).catch((err) => {
+            console.warn('[AutoDiscover] Permission audit failed:', err);
+          });
+        }
+        return sheet;
+      }));
+      discovered.push(...verified.filter((sheet): sheet is SpreadsheetInfo => sheet !== null));
+      if (discovered.length > 0) break;
     }
     return discovered;
   } catch (err) {
@@ -1699,4 +1761,3 @@ export async function verifySpreadsheetWriteAccess(
     return false;
   }
 }
-
