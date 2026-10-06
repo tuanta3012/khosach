@@ -26,7 +26,7 @@ const AppUpdateModal = lazy(() => import('./components/AppUpdateModal').then((mo
 import { useToast } from './context/ToastContext';
 import { useAutoUpdate } from './hooks/useAutoUpdate';
 import { CURRENT_APP_VERSION } from './version';
-import { IS_BUILD_AAB } from './config/buildConfig';
+import { IS_BUILD_AAB } from './utils/appConfig';
 import {
   googleSignIn,
   googleLogout,
