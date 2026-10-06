@@ -280,6 +280,93 @@ export async function fetchUserSpreadsheetsFromDrive(
   return verifiedList;
 }
 
+/**
+ * Trích xuất Spreadsheet ID từ URL Google Sheet hoặc ID thô
+ */
+export function extractSpreadsheetId(input: string): string {
+  if (!input) return '';
+  const trimmed = input.trim();
+  // Khớp định dạng: /spreadsheets/d/([a-zA-Z0-9-_]+)
+  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  // Khớp định dạng: id=([a-zA-Z0-9-_]+)
+  const idParamMatch = trimmed.match(/[?&]id=([a-zA-Z0-9-_]+)/);
+  if (idParamMatch && idParamMatch[1]) {
+    return idParamMatch[1];
+  }
+  // Hoặc chính là raw ID
+  return trimmed;
+}
+
+/**
+ * Lấy thông tin bảng tính Google Sheet theo Link hoặc ID nhập thủ công
+ */
+export async function fetchSpreadsheetById(
+  accessToken: string,
+  urlOrId: string
+): Promise<SpreadsheetInfo> {
+  const cleanId = extractSpreadsheetId(urlOrId);
+  if (!cleanId || cleanId.length < 10) {
+    throw new Error('Link hoặc ID Google Sheet không hợp lệ.');
+  }
+
+  // 1. Thử lấy thông tin từ Google Drive API
+  let name = 'Kho Sách Gia Đình';
+  let webViewLink = `https://docs.google.com/spreadsheets/d/${cleanId}/edit`;
+
+  try {
+    const driveRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${cleanId}?fields=id,name,webViewLink,trashed&supportsAllDrives=true`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (driveRes.ok) {
+      const data = await driveRes.json();
+      if (data.trashed) {
+        throw new Error('File Google Sheet này đang nằm trong thùng rác.');
+      }
+      if (data.name) name = data.name;
+      if (data.webViewLink) webViewLink = data.webViewLink;
+    }
+  } catch (driveErr: any) {
+    if (driveErr?.message?.includes('thùng rác')) throw driveErr;
+    console.warn('[DriveSync] Không lấy được metadata qua Drive API, thử Sheets API:', driveErr);
+  }
+
+  // 2. Kiểm tra quyền truy cập bằng Sheets API
+  const sheetsRes = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}?fields=properties.title`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+
+  if (!sheetsRes.ok) {
+    if (sheetsRes.status === 404) {
+      throw new Error('Không tìm thấy file Google Sheet. Vui lòng kiểm tra lại Link/ID.');
+    }
+    if (sheetsRes.status === 403) {
+      throw new Error('Bạn chưa được cấp quyền truy cập file này trên Google Drive.');
+    }
+    const err = await sheetsRes.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Lỗi truy cập Google Sheet (${sheetsRes.status})`);
+  }
+
+  const sheetData = await sheetsRes.json();
+  if (sheetData?.properties?.title) {
+    name = sheetData.properties.title;
+  }
+
+  const result: SpreadsheetInfo = {
+    id: cleanId,
+    name,
+    webViewLink,
+    isNew: false,
+  };
+
+  saveKnownSpreadsheet(result);
+  return result;
+}
+
 export async function findOrCreateLibrarySpreadsheet(
   accessToken: string,
   userEmail: string,
