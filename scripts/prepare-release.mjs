@@ -12,9 +12,10 @@ if (typeof packageJson.buildAab !== 'boolean') {
   throw new Error('package.json buildAab must be the boolean true or false.');
 }
 
-const existingTag = execFileSync('git', ['tag', '--list', `v${version}`], { encoding: 'utf8' }).trim();
+const tagName = `v${version}`;
+const existingTag = execFileSync('git', ['tag', '--list', tagName], { encoding: 'utf8' }).trim();
 if (existingTag) {
-  throw new Error(`Release tag ${existingTag} already exists. Increase package.json version before creating another release.`);
+  console.error(`Release tag ${existingTag} already exists; continuing so package.json version ${version} can be rebuilt with a new Android versionCode.`);
 }
 
 const versionParts = version.split('.').map(Number);
@@ -34,15 +35,9 @@ const latestReleasedVersion = releasedVersions.reduce((latest, candidate) => {
   }
   return latest;
 }, [0, 0, 0]);
-const isNewerThanLatest = versionParts.some((part, index) => {
-  for (let priorIndex = 0; priorIndex < index; priorIndex += 1) {
-    if (versionParts[priorIndex] !== latestReleasedVersion[priorIndex]) return false;
-  }
-  return part > latestReleasedVersion[index];
-});
-if (!isNewerThanLatest) {
-  throw new Error(
-    `package.json version ${version} must be higher than the latest GitHub release tag v${latestReleasedVersion.join('.')}.`
+if (versionParts.some((part, index) => part < latestReleasedVersion[index])) {
+  console.error(
+    `package.json version ${version} is older than the latest release tag v${latestReleasedVersion.join('.')}; continuing because this build is intentionally reusing the same version name with a fresh Android versionCode.`
   );
 }
 
