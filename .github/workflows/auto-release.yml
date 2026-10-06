@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - package.json
+      - scripts/prepare-release.mjs
+      - .github/workflows/auto-release.yml
   workflow_dispatch:
 
 jobs:
