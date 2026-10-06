@@ -21,7 +21,8 @@ import {
   checkSpreadsheetStatusOnDrive,
   removeKnownSpreadsheet,
   saveKnownSpreadsheet,
-  tagSpreadsheetAsAppCreated
+  tagSpreadsheetAsAppCreated,
+  fetchSpreadsheetById
 } from '../services/driveSyncService';
 
 interface DataSyncModalProps {
@@ -81,6 +82,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
   const [isUnlinkingWorkspace, setIsUnlinkingWorkspace] = useState(false);
 
   const [sheetPendingDelete, setSheetPendingDelete] = useState<SpreadsheetInfo | null>(null);
+  const [sheetUrlOrIdInput, setSheetUrlOrIdInput] = useState('');
+  const [isLinkingManual, setIsLinkingManual] = useState(false);
 
   // Trạng thái Bảng Nháp (Staging Area)
   const [scanResult, setScanResult] = useState<ImportScanResult | null>(null);
@@ -168,6 +171,36 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       showToast(`Lỗi quét file Drive: ${err.message || String(err)}`, 'error');
     } finally {
       setIsLoadingLoadingSheets(false);
+    }
+  };
+
+  // 1a. Xử lý liên kết thủ công bằng Link hoặc ID Google Sheet (Đặc biệt cho thành viên được chia sẻ)
+  const handleLinkByUrlOrId = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const input = sheetUrlOrIdInput.trim();
+    if (!input) {
+      showToast('Vui lòng dán Link hoặc ID file Google Sheet!', 'warning');
+      return;
+    }
+    setIsLinkingManual(true);
+    try {
+      let token = await getAccessToken();
+      if (!token) {
+        const res = await googleSignIn().catch(() => null);
+        token = res?.accessToken || null;
+      }
+      if (!token) throw new Error('Vui lòng đăng nhập Google trước.');
+
+      const sheet = await fetchSpreadsheetById(token, input);
+      if (onSelectSpreadsheet) {
+        await onSelectSpreadsheet(sheet);
+        setSheetUrlOrIdInput('');
+        setShowSheetSelector(false);
+      }
+    } catch (err: any) {
+      showToast(`Không thể liên kết: ${err.message || String(err)}`, 'error');
+    } finally {
+      setIsLinkingManual(false);
     }
   };
 
@@ -703,6 +736,34 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     <span>Tạo bảng tính mới trên Drive</span>
                   </button>
                 )}
+              </div>
+
+              {/* PHÂN KHU 1b: LIÊN KẾT BẰNG LINK HOẶC ID GOOGLE SHEET */}
+              <div className="p-3 bg-sky-50/70 border border-sky-200/80 rounded-2xl shadow-3xs space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-sky-900">
+                  <LinkIcon className="w-3.5 h-3.5 text-sky-600" />
+                  <span>Liên kết bằng Link hoặc ID Google Sheet</span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-tight">
+                  Dán đường dẫn bảng tính (URL) hoặc Sheet ID mà Admin chia sẻ để kết nối kho sách:
+                </p>
+                <form onSubmit={handleLinkByUrlOrId} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={sheetUrlOrIdInput}
+                    onChange={(e) => setSheetUrlOrIdInput(e.target.value)}
+                    placeholder="Dán link https://docs.google.com/... hoặc ID file"
+                    className="flex-1 px-3 py-1.5 text-xs bg-white border border-sky-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:border-sky-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isLinkingManual || !sheetUrlOrIdInput.trim()}
+                    className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-3xs transition flex items-center gap-1 disabled:opacity-50 shrink-0 cursor-pointer active:scale-95"
+                  >
+                    {isLinkingManual ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                    <span>Liên kết</span>
+                  </button>
+                </form>
               </div>
 
               {/* Danh sách File Google Sheet khả dụng */}

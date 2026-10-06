@@ -187,31 +187,44 @@ export default function App() {
             }
 
             if (user.email) {
-              const discovered = await autoDiscoverSharedSpreadsheets(token, user.email);
-              if (discovered.length > 0) {
-                const activeSheet = discovered[0];
-                
-                // Nếu chưa có savedSheet, hoặc có savedSheet nhưng khác với file active chính trên Drive và máy chưa có sách
-                if (!savedSheet || savedSheet.id !== activeSheet.id) {
-                  console.log(`[AutoDiscover] Tự động liên kết về file active chính của tài khoản: "${activeSheet.name}" (${activeSheet.id})`);
-                  setSpreadsheetInfo(activeSheet);
-                  try {
-                    localStorage.setItem('library_spreadsheet_info_v2', JSON.stringify(activeSheet));
-                    localStorage.removeItem('unlinked_spreadsheet_explicitly');
-                  } catch {}
-                  const role = await determineCurrentUserRole(token, activeSheet.id, user.email);
-                  setCurrentUser(prev => prev ? { ...prev, userRole: role } : null);
-                  
-                  // Đồng bộ ngay với file vừa được tự động liên kết
-                  await syncBooksTwoWay(loadLocalBooks(), token, activeSheet.id, role)
+              try {
+                const discovered = await autoDiscoverSharedSpreadsheets(token, user.email);
+                if (discovered.length > 0) {
+                  const activeSheet = discovered[0];
+                  const isNewLink = !savedSheet || savedSheet.id !== activeSheet.id;
+
+                  if (isNewLink) {
+                    console.log(`[AutoDiscover] Tự động liên kết về file active chính của tài khoản: "${activeSheet.name}" (${activeSheet.id})`);
+                    setSpreadsheetInfo(activeSheet);
+                    try {
+                      localStorage.setItem('library_spreadsheet_info_v2', JSON.stringify(activeSheet));
+                      localStorage.removeItem('unlinked_spreadsheet_explicitly');
+                      localStorage.removeItem('explicitly_unlinked');
+                    } catch {}
+                  }
+
+                  const role = await determineCurrentUserRole(token, activeSheet.id, user.email).catch(() => 'VIEWER' as const);
+                  setCurrentUser((prev) => (prev ? { ...prev, userRole: role } : null));
+
+                  // Luôn đồng bộ ngay lập tức để nạp toàn bộ sách từ Google Drive về máy thành viên
+                  const localBooks = loadLocalBooks();
+                  await syncBooksTwoWay(localBooks, token, activeSheet.id, role)
                     .then((syncRes) => {
-                      if (syncRes.hasChanges) {
+                      if (syncRes.hasChanges || localBooks.length === 0) {
                         saveAllLocalBooks(syncRes.mergedBooks);
                         setBooks(syncRes.mergedBooks);
                         setLastDriveSyncTimestamp();
                       }
-                    }).catch((e) => console.warn('[AutoDiscover] Đồng bộ sau tự động chuyển file thất bại:', e));
+                    })
+                    .catch((e) => console.warn('[AutoDiscover] Đồng bộ sau tự động chuyển file thất bại:', e));
+
+                  if (isNewLink) {
+                    const roleLabel = role === 'ADMIN' ? 'Quản trị viên' : role === 'EDITOR' ? 'Quyền Chỉnh sửa' : 'Quyền Xem';
+                    showToast(`Đã tự động liên kết với "${activeSheet.name}" (${roleLabel})`, 'success');
+                  }
                 }
+              } catch (discoveryErr) {
+                console.warn('[AutoDiscover] Quét tự động gặp lỗi:', discoveryErr);
               }
             }
           })();
