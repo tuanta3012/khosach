@@ -136,16 +136,38 @@ jobs:
             sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION_NAME\"/g" android/app/build.gradle
           fi
 
+          # Tạo thư mục res/xml và bộ quy tắc loại trừ sao lưu toàn diện cho Android 6 - Android 14+
+          mkdir -p android/app/src/main/res/xml
+          cat << 'EOF' > android/app/src/main/res/xml/data_extraction_rules.xml
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude path="." />
+    </device-transfer>
+</data-extraction-rules>
+EOF
+
+          cat << 'EOF' > android/app/src/main/res/xml/backup_rules.xml
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+</full-backup-content>
+EOF
+
           if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
             if ! grep -q "REQUEST_INSTALL_PACKAGES" android/app/src/main/AndroidManifest.xml; then
               sed -i '/<application/i \    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" \/>' android/app/src/main/AndroidManifest.xml
             fi
-            # Tắt hoàn toàn Android Auto Cloud Backup & Restore để đảm bảo cài mới luôn sạch 100%
+            # Cấu hình chống Android Cloud Backup & Restore đa tầng
             sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
-            sed -i 's/android:fullBackupContent="true"/android:fullBackupContent="false"/g' android/app/src/main/AndroidManifest.xml
-            if ! grep -q 'android:allowBackup=' android/app/src/main/AndroidManifest.xml; then
-              sed -i 's/<application/<application android:allowBackup="false" android:fullBackupContent="false"/g' android/app/src/main/AndroidManifest.xml
-            fi
+            sed -i 's/android:allowBackup="false"/android:allowBackup="false" android:fullBackupOnly="false" android:dataExtractionRules="@xml\/data_extraction_rules" android:fullBackupContent="@xml\/backup_rules"/g' android/app/src/main/AndroidManifest.xml
           fi
 
       # 7. Copy google-services.json & Tạo icon
@@ -155,6 +177,7 @@ jobs:
             mkdir -p android/app
             cp google-services.json android/app/google-services.json
           fi
+          node scripts/generate_all_icons.js || true
           npx @capacitor/assets generate --android || true
 
       # 8. Khởi tạo & Cấu hình Keystore cố định trong Repo cho cả Release và Debug
@@ -226,7 +249,9 @@ jobs:
           npx cap sync android
           if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
             sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
-            sed -i 's/android:fullBackupContent="true"/android:fullBackupContent="false"/g' android/app/src/main/AndroidManifest.xml
+            if ! grep -q 'dataExtractionRules' android/app/src/main/AndroidManifest.xml; then
+              sed -i 's/android:allowBackup="false"/android:allowBackup="false" android:fullBackupOnly="false" android:dataExtractionRules="@xml\/data_extraction_rules" android:fullBackupContent="@xml\/backup_rules"/g' android/app/src/main/AndroidManifest.xml
+            fi
           fi
 
       - name: "[Luồng 1 - APK] Assemble Android APK"
@@ -289,7 +314,9 @@ jobs:
           npx cap sync android
           if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
             sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
-            sed -i 's/android:fullBackupContent="true"/android:fullBackupContent="false"/g' android/app/src/main/AndroidManifest.xml
+            if ! grep -q 'dataExtractionRules' android/app/src/main/AndroidManifest.xml; then
+              sed -i 's/android:allowBackup="false"/android:allowBackup="false" android:fullBackupOnly="false" android:dataExtractionRules="@xml\/data_extraction_rules" android:fullBackupContent="@xml\/backup_rules"/g' android/app/src/main/AndroidManifest.xml
+            fi
           fi
 
       - name: "[Luồng 2 - AAB] Bundle Android App Bundle (AAB)"

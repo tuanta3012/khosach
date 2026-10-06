@@ -51,6 +51,7 @@ import {
   saveKnownSpreadsheet,
 } from './services/driveSyncService';
 import { batchNormalize } from './utils/geminiService';
+import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
 
 export default function App() {
   const { showToast } = useToast();
@@ -76,6 +77,26 @@ export default function App() {
       return false;
     }
   });
+
+  // TẦNG 3: KIỂM TRA LẦN ĐẦU CÀI ĐẶT (CHỐNG DỮ LIỆU RÁC AUTO-RESTORE CỦA ANDROID)
+  useEffect(() => {
+    (async () => {
+      try {
+        const isFirstLaunch = await checkAndHandleFirstLaunch(CURRENT_APP_VERSION);
+        if (isFirstLaunch) {
+          console.info('[CleanSlate] Phát hiện lần đầu mở app mới. Khởi tạo kho sạch sẽ 100%...');
+          setBooks([]);
+          setSettings(loadLocalSettings());
+          setAppMode('offline');
+          setIsModeSelectionOpen(true);
+          setCurrentUser(null);
+          setSpreadsheetInfo(null);
+        }
+      } catch (e) {
+        console.warn('[CleanSlate] Lỗi khởi tạo lần đầu:', e);
+      }
+    })();
+  }, []);
 
   // User Auth & Google Spreadsheet Info
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
@@ -323,9 +344,7 @@ export default function App() {
     const initStatusBar = async () => {
       try {
         if (Capacitor.isNativePlatform() || (typeof window !== 'undefined' && 'Capacitor' in window)) {
-          await StatusBar.setOverlaysWebView({ overlay: false });
-          await StatusBar.setBackgroundColor({ color: '#2b170e' });
-          await StatusBar.setStyle({ style: Style.Dark });
+
         }
       } catch {}
     };
@@ -707,9 +726,14 @@ export default function App() {
       showToast('⚠️ Bạn đang ở chế độ CHỈ XEM (Viewer). Không có quyền xóa sạch thư viện!', 'warning');
       return;
     }
-    saveAllLocalBooks([]);
+    await deepClearAllApplicationData();
     setBooks([]);
-    showToast('Đã xóa sạch toàn bộ sách trong bộ nhớ máy!', 'info');
+    setSettings(loadLocalSettings());
+    setAppMode('offline');
+    setIsModeSelectionOpen(true);
+    setCurrentUser(null);
+    setSpreadsheetInfo(null);
+    showToast('Đã dọn sạch 100% dữ liệu sách và cài đặt trên thiết bị!', 'info');
   };
 
   // Nạp sách nhập từ Smart Importer (Excel, Ảnh OCR, Google Sheet)

@@ -327,7 +327,7 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
             type="button"
             onClick={handleRotate}
             disabled={isRotating}
-            className="h-10 flex items-center justify-center rounded-xl bg-[#1b6b5b] hover:bg-[#145d4b] text-white border border-transparent transition shadow-3xs active:scale-95 cursor-pointer disabled:opacity-50"
+            className="h-10 flex items-center justify-center rounded-xl bg-[#10B981] hover:bg-[#059669] text-white border border-transparent transition shadow-3xs active:scale-95 cursor-pointer disabled:opacity-50"
             title="Xoay ảnh 90°"
             aria-label="Xoay ảnh 90°"
           >
@@ -439,7 +439,7 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
               type="button"
               onClick={handleConfirm}
               disabled={isProcessingCrop}
-              className="flex items-center gap-1.5 px-4 py-2 bg-[#9e5628] hover:bg-[#85451e] active:scale-95 text-white text-xs font-extrabold rounded-xl shadow-md transition disabled:opacity-50 cursor-pointer"
+              className="flex items-center gap-1.5 px-4 py-2 bg-[#EA580C] hover:bg-[#c2410c] active:scale-95 text-white text-xs font-extrabold rounded-xl shadow-md transition disabled:opacity-50 cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-200" />
               <span>{isProcessingCrop ? 'Đang cắt...' : 'Cắt & Bóc tách AI'}</span>

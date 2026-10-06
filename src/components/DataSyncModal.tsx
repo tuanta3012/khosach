@@ -433,10 +433,10 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
 
       <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[85vh]">
         
-        {/* --- HEADER CHUẨN (Khớp ứng dụng mẫu - giữ tông màu Sienna chủ đạo) --- */}
-        <div className="px-4 py-2.5 bg-[#2b170e] text-white flex items-center justify-between shrink-0 border-b border-[#452215]">
+        {/* --- HEADER CHUẨN (Tông màu Ocean Blue chủ đạo) --- */}
+        <div className="px-4 py-2.5 bg-[#0284C7] text-white flex items-center justify-between shrink-0 border-b border-sky-700">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-[#9e5628] text-white flex items-center justify-center shrink-0 shadow-sm">
+            <div className="w-8 h-8 rounded-xl bg-[#10B981] text-white flex items-center justify-center shrink-0 shadow-sm">
               <Cloud className="w-4.5 h-4.5" />
             </div>
             <div>
@@ -448,14 +448,14 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                   {appMode === 'online' ? 'Online' : 'Offline'}
                 </span>
               </div>
-              <p className="text-[10px] text-amber-200/80 leading-tight">
+              <p className="text-[10px] text-sky-100/80 leading-tight">
                 {appMode === 'online' ? (userEmail || 'Chưa liên kết email') : 'Lưu trữ cục bộ trên máy'}
               </p>
             </div>
           </div>
           <button
             onClick={handleCloseModal}
-            className="p-1.5 rounded-full text-amber-200/80 hover:text-white hover:bg-[#381c12] active:scale-95 transition cursor-pointer"
+            className="p-1.5 rounded-full text-sky-100/80 hover:text-white hover:bg-sky-600/60 active:scale-95 transition cursor-pointer"
             aria-label="Đóng"
           >
             <X className="w-5 h-5" />
@@ -475,7 +475,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     onClick={() => setStagingFilter('all')}
                     className={`px-2.5 py-1 rounded-lg font-bold transition shrink-0 cursor-pointer ${
                       stagingFilter === 'all'
-                        ? 'bg-[#9e5628] text-white'
+                        ? 'bg-[#0284C7] text-white'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
@@ -485,7 +485,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     onClick={() => setStagingFilter('new')}
                     className={`px-2.5 py-1 rounded-lg font-bold transition shrink-0 cursor-pointer ${
                       stagingFilter === 'new'
-                        ? 'bg-[#1b6b5b] text-white'
+                        ? 'bg-[#10B981] text-white'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
@@ -524,7 +524,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     className="flex items-center gap-1.5 hover:text-slate-600 transition cursor-pointer"
                   >
                     {filteredItems.every(i => i.selected) ? (
-                      <CheckSquare className="w-3.5 h-3.5 text-[#9e5628]" />
+                      <CheckSquare className="w-3.5 h-3.5 text-[#0284C7]" />
                     ) : (
                       <Square className="w-3.5 h-3.5 text-slate-300" />
                     )}
@@ -595,7 +595,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                           </button>
                           <button
                             onClick={() => handleSaveEdit(item.tempId)}
-                            className="px-2.5 py-1 text-[10.5px] font-bold bg-[#9e5628] text-white rounded-lg hover:bg-[#854720] cursor-pointer"
+                            className="px-2.5 py-1 text-[10.5px] font-bold bg-[#EA580C] text-white rounded-lg hover:bg-[#c2410c] cursor-pointer"
                           >
                             Lưu
                           </button>
@@ -619,7 +619,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                           className="shrink-0 cursor-pointer"
                         >
                           {item.selected ? (
-                            <CheckSquare className="w-4 h-4 text-[#9e5628]" />
+                            <CheckSquare className="w-4 h-4 text-[#0284C7]" />
                           ) : (
                             <Square className="w-4 h-4 text-slate-300" />
                           )}
@@ -675,12 +675,12 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                       value={newSheetTitle}
                       onChange={e => setNewSheetTitle(e.target.value)}
                       placeholder="Nhập tên bảng tính..."
-                      className="flex-1 px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:border-[#9e5628]"
+                      className="flex-1 px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:border-[#0284C7]"
                     />
                     <button
                       type="submit"
                       disabled={isCreatingSheet || !newSheetTitle.trim()}
-                      className="px-3.5 py-1.5 bg-[#1b6b5b] hover:bg-[#165b4c] text-white font-bold text-xs rounded-xl shadow-xs transition flex items-center gap-1 disabled:opacity-50 shrink-0 cursor-pointer"
+                      className="px-3.5 py-1.5 bg-[#0284C7] hover:bg-[#0369a1] text-white font-bold text-xs rounded-xl shadow-xs transition flex items-center gap-1 disabled:opacity-50 shrink-0 cursor-pointer"
                     >
                       {isCreatingSheet ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
                       <span>Tạo</span>
@@ -690,7 +690,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setShowCreateInput(true)}
-                    className="w-full py-2 bg-[#1b6b5b] hover:bg-[#145d4b] text-white font-bold text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-2 active:scale-95 cursor-pointer"
+                    className="w-full py-2 bg-[#0284C7] hover:bg-[#0369a1] text-white font-bold text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-2 active:scale-95 cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
                     <span>Tạo bảng tính mới trên Drive</span>
@@ -717,7 +717,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
 
                 {isLoadingSheets ? (
                   <div className="p-6 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin text-[#1b6b5b]" />
+                    <Loader2 className="w-4 h-4 animate-spin text-[#0284C7]" />
                     <span>Đang duyệt tìm tệp...</span>
                   </div>
                 ) : driveSheets.length > 0 ? (
@@ -734,7 +734,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                           }`}
                         >
                           <div className="flex items-center gap-2 min-w-0 flex-1">
-                            <span className="p-1 bg-[#1b6b5b]/10 text-[#1b6b5b] rounded-lg">
+                            <span className="p-1 bg-[#0284C7]/10 text-[#0284C7] rounded-lg">
                               <FileSpreadsheet className="w-3.5 h-3.5" />
                             </span>
                             <div className="min-w-0 flex-1">
@@ -756,7 +756,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                                     await onSelectSpreadsheet(sheet);
                                     setShowSheetSelector(false);
                                   }}
-                                  className="px-2.5 py-1.5 bg-[#9e5628] hover:bg-[#85451e] text-white font-bold text-[10.5px] rounded-lg transition shrink-0 cursor-pointer shadow-3xs active:scale-95"
+                                  className="px-2.5 py-1.5 bg-[#0284C7] hover:bg-[#0369a1] text-white font-bold text-[10.5px] rounded-lg transition shrink-0 cursor-pointer shadow-3xs active:scale-95"
                                 >
                                   Liên kết
                                 </button>
@@ -910,7 +910,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isProcessing}
-                    className="h-10 px-2.5 bg-[#1b6b5b] hover:bg-[#145d4b] text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer disabled:opacity-40"
+                    className="h-10 px-2.5 bg-[#10B981] hover:bg-[#059669] text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer disabled:opacity-40"
                   >
                     <Upload className="w-3.5 h-3.5 shrink-0" />
                     <span className="truncate">Nhập từ file</span>
@@ -966,7 +966,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                 type="button"
                 onClick={handleConfirmImport}
                 disabled={isProcessing || selectedCount === 0}
-                className="flex-1 py-2.5 px-4 bg-[#1b6b5b] hover:bg-[#145d4b] active:scale-95 text-white font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                className="flex-1 py-2.5 px-4 bg-[#10B981] hover:bg-[#059669] active:scale-95 text-white font-extrabold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
               >
                 {isProcessing ? (
                   <>

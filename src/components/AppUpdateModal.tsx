@@ -192,13 +192,13 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
         onClick={!isDownloading ? onClose : undefined}
       />
 
-      <div className="relative w-full max-w-md transform overflow-hidden rounded-3xl bg-[#1c0e08] border border-[#452215] shadow-2xl transition-all p-6 text-slate-100 flex flex-col space-y-5">
-        <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-amber-500 via-[#9e5628] to-amber-600" />
+      <div className="relative w-full max-w-md transform overflow-hidden rounded-3xl bg-slate-900 border border-slate-700 shadow-2xl transition-all p-6 text-slate-100 flex flex-col space-y-5">
+        <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-[#0284C7] via-[#10B981] to-[#EA580C]" />
 
         {!isDownloading && (
           <button
             onClick={onClose}
-            className="absolute top-4 right-4 text-amber-200/70 hover:text-white p-1.5 rounded-lg hover:bg-[#2b170e] transition-colors"
+            className="absolute top-4 right-4 text-sky-200/70 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
             title="Bỏ qua"
           >
             <X className="w-4 h-4" />
@@ -206,7 +206,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
         )}
 
         <div className="flex flex-col items-center text-center space-y-2 pt-2">
-          <div className="p-3.5 bg-[#9e5628] text-white rounded-2xl shadow-xs">
+          <div className="p-3.5 bg-[#0284C7] text-white rounded-2xl shadow-xs">
             {isDownloading ? (
               <Loader2 className="w-10 h-10 animate-spin text-white" />
             ) : (
@@ -216,31 +216,31 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
           <h2 className="text-lg font-extrabold tracking-tight text-white px-2">
             {isDownloading ? `Đang tải v${updateInfo.version}...` : `Đã có bản cập nhật mới (v${updateInfo.version})!`}
           </h2>
-          <p className="text-xs text-amber-200/70 px-4">
+          <p className="text-xs text-sky-200/80 px-4">
             {isDownloading ? statusMessage : 'Bạn có muốn nâng cấp để vá lỗi và trải nghiệm tính năng tốt nhất không?'}
           </p>
         </div>
 
         {isDownloading ? (
           <div className="space-y-3 py-3">
-            <div className="w-full bg-[#2b170e] rounded-full h-3 overflow-hidden p-0.5 border border-[#452215]">
+            <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5 border border-slate-700">
               <div 
-                className="bg-[#9e5628] h-full rounded-full transition-all duration-300"
+                className="bg-[#10B981] h-full rounded-full transition-all duration-300"
                 style={{ width: `${downloadProgress}%` }}
               />
             </div>
-            <div className="flex justify-between text-[11px] text-amber-200/70 font-medium">
+            <div className="flex justify-between text-[11px] text-sky-200/80 font-medium">
               <span>{statusMessage}</span>
-              <span className="text-amber-300 font-bold">{downloadProgress}%</span>
+              <span className="text-emerald-300 font-bold">{downloadProgress}%</span>
             </div>
-            <div className="text-center pt-2 border-t border-[#452215]">
+            <div className="text-center pt-2 border-t border-slate-800">
               <button
                 type="button"
                 onClick={() => {
                   const targetLink = updateInfo.apkUrl || updateInfo.downloadUrl;
                   if (targetLink) window.open(targetLink, '_system') || (window.location.href = targetLink);
                 }}
-                className="text-xs text-amber-300 underline hover:text-amber-200 transition-colors font-medium"
+                className="text-xs text-sky-300 underline hover:text-sky-200 transition-colors font-medium cursor-pointer"
               >
                 Mở tải về trực tiếp bằng Trình duyệt
               </button>
@@ -248,22 +248,22 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 bg-[#2b170e] rounded-2xl p-3 border border-[#452215] text-center">
+            <div className="grid grid-cols-2 gap-3 bg-slate-800/80 rounded-2xl p-3 border border-slate-700 text-center">
               <div>
-                <span className="block text-[10px] text-amber-200/60 uppercase font-bold tracking-wider">Phiên bản hiện tại</span>
+                <span className="block text-[10px] text-slate-400 uppercase font-bold tracking-wider">Phiên bản hiện tại</span>
                 <span className="text-sm font-semibold text-slate-300">v{currentVersion}</span>
               </div>
-              <div className="border-l border-[#452215]">
-                <span className="block text-[10px] text-amber-400 uppercase font-bold tracking-wider">Phiên bản mới nhất</span>
-                <span className="text-sm font-extrabold text-amber-300">v{updateInfo.version}</span>
+              <div className="border-l border-slate-700">
+                <span className="block text-[10px] text-emerald-400 uppercase font-bold tracking-wider">Phiên bản mới nhất</span>
+                <span className="text-sm font-extrabold text-emerald-300">v{updateInfo.version}</span>
               </div>
             </div>
 
             <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-              <div className="flex items-center justify-between text-xs font-semibold text-amber-200/80 border-b border-[#452215] pb-1.5">
+              <div className="flex items-center justify-between text-xs font-semibold text-sky-200/80 border-b border-slate-800 pb-1.5">
                 <span>Danh sách thay đổi:</span>
                 {updateInfo.releaseDate && (
-                  <span className="flex items-center space-x-1 text-[10px] text-amber-200/60">
+                  <span className="flex items-center space-x-1 text-[10px] text-slate-400">
                     <Calendar className="w-3 h-3" />
                     <span>{updateInfo.releaseDate}</span>
                   </span>
@@ -273,7 +273,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
                 {updateInfo.changelog && updateInfo.changelog.length > 0 ? (
                   updateInfo.changelog.map((item, idx) => (
                     <li key={idx} className="flex items-start space-x-2 text-slate-200">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
                       <span className="leading-relaxed">{item}</span>
                     </li>
                   ))
@@ -288,20 +288,20 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
             <div className="flex space-x-3 pt-2">
               <button
                 onClick={onClose}
-                className="flex-1 py-2.5 rounded-2xl border border-[#452215] hover:bg-[#2b170e] text-amber-200/80 hover:text-white font-bold text-xs transition-all"
+                className="flex-1 py-2.5 rounded-2xl border border-slate-700 hover:bg-slate-800 text-slate-300 hover:text-white font-bold text-xs transition-all cursor-pointer"
               >
                 Để sau
               </button>
               <button
                 onClick={handleUpdate}
-                className="flex-1 py-2.5 rounded-2xl bg-[#9e5628] hover:bg-[#85451e] text-white font-extrabold text-xs flex items-center justify-center space-x-1.5 shadow-md transition-all active:scale-[0.98]"
+                className="flex-1 py-2.5 rounded-2xl bg-[#EA580C] hover:bg-[#c2410c] text-white font-extrabold text-xs flex items-center justify-center space-x-1.5 shadow-md transition-all active:scale-[0.98] cursor-pointer"
               >
                 <Download className="w-4 h-4 shrink-0" />
                 <span>Cập nhật ngay</span>
               </button>
             </div>
 
-            <p className="text-[10px] text-amber-300 text-center font-medium pt-1">
+            <p className="text-[10px] text-sky-300 text-center font-medium pt-1">
               ✓ Giữ nguyên 100% dữ liệu sách đã lưu trong máy và đám mây
             </p>
           </>

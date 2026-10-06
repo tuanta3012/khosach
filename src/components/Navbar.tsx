@@ -60,6 +60,30 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isMigratingToCloud, setIsMigratingToCloud] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement>(null);
 
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'success'>('idle');
+
+  useEffect(() => {
+    if (isSyncingDrive) {
+      setSyncStatus('syncing');
+    } else {
+      setSyncStatus((prev) => {
+        if (prev === 'syncing') {
+          return 'success';
+        }
+        return prev;
+      });
+    }
+  }, [isSyncingDrive]);
+
+  useEffect(() => {
+    if (syncStatus === 'success') {
+      const timer = setTimeout(() => {
+        setSyncStatus('idle');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [syncStatus]);
+
   // Close account menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -91,8 +115,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <>
-      {/* Top Bar for Mobile & Desktop - Tông màu Nâu Vàng Gỗ Sồi Sienna (#2b170e) */}
-      <header className="sticky top-0 z-40 bg-[#2b170e] text-white shadow-md border-b border-[#452215]/80 pt-[env(safe-area-inset-top,0px)]">
+      {/* Top Bar for Mobile & Desktop - Tông màu Xanh Dương Hiện Đại (#0284C7) */}
+      <header className="sticky top-0 z-40 bg-[#0284C7] text-white shadow-md border-b border-sky-700/80 pt-[env(safe-area-inset-top,0px)]">
         <div className="max-w-7xl mx-auto px-3 sm:px-5">
           <div className="flex items-center justify-between h-15 sm:h-16 gap-2">
             {/* App Branding & Storage Mode Status Indicator */}
@@ -100,14 +124,14 @@ export const Navbar: React.FC<NavbarProps> = ({
               <img
                 src="/stk_app_icon.png"
                 alt="Kho Sách"
-                className="w-7.5 h-7.5 sm:w-8 sm:h-8 rounded-lg object-contain bg-white/95 p-0.5 shadow-sm border border-amber-400/40 shrink-0"
+                className="w-7.5 h-7.5 sm:w-8 sm:h-8 rounded-lg object-cover shadow-xs border border-sky-200/40 shrink-0"
               />
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <h1 className="text-xs sm:text-sm font-extrabold tracking-tight text-white leading-tight">
                     Kho Sách
                   </h1>
-                  <span className="px-1.5 py-0.2 text-[9.5px] font-bold bg-[#9e5628]/60 text-amber-200 rounded border border-amber-500/40">
+                  <span className="px-1.5 py-0.2 text-[9.5px] font-bold bg-[#0369a1] text-sky-100 rounded border border-sky-300/40">
                     {totalBooksCount}
                   </span>
 
@@ -115,7 +139,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   {pendingAiCount > 0 && (
                     <span
                       title={`${pendingAiCount} cuốn sách đang chờ/chuẩn hóa AI`}
-                      className="px-1.5 py-0.2 text-[9.5px] font-black bg-amber-500 text-slate-950 rounded-full animate-bounce shadow-xs flex items-center gap-0.5"
+                      className="px-1.5 py-0.2 text-[9.5px] font-black bg-[#F59E0B] text-slate-950 rounded-full animate-bounce shadow-xs flex items-center gap-0.5"
                     >
                       <Sparkles className="w-2.5 h-2.5" />
                       !{pendingAiCount}
@@ -125,29 +149,39 @@ export const Navbar: React.FC<NavbarProps> = ({
 
                 {/* Storage Mode Status Indicator */}
                 {appMode === 'online' ? (
-                  /* Trạng thái Online: Chấm xanh lá + chữ "Online" tinh gọn */
+                  /* Trạng thái Online: Chấm xanh ngọc + chữ "Online" tinh gọn */
                   <button
                     type="button"
                     onClick={onOpenModeModal}
-                    className="text-[9.5px] sm:text-xs text-emerald-300 flex items-center gap-1 font-bold hover:text-white transition text-left"
+                    className="text-[9.5px] sm:text-xs text-sky-100 flex items-center gap-1 font-bold hover:text-white transition text-left"
                     title="Chế độ trực tuyến (Google Drive)"
                   >
                     <span
                       className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                        isSyncingDrive ? 'bg-amber-400 animate-ping' : 'bg-emerald-400 shadow-xs shadow-emerald-400/50'
+                        syncStatus === 'syncing'
+                          ? 'bg-[#F59E0B] animate-ping'
+                          : syncStatus === 'success'
+                          ? 'bg-[#10B981] animate-pulse'
+                          : 'bg-[#10B981] shadow-xs shadow-emerald-400/50'
                       }`}
                     />
-                    <span>{isSyncingDrive ? 'Đang đồng bộ...' : 'Online'}</span>
+                    <span>
+                      {syncStatus === 'syncing'
+                        ? 'Đang đồng bộ...'
+                        : syncStatus === 'success'
+                        ? 'Đồng bộ thành công'
+                        : 'Online'}
+                    </span>
                   </button>
                 ) : (
                   /* Trạng thái Offline: Chấm xám + chữ "Offline" tinh gọn */
                   <button
                     type="button"
                     onClick={onOpenModeModal}
-                    className="text-[9.5px] sm:text-xs text-slate-300 flex items-center gap-1 font-bold hover:text-white transition text-left"
+                    className="text-[9.5px] sm:text-xs text-sky-200/80 flex items-center gap-1 font-bold hover:text-white transition text-left"
                     title="Chế độ ngoại tuyến (Bộ nhớ máy)"
                   >
-                    <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-slate-400" />
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-slate-300" />
                     <span>Offline</span>
                   </button>
                 )}
@@ -155,13 +189,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             {/* Desktop Navigation Tabs */}
-            <div className="hidden md:flex items-center gap-1 bg-[#1a0c08] p-1 rounded-xl border border-[#452215]/80">
+            <div className="hidden md:flex items-center gap-1 bg-[#0369a1] p-1 rounded-xl border border-sky-500/50">
               <button
                 onClick={() => onTabChange('table')}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition ${
                   currentTab === 'table'
-                    ? 'bg-[#9e5628] text-white shadow-xs'
-                    : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
+                    ? 'bg-[#10B981] text-white shadow-xs'
+                    : 'text-sky-100/80 hover:text-white hover:bg-sky-600/60'
                 }`}
               >
                 <Layers className="w-3.5 h-3.5" />
@@ -172,13 +206,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onClick={() => onTabChange('scanner')}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition ${
                   currentTab === 'scanner'
-                    ? 'bg-[#9e5628] text-white shadow-xs'
-                    : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
+                    ? 'bg-[#10B981] text-white shadow-xs'
+                    : 'text-sky-100/80 hover:text-white hover:bg-sky-600/60'
                 }`}
               >
                 <div className="relative inline-flex items-center">
                   <Camera className="w-3.5 h-3.5" />
-                  <span className="absolute -top-1 -right-1.5 bg-amber-400 text-slate-950 text-[6.5px] font-black px-0.5 rounded leading-tight shadow-xs">
+                  <span className="absolute -top-1 -right-1.5 bg-[#F59E0B] text-slate-950 text-[6.5px] font-black px-0.5 rounded leading-tight shadow-xs">
                     AI
                   </span>
                 </div>
@@ -194,23 +228,23 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsAccountMenuOpen(!isAccountMenuOpen)}
-                    className="flex items-center gap-1 p-0.5 sm:px-1.5 rounded-full bg-[#381c12] hover:bg-[#4a2417] border border-amber-500/40 text-white text-xs font-bold transition active:scale-95 shadow-sm"
+                    className="flex items-center gap-1 p-0.5 sm:px-1.5 rounded-full bg-[#0369a1] hover:bg-sky-600 border border-sky-300/50 text-white text-xs font-bold transition active:scale-95 shadow-xs"
                     title={currentUser.email}
                   >
                     {currentUser.photoURL ? (
                       <img
                         src={currentUser.photoURL}
                         alt={currentUser.name}
-                        className="w-6 h-6 rounded-full object-cover border border-amber-400/60"
+                        className="w-6 h-6 rounded-full object-cover border border-white/60"
                         referrerPolicy="no-referrer"
                       />
                     ) : (
-                      <div className="w-6 h-6 rounded-full bg-amber-500 text-slate-950 flex items-center justify-center font-black text-[11px] shadow-xs">
+                      <div className="w-6 h-6 rounded-full bg-[#F59E0B] text-slate-950 flex items-center justify-center font-black text-[11px] shadow-xs">
                         {(currentUser.name || currentUser.email || 'U').charAt(0).toUpperCase()}
                       </div>
                     )}
-                    <span className="hidden sm:inline max-w-[100px] truncate text-amber-100 font-semibold">{currentUser.name}</span>
-                    <ChevronDown className="w-3 h-3 text-amber-300 opacity-80" />
+                    <span className="hidden sm:inline max-w-[100px] truncate text-white font-semibold">{currentUser.name}</span>
+                    <ChevronDown className="w-3 h-3 text-sky-200 opacity-80" />
                   </button>
                 ) : (
                   /* User logged out / Offline: Direct Google Sign-In Button */
@@ -222,7 +256,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         onOpenModeModal();
                       }
                     }}
-                    className="flex items-center gap-1.5 px-2 py-1 bg-[#9e5628] hover:bg-[#85451e] active:scale-95 text-white text-[11px] font-bold rounded-lg shadow-xs transition border border-amber-400/30"
+                    className="flex items-center gap-1.5 px-2.5 py-1 bg-[#EA580C] hover:bg-[#c2410c] active:scale-95 text-white text-[11px] font-bold rounded-lg shadow-xs transition border border-orange-400/30 cursor-pointer"
                   >
                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
                       <path fill="#ffffff" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -232,16 +266,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </button>
                 )}
 
-                {/* Account Quick Dropdown Menu */}
+                {/* Account Quick Dropdown Menu - Bright Light Theme */}
                 {isAccountMenuOpen && currentUser && (
                   <div
                     onMouseDown={(e) => e.stopPropagation()}
                     onTouchStart={(e) => e.stopPropagation()}
-                    className="absolute right-0 mt-1.5 w-56 bg-[#2b170e] text-white border border-[#452215] rounded-2xl shadow-2xl p-2 z-50 animate-in fade-in duration-150 space-y-1"
+                    className="absolute right-0 mt-1.5 w-56 bg-white text-slate-800 border border-slate-200/90 rounded-2xl shadow-2xl p-2 z-50 animate-in fade-in duration-150 space-y-1"
                   >
-                    <div className="p-2 border-b border-[#452215]">
-                      <p className="text-xs font-bold text-white truncate">{currentUser.name}</p>
-                      <p className="text-[10px] text-amber-200/70 truncate">{currentUser.email}</p>
+                    <div className="p-2 border-b border-slate-100">
+                      <p className="text-xs font-bold text-slate-900 truncate">{currentUser.name}</p>
+                      <p className="text-[10px] text-slate-500 truncate">{currentUser.email}</p>
                     </div>
 
                     {onOpenFamilyShare && (
@@ -252,9 +286,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                           setIsAccountMenuOpen(false);
                           onOpenFamilyShare();
                         }}
-                        className="w-full flex items-center gap-2 p-2 rounded-xl text-xs font-semibold text-amber-200 hover:bg-[#381c12] active:bg-[#4a2417] transition text-left cursor-pointer"
+                        className="w-full flex items-center gap-2 p-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 active:bg-slate-200 transition text-left cursor-pointer"
                       >
-                        <Users className="w-4 h-4 text-amber-400" />
+                        <Users className="w-4 h-4 text-[#0284C7]" />
                         <span>Quản lý thành viên</span>
                       </button>
                     )}
@@ -267,9 +301,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                           setIsAccountMenuOpen(false);
                           onGoogleLogout();
                         }}
-                        className="w-full flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-rose-300 hover:bg-rose-950/40 active:bg-rose-900/60 transition text-left cursor-pointer"
+                        className="w-full flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-rose-600 hover:bg-rose-50 active:bg-rose-100 transition text-left cursor-pointer"
                       >
-                        <LogOut className="w-4 h-4 text-rose-400" />
+                        <LogOut className="w-4 h-4 text-rose-500" />
                         <span>Đăng xuất</span>
                       </button>
                     )}
@@ -281,7 +315,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 onClick={onOpenSettingsModal}
                 title="Cài đặt"
-                className="p-1.5 text-amber-100 hover:text-white hover:bg-[#381c12] active:scale-95 rounded-lg transition border border-transparent hover:border-[#452215]"
+                className="p-1.5 text-sky-100 hover:text-white hover:bg-sky-600/60 active:scale-95 rounded-lg transition border border-transparent hover:border-sky-400/40"
               >
                 <Settings className="w-4.5 h-4.5" />
               </button>
@@ -290,8 +324,8 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       </header>
 
-      {/* Bottom Navigation Dock for Mobile - Tông màu Nâu Vàng Gỗ Sồi Sienna (#2b170e) (Tăng chiều cao 30%) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#2b170e]/95 backdrop-blur-md border-t border-[#452215]/80 px-4 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
+      {/* Bottom Navigation Dock for Mobile - Tông màu Xanh Dương Hiện Đại (#0284C7) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0284C7]/95 backdrop-blur-md border-t border-sky-700/80 px-4 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
         <div className="flex items-center justify-around max-w-md mx-auto h-12">
           {/* 1. Kho Sách */}
           <button
@@ -299,8 +333,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             title="Kho Sách"
             className={`p-1 rounded-lg transition-all duration-150 active:scale-95 ${
               currentTab === 'table'
-                ? 'text-white bg-[#9e5628] font-bold shadow-xs'
-                : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
+                ? 'text-white bg-[#10B981] font-bold shadow-xs'
+                : 'text-sky-100/80 hover:text-white hover:bg-sky-600/50'
             }`}
           >
             <Layers className="w-[23.4px] h-[23.4px]" />
@@ -312,13 +346,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             title="Quét AI"
             className={`p-1 rounded-lg transition-all duration-150 active:scale-95 ${
               currentTab === 'scanner'
-                ? 'text-white bg-[#9e5628] font-bold shadow-xs'
-                : 'text-amber-200/70 hover:text-white hover:bg-[#381c12]'
+                ? 'text-white bg-[#10B981] font-bold shadow-xs'
+                : 'text-sky-100/80 hover:text-white hover:bg-sky-600/50'
             }`}
           >
             <div className="relative inline-flex items-center justify-center">
               <Camera className="w-[23.4px] h-[23.4px]" />
-              <span className="absolute -top-1 -right-1.5 bg-amber-400 text-slate-950 text-[6.5px] font-black px-0.5 rounded leading-tight shadow-xs">
+              <span className="absolute -top-1 -right-1.5 bg-[#F59E0B] text-slate-950 text-[6.5px] font-black px-0.5 rounded leading-tight shadow-xs">
                 AI
               </span>
             </div>
@@ -328,7 +362,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={onOpenAddModal}
             title="Thêm Sách"
-            className="p-1 rounded-lg text-amber-300 hover:bg-[#381c12] transition-all duration-150 active:scale-95"
+            className="p-1 rounded-lg text-[#F59E0B] hover:text-amber-300 transition-all duration-150 active:scale-95"
           >
             <PlusCircle className="w-[23.4px] h-[23.4px]" />
           </button>
@@ -337,7 +371,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={onOpenSyncModal}
             title="Đồng Bộ"
-            className="p-1 rounded-lg text-amber-200/70 hover:text-white hover:bg-[#381c12] transition-all duration-150 active:scale-95"
+            className="p-1 rounded-lg text-sky-100/80 hover:text-white hover:bg-sky-600/50 transition-all duration-150 active:scale-95"
           >
             <ArrowUpDown className="w-[23.4px] h-[23.4px]" />
           </button>

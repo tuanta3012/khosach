@@ -565,10 +565,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         }`}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header - Warm Sienna Style */}
-        <div className="px-4 py-3 bg-[#2b170e] text-white flex items-center justify-between shrink-0 border-b border-[#452215]">
+        {/* Header - Ocean Blue Brand Style */}
+        <div className="px-4 py-3 bg-[#0284C7] text-white flex items-center justify-between shrink-0 border-b border-sky-700">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-[#9e5628] text-white flex items-center justify-center shrink-0 shadow-xs">
+            <div className="w-8 h-8 rounded-xl bg-[#10B981] text-white flex items-center justify-center shrink-0 shadow-xs">
               <SettingsIcon className="w-4.5 h-4.5" />
             </div>
             <div>
@@ -583,7 +583,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               else if (reviewProposals) setReviewProposals(null);
               else onClose();
             }}
-            className="p-1.5 rounded-full text-amber-200/80 hover:text-white hover:bg-[#381c12] active:scale-95 transition cursor-pointer"
+
             aria-label="Đóng"
           >
             <X className="w-5 h-5" />
@@ -994,7 +994,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 type="button"
                 onClick={handleManualDeduplicate}
                 disabled={isDeduplicating || books.length === 0}
-                className="px-3.5 py-2 bg-[#9e5628] hover:bg-[#854720] text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shrink-0 disabled:opacity-50 active:scale-95 cursor-pointer shadow-xs"
+                className="px-3.5 py-2 bg-[#EA580C] hover:bg-[#c2410c] text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shrink-0 disabled:opacity-50 active:scale-95 cursor-pointer shadow-xs"
               >
                 {isDeduplicating ? (
                   <>
@@ -1149,7 +1149,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <button
                   type="button"
                   onClick={onCheckUpdates}
-                  className="px-3.5 py-2 text-xs font-bold text-white bg-[#9e5628] hover:bg-[#854720] rounded-xl transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95"
+                  className="px-3.5 py-2 text-xs font-bold text-white bg-[#0284C7] hover:bg-[#0369a1] rounded-xl transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   <span>Cập nhật</span>
@@ -1171,7 +1171,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="flex-1 py-2.5 px-4 bg-[#9e5628] hover:bg-[#854720] text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer text-center shadow-xs flex items-center justify-center gap-1.5"
+                className="flex-1 py-2.5 px-4 bg-[#EA580C] hover:bg-[#c2410c] text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer text-center shadow-xs flex items-center justify-center gap-1.5"
               >
                 <Check className="w-4 h-4" />
                 <span>Lưu Cấu Hình</span>

@@ -125,19 +125,19 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
       <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Header */}
-        <div className="px-5 py-3.5 bg-amber-50/50 border-b border-amber-100/60 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-amber-100 text-[#9e5628] flex items-center justify-center">
-              <Book className="w-4 h-4" />
+        {/* Header - Brand Ocean Blue (#0284C7) */}
+        <div className="px-5 py-3.5 bg-[#0284C7] text-white border-b border-sky-700 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 flex items-center justify-center">
+              <Book className="w-4.5 h-4.5" />
             </div>
-            <h3 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
+            <h3 className="text-sm sm:text-base font-extrabold text-white leading-tight">
               {initialBook ? 'Chỉnh sửa sách' : 'Thêm sách mới'}
             </h3>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 transition"
+            className="p-1.5 rounded-full text-sky-100/80 hover:text-white hover:bg-sky-600/60 transition cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -154,7 +154,7 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
                 type="button"
                 onClick={handleEnrichWithAI}
                 disabled={isEnriching || !title.trim()}
-                className="inline-flex items-center gap-1 text-[11px] font-bold text-[#653f96] bg-[#faf5ff] hover:bg-purple-100 px-2 py-0.5 rounded-lg transition disabled:opacity-40"
+                className="inline-flex items-center gap-1 text-[11px] font-bold text-[#10B981] bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-lg transition disabled:opacity-40"
               >
                 {isEnriching ? (
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -178,7 +178,7 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Nhập tên sách..."
-              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#9e5628] focus:border-[#9e5628] focus:outline-none transition font-medium"
+              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#0284C7] focus:border-[#0284C7] focus:outline-none transition font-medium"
             />
             {duplicateMatch && duplicateMatch.matchedBook && (
               <div className="mt-1.5 p-2 px-2.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-1.5 text-[11px] text-amber-900 animate-in fade-in">
@@ -205,7 +205,7 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
               value={author}
               onChange={(e) => setAuthor(e.target.value)}
               placeholder="Tên tác giả..."
-              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#9e5628] focus:border-[#9e5628] focus:outline-none transition font-medium"
+              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#0284C7] focus:border-[#0284C7] focus:outline-none transition font-medium"
             />
           </div>
 
@@ -226,7 +226,7 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
                 onChange={(e) => setCategory(e.target.value)}
                 placeholder="Chọn hoặc nhập thể loại"
                 list="category-suggestions"
-                className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#9e5628] focus:border-[#9e5628] focus:outline-none transition font-medium"
+                className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#0284C7] focus:border-[#0284C7] focus:outline-none transition font-medium"
               />
               <datalist id="category-suggestions">
                 {categories.map((cat) => (
@@ -251,7 +251,7 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
               value={publisher}
               onChange={(e) => setPublisher(e.target.value)}
               placeholder="NXB..."
-              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#9e5628] focus:border-[#9e5628] focus:outline-none transition font-medium"
+              className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-[#0284C7] focus:border-[#0284C7] focus:outline-none transition font-medium"
             />
           </div>
 
@@ -261,14 +261,14 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
               type="button"
               onClick={onClose}
               disabled={isSaving}
-              className="px-4 py-2 text-xs sm:text-sm font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition"
+              className="px-4 py-2 text-xs sm:text-sm font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition cursor-pointer"
             >
               Hủy
             </button>
             <button
               type="submit"
               disabled={isSaving}
-              className="px-5 py-2 text-xs sm:text-sm font-bold text-white bg-[#9e5628] hover:bg-[#85451e] active:scale-95 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-50"
+              className="px-5 py-2 text-xs sm:text-sm font-bold text-white bg-[#EA580C] hover:bg-[#c2410c] active:scale-95 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               {isSaving ? (
                 <>

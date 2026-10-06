@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <!-- Chặn triệt để sao lưu đám mây Google One / Google Drive Backup -->
+    <cloud-backup>
+        <exclude path="." />
+    </cloud-backup>
+    <!-- Chặn truyền dữ liệu khi chuyển sang thiết bị mới (Device-to-Device transfer) -->
+    <device-transfer>
+        <exclude path="." />
+    </device-transfer>
+</data-extraction-rules>

@@ -21,10 +21,10 @@ export const ModeSelectionModal: React.FC<ModeSelectionModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#1c0e08] text-white flex flex-col justify-between items-center px-6 py-8 sm:py-10 select-none overflow-y-auto">
+    <div className="fixed inset-0 z-50 bg-[#0f172a] text-white flex flex-col justify-between items-center px-6 py-8 sm:py-10 select-none overflow-y-auto">
       {/* Ambient Glow */}
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center -z-10 overflow-hidden">
-        <div className="w-[420px] h-[420px] bg-[#9e5628]/25 rounded-full blur-3xl" />
+        <div className="w-[420px] h-[420px] bg-[#0284C7]/20 rounded-full blur-3xl" />
       </div>
 
       {/* Top spacer */}
@@ -32,8 +32,8 @@ export const ModeSelectionModal: React.FC<ModeSelectionModalProps> = ({
 
       {/* Center Section: Bookshelf App Icon & Title */}
       <div className="flex flex-col items-center justify-center my-auto py-6 shrink-0 text-center">
-        <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-3xl bg-white/95 p-2 flex items-center justify-center shadow-[0_0_50px_rgba(158,86,40,0.4)] border-2 border-amber-400/50 transition transform hover:scale-105">
-          <img src="/stk_app_icon.png" alt="Kho Sách" className="w-full h-full object-contain" />
+        <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-3xl overflow-hidden shadow-[0_0_40px_rgba(2,132,199,0.3)] border border-sky-300/40 transition transform hover:scale-105 shrink-0">
+          <img src="/stk_app_icon.png" alt="Kho Sách" className="w-full h-full object-cover block" />
         </div>
 
         <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white mt-5">
@@ -47,9 +47,9 @@ export const ModeSelectionModal: React.FC<ModeSelectionModalProps> = ({
         <button
           type="button"
           onClick={() => onSelectMode('online')}
-          className="w-full p-4 rounded-2xl bg-white hover:bg-slate-50 text-slate-900 shadow-xl transition-all flex items-center gap-3.5 active:scale-[0.98] group text-left border border-white"
+          className="w-full p-4 rounded-2xl bg-white hover:bg-slate-50 text-slate-900 shadow-xl transition-all flex items-center gap-3.5 active:scale-[0.98] group text-left border border-white cursor-pointer"
         >
-          <div className="w-11 h-11 rounded-xl bg-amber-50 flex items-center justify-center shrink-0 border border-amber-200/60 group-hover:scale-105 transition-transform">
+          <div className="w-11 h-11 rounded-xl bg-sky-50 flex items-center justify-center shrink-0 border border-sky-200/80 group-hover:scale-105 transition-transform">
             <svg className="w-6 h-6" viewBox="0 0 24 24">
               <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
               <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -71,28 +71,28 @@ export const ModeSelectionModal: React.FC<ModeSelectionModalProps> = ({
         <button
           type="button"
           onClick={() => onSelectMode('offline')}
-          className="w-full p-4 rounded-2xl bg-[#2b170e] hover:bg-[#381c12] text-white border border-[#452215] hover:border-amber-500/50 shadow-lg transition-all flex items-center gap-3.5 active:scale-[0.98] group text-left"
+          className="w-full p-4 rounded-2xl bg-slate-800/90 hover:bg-slate-800 text-white border border-slate-700 hover:border-emerald-500/50 shadow-lg transition-all flex items-center gap-3.5 active:scale-[0.98] group text-left cursor-pointer"
         >
-          <div className="w-11 h-11 rounded-xl bg-[#9e5628]/30 border border-amber-500/40 text-amber-300 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+          <div className="w-11 h-11 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
             <HardDrive className="w-6 h-6" />
           </div>
           <div className="flex-1 min-w-0">
             <h3 className="text-base font-bold text-white leading-tight">
               Sử dụng Offline
             </h3>
-            <p className="text-xs text-amber-200/70 mt-0.5">
+            <p className="text-xs text-slate-400 mt-0.5">
               Lưu trữ an toàn trên máy
             </p>
           </div>
         </button>
 
         {/* Footer Version */}
-        <div className="pt-2 text-center text-xs text-amber-200/50 flex items-center justify-center gap-2">
+        <div className="pt-2 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
           <span>v{CURRENT_APP_VERSION}</span>
           {onCheckUpdates && (
             <button
               onClick={onCheckUpdates}
-              className="text-amber-400/80 hover:text-amber-300 flex items-center gap-1 font-semibold cursor-pointer"
+              className="text-sky-400 hover:text-sky-300 flex items-center gap-1 font-semibold cursor-pointer"
             >
               <RefreshCw className="w-3 h-3" />
               <span>Cập nhật</span>

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useDeferredValue, useCallback } from 'react';
+import React, { useState, useMemo, useRef, useDeferredValue, useCallback } from "react";
 import {
   Search,
   Edit2,
@@ -17,12 +17,12 @@ import {
   Plus,
   ArrowUpDown,
   PlusCircle,
-} from 'lucide-react';
-import { BookRecord } from '../types';
-import { removeVietnameseTones } from '../utils/fuzzyMatcher';
-import { useToast } from '../context/ToastContext';
-import { CategoryBubbleChart } from './CategoryBubbleChart';
-import { SortSelectDropdown, BookSortOption } from './SortSelectDropdown';
+} from "lucide-react";
+import { BookRecord } from "../types";
+import { removeVietnameseTones } from "../utils/fuzzyMatcher";
+import { useToast } from "../context/ToastContext";
+import { CategoryBubbleChart } from "./CategoryBubbleChart";
+import { SortSelectDropdown, BookSortOption } from "./SortSelectDropdown";
 
 interface BookTableViewProps {
   books: BookRecord[];
@@ -32,30 +32,19 @@ interface BookTableViewProps {
   onOpenAddModal: () => void;
   onOpenImportModal: () => void;
   onSwitchToScanner?: () => void;
-  appMode?: 'offline' | 'online';
+  appMode?: "offline" | "online";
   isSyncingDrive?: boolean;
 }
 
-// Bảng màu Badge thể loại Warm Sienna & Accent Tones
 function getCategoryBadgeStyle(categoryName: string): { bg: string; text: string; border: string } {
-  const cat = (categoryName || '').toLowerCase();
-  if (cat.includes('văn học') || cat.includes('tiểu thuyết') || cat.includes('truyện')) {
-    return { bg: 'bg-[#fdf2f8]', text: 'text-[#88284c]', border: 'border-[#fbcfe8]' }; // Wine / Maroon
+  const cat = (categoryName || "").toLowerCase();
+  if (cat.includes("kinh tế") || cat.includes("đầu tư") || cat.includes("kinh doanh")) {
+    return { bg: "bg-emerald-50", text: "text-[#10B981]", border: "border-emerald-200" };
   }
-  if (cat.includes('tâm lý') || cat.includes('triết học') || cat.includes('kỹ năng')) {
-    return { bg: 'bg-[#faf5ff]', text: 'text-[#653f96]', border: 'border-[#e9d5ff]' }; // Violet / Purple
+  if (cat.includes("lịch sử") || cat.includes("hồi ký") || cat.includes("tự truyện")) {
+    return { bg: "bg-amber-50", text: "text-[#EA580C]", border: "border-amber-200" };
   }
-  if (cat.includes('kinh tế') || cat.includes('đầu tư') || cat.includes('kinh doanh')) {
-    return { bg: 'bg-[#f0fdfa]', text: 'text-[#165b4c]', border: 'border-[#ccfbf1]' }; // Pine Teal
-  }
-  if (cat.includes('lịch sử') || cat.includes('hồi ký') || cat.includes('tự truyện')) {
-    return { bg: 'bg-[#fffbeb]', text: 'text-[#9e5628]', border: 'border-[#fef3c7]' }; // Sienna Amber
-  }
-  if (cat.includes('khoa học') || cat.includes('công nghệ') || cat.includes('y học')) {
-    return { bg: 'bg-[#eff6ff]', text: 'text-[#295588]', border: 'border-[#bfdbfe]' }; // Denim Navy
-  }
-  // Mặc định: Warm Sienna Amber
-  return { bg: 'bg-[#fffbeb]', text: 'text-[#9e5628]', border: 'border-[#fef3c7]' };
+  return { bg: "bg-sky-50", text: "text-[#0284C7]", border: "border-[#bfdbfe]" };
 }
 
 export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
@@ -68,14 +57,12 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   onSwitchToScanner,
 }) => {
   const { showToast } = useToast();
-  const [globalFilter, setGlobalFilter] = useState('');
-  // React 18 useDeferredValue: Gõ phím phản hồi tức thì 60fps, không khựng giật khi lọc mảng lớn
+  const [globalFilter, setGlobalFilter] = useState("");
   const deferredFilter = useDeferredValue(globalFilter);
-
-  const [viewMode, setViewMode] = useState<'list' | 'chart'>('list');
+  const [viewMode, setViewMode] = useState<"list" | "chart">("list");
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editingValues, setEditingValues] = useState<Partial<BookRecord>>({});
-  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+  const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   // Pagination state
@@ -85,27 +72,27 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   // Sắp xếp
   const [sortBy, setSortBy] = useState<BookSortOption>(() => {
     try {
-      return (localStorage.getItem('book_library_sort_by') as BookSortOption) || 'newest';
+      return (localStorage.getItem("book_library_sort_by") as BookSortOption) || "newest";
     } catch {
-      return 'newest';
+      return "newest";
     }
   });
 
   const handleSortChange = (newSort: BookSortOption) => {
     setSortBy(newSort);
     try {
-      localStorage.setItem('book_library_sort_by', newSort);
+      localStorage.setItem("book_library_sort_by", newSort);
     } catch {}
     setPageIndex(0);
   };
 
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
-  // Tối ưu hóa đếm số lượng sách theo danh mục trong O(N) duy nhất, loại bỏ O(Categories * N)
+  // Tối ưu hóa đếm số lượng sách theo danh mục trong O(N) duy nhất
   const categoryCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
+    const counts = {};
     for (let i = 0; i < books.length; i++) {
-      const cat = (books[i].category || 'Chung').trim() || 'Chung';
+      const cat = (books[i].category || "Chung").trim() || "Chung";
       counts[cat] = (counts[cat] || 0) + 1;
     }
     return counts;
@@ -115,15 +102,15 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   const filteredData = useMemo(() => {
     let result = [...books];
 
-    if (selectedCategory !== 'ALL') {
-      result = result.filter((b) => (b.category || 'Chung') === selectedCategory);
+    if (selectedCategory !== "ALL") {
+      result = result.filter((b) => (b.category || "Chung") === selectedCategory);
     }
 
-    const getBookTime = (b: BookRecord): number => {
-      if (typeof b.created_at === 'number' && b.created_at > 0) return b.created_at;
-      if (typeof b.updated_at === 'number' && b.updated_at > 0) return b.updated_at;
-      if (b.id && b.id.startsWith('book_')) {
-        const parts = b.id.split('_');
+    const getBookTime = (b: BookRecord) => {
+      if (typeof b.created_at === "number" && b.created_at > 0) return b.created_at;
+      if (typeof b.updated_at === "number" && b.updated_at > 0) return b.updated_at;
+      if (b.id && b.id.startsWith("book_")) {
+        const parts = b.id.split("_");
         const num = Number(parts[1]);
         if (!isNaN(num) && num > 0) return num;
       }
@@ -131,17 +118,17 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
     };
 
     const sortFn = (a: BookRecord, b: BookRecord) => {
-      if (sortBy === 'newest') {
+      if (sortBy === "newest") {
         const timeDiff = getBookTime(b) - getBookTime(a);
         if (timeDiff !== 0) return timeDiff;
-        return (a.title || '').localeCompare(b.title || '', 'vi', { sensitivity: 'base' });
+        return (a.title || "").localeCompare(b.title || "", "vi", { sensitivity: "base" });
       }
-      if (sortBy === 'oldest') {
+      if (sortBy === "oldest") {
         const timeDiff = getBookTime(a) - getBookTime(b);
         if (timeDiff !== 0) return timeDiff;
-        return (a.title || '').localeCompare(b.title || '', 'vi', { sensitivity: 'base' });
+        return (a.title || "").localeCompare(b.title || "", "vi", { sensitivity: "base" });
       }
-      if (sortBy === 'title_asc') {
+      if (sortBy === "title_asc") {
         const comp = (a.title || '').localeCompare(b.title || '', 'vi', { sensitivity: 'base' });
         if (comp !== 0) return comp;
         return getBookTime(b) - getBookTime(a);
@@ -318,7 +305,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       {/* Search & Filter Bar - Warm Sienna Accents */}
       <div
         ref={searchContainerRef}
-        className="sticky top-11 sm:top-12 z-30 bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200/90 shadow-2xs p-2 sm:p-2.5 space-y-2 transition-all"
+
       >
         <div className="flex items-center gap-1.5 sm:gap-2">
           {/* Main Search Input */}
@@ -344,7 +331,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
               value={globalFilter}
               onChange={(e) => handleFilterChange(e.target.value)}
               placeholder="Tìm tên sách, tác giả..."
-              className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#9e5628] rounded-xl focus:ring-2 focus:ring-[#9e5628]/20 focus:outline-none transition font-medium"
+              className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#0284C7] rounded-xl focus:ring-2 focus:ring-[#0284C7]/20 focus:outline-none transition font-medium"
             />
             {globalFilter && (
               <button
@@ -363,7 +350,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
               onClick={() => setViewMode('list')}
               className={`p-1.5 rounded-lg text-xs transition ${
                 viewMode === 'list'
-                  ? 'bg-[#9e5628] text-white shadow-xs font-bold'
+                  ? 'bg-[#10B981] text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-800'
               }`}
               title="Danh Sách"
@@ -374,7 +361,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
               onClick={() => setViewMode('chart')}
               className={`p-1.5 rounded-lg text-xs transition ${
                 viewMode === 'chart'
-                  ? 'bg-[#9e5628] text-white shadow-xs font-bold'
+                  ? 'bg-[#10B981] text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-800'
               }`}
               title="Thống Kê Thể Loại"
@@ -386,11 +373,11 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
 
         {/* Live Search Header or Category Horizontal Scroll */}
         {isSearching ? (
-          <div className="flex items-center justify-between text-xs bg-amber-50 px-3 py-1.5 rounded-xl border border-amber-200/80">
-            <span className="font-bold text-[#85451e] flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-[#9e5628]" />
+          <div className="flex items-center justify-between text-xs bg-sky-50 px-3 py-1.5 rounded-xl border border-sky-200/80">
+            <span className="font-bold text-[#0284C7] flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-[#0284C7]" />
               <span>
-                Tìm thấy <strong className="text-[#85451e] font-black">{filteredData.length}</strong> cuốn
+                Tìm thấy <strong className="text-[#0369a1] font-black">{filteredData.length}</strong> cuốn
               </span>
             </span>
             <div className="flex items-center gap-2">
@@ -415,7 +402,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                   onClick={() => handleCategorySelect('ALL')}
                   className={`px-3 py-1 rounded-full text-xs font-bold shrink-0 transition ${
                     selectedCategory === 'ALL'
-                      ? 'bg-[#9e5628] text-white shadow-xs'
+                      ? 'bg-[#10B981] text-white shadow-xs'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
@@ -431,7 +418,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                       onClick={() => handleCategorySelect(cat)}
                       className={`px-3 py-1 rounded-full text-xs font-medium shrink-0 transition ${
                         isSel
-                          ? 'bg-[#9e5628] text-white font-bold shadow-xs'
+                          ? 'bg-[#10B981] text-white font-bold shadow-xs'
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
@@ -484,7 +471,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                               title: e.target.value,
                             }))
                           }
-                          className="w-full px-2 py-1 text-xs font-bold text-slate-900 bg-white border border-[#9e5628] rounded-lg focus:outline-none"
+                          className="w-full px-2 py-1 text-xs font-bold text-slate-900 bg-white border border-[#EA580C] rounded-lg focus:outline-none"
                         />
                       </div>
                       <div className="grid grid-cols-2 gap-2">
@@ -507,7 +494,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                                 author: e.target.value,
                               }))
                             }
-                            className="w-full px-2 py-0.5 text-xs bg-white border border-[#9e5628] rounded-lg focus:outline-none"
+                            className="w-full px-2 py-0.5 text-xs bg-white border border-[#EA580C] rounded-lg focus:outline-none"
                           />
                         </div>
                         <div>
@@ -529,7 +516,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                                 category: e.target.value,
                               }))
                             }
-                            className="w-full px-2 py-0.5 text-xs bg-white border border-[#9e5628] rounded-lg focus:outline-none"
+                            className="w-full px-2 py-0.5 text-xs bg-white border border-[#EA580C] rounded-lg focus:outline-none"
                           />
                         </div>
                       </div>
@@ -552,7 +539,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                               publisher: e.target.value,
                             }))
                           }
-                          className="w-full px-2 py-0.5 text-xs bg-white border border-[#9e5628] rounded-lg focus:outline-none"
+                          className="w-full px-2 py-0.5 text-xs bg-white border border-[#EA580C] rounded-lg focus:outline-none"
                         />
                       </div>
                       <div className="flex items-center justify-end gap-2 pt-0.5">
@@ -564,7 +551,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                         </button>
                         <button
                           onClick={() => handleSaveInline(book)}
-                          className="px-2.5 py-0.5 bg-[#9e5628] text-white rounded-lg text-xs font-bold hover:bg-[#85451e] transition shadow-xs"
+                          className="px-2.5 py-0.5 bg-[#EA580C] text-white rounded-lg text-xs font-bold hover:bg-[#c2410c] transition shadow-xs cursor-pointer"
                         >
                           Lưu
                         </button>
@@ -576,7 +563,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                 return (
                   <div
                     key={book.id}
-                    className="bg-white border border-slate-200/90 rounded-xl px-2.5 py-1.5 shadow-2xs hover:border-amber-300 transition"
+                    className="bg-white border border-slate-200/90 rounded-xl px-2.5 py-1.5 shadow-2xs hover:border-emerald-300 transition"
                   >
                     {/* Top Row: Index + Title + Quick Actions */}
                     <div className="flex items-start justify-between gap-1.5">
@@ -609,7 +596,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                           <>
                             <button
                               onClick={() => handleStartEdit(book)}
-                              className="p-0.5 text-slate-400 hover:text-[#9e5628] hover:bg-amber-50 rounded-md transition"
+                              className="p-0.5 text-slate-400 hover:text-[#0284C7] hover:bg-sky-50 rounded-md transition"
                               title="Sửa"
                             >
                               <Edit2 className="w-3.5 h-3.5" />
@@ -657,7 +644,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
             ) : books.length === 0 ? (
               /* Kho Sách Đang Trống (0 cuốn) - Hiển thị Khối Đồng Bộ & Nhập Sách Nổi Bật */
               <div className="bg-white rounded-3xl p-6 sm:p-8 text-center border border-slate-200/90 shadow-2xs space-y-4 my-2">
-                <div className="w-16 h-16 rounded-2xl bg-[#f7f0eb] border border-[#e8d5c8] text-[#9e5628] flex items-center justify-center mx-auto shadow-2xs">
+                <div className="w-16 h-16 rounded-2xl bg-sky-50 border border-sky-200 text-[#0284C7] flex items-center justify-center mx-auto shadow-2xs">
                   <Upload className="w-8 h-8" />
                 </div>
 
@@ -671,26 +658,26 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 max-w-xl mx-auto pt-2">
-                  {/* Nút 1: Nhập file / Đồng bộ (Icon: ArrowUpDown đồng bộ thanh bar dưới, Gam màu Sienna App Icon) */}
+                  {/* Nút 1: Nhập file / Đồng bộ (Xanh Dương Hiện Đại) */}
                   <button
                     type="button"
                     onClick={onOpenImportModal}
-                    className="px-4 py-3 bg-[#9e5628] hover:bg-[#854720] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-amber-600/30"
+                    className="px-4 py-3 bg-[#0284C7] hover:bg-[#0369a1] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-sky-400/30"
                   >
                     <ArrowUpDown className="w-4 h-4 shrink-0" />
                     <span>Nhập file / Đồng bộ</span>
                   </button>
 
-                  {/* Nút 2: Thêm sách bằng ảnh (Icon: Camera + AI, Gam màu Tím App Icon) */}
+                  {/* Nút 2: Thêm sách bằng ảnh (Xanh Ngọc Lục Bảo) */}
                   {onSwitchToScanner && (
                     <button
                       type="button"
                       onClick={onSwitchToScanner}
-                      className="px-4 py-3 bg-[#6b21a8] hover:bg-[#581c87] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-purple-400/30"
+                      className="px-4 py-3 bg-[#10B981] hover:bg-[#059669] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-emerald-400/30"
                     >
                       <div className="relative inline-flex items-center shrink-0">
                         <Camera className="w-4 h-4" />
-                        <span className="absolute -top-1.5 -right-2 bg-amber-400 text-slate-950 text-[7px] font-black px-0.5 rounded-xs leading-none shadow-xs">
+                        <span className="absolute -top-1.5 -right-2 bg-[#F59E0B] text-slate-950 text-[7px] font-black px-0.5 rounded-xs leading-none shadow-xs">
                           AI
                         </span>
                       </div>
@@ -698,11 +685,11 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                     </button>
                   )}
 
-                  {/* Nút 3: Thêm sách mới (Icon: PlusCircle đồng bộ thanh bar dưới, Gam màu Xanh Ngọc App Icon) */}
+                  {/* Nút 3: Thêm sách mới (Cam San Hồ / Terracotta) */}
                   <button
                     type="button"
                     onClick={onOpenAddModal}
-                    className="px-4 py-3 bg-[#9e5628] hover:bg-[#854720] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-amber-500/30"
+                    className="px-4 py-3 bg-[#EA580C] hover:bg-[#c2410c] active:scale-95 text-white rounded-2xl font-bold text-xs shadow-md transition flex items-center justify-center gap-2 cursor-pointer border border-orange-400/30"
                   >
                     <PlusCircle className="w-4 h-4 shrink-0" />
                     <span>Thêm sách mới</span>

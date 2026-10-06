@@ -1,69 +1,37 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
     <style>
-      .stroke-dark { stroke: #192538; stroke-width: 14; stroke-linecap: round; stroke-linejoin: round; }
-      .stroke-thin { stroke: rgba(255,255,255,0.22); stroke-width: 8; stroke-linecap: round; }
+      .book-outline { stroke: #1a202c; stroke-width: 14; stroke-linecap: round; stroke-linejoin: round; }
     </style>
   </defs>
 
-  <!-- Background Canvas: Clean White / Transparent Soft Radiance -->
-  <rect width="1024" height="1024" fill="#ffffff" rx="220"/>
+  <!-- Background Canvas: Warm Taupe / Sand Beige -->
+  <rect width="1024" height="1024" fill="#d7c3b0" />
 
-  <g transform="translate(10, 10)">
-    <!-- 1. BOOK 1 (Maroon / Burgundy) -->
-    <!-- Bookmark 1 -->
-    <rect x="190" y="165" width="42" height="60" rx="6" fill="#f43f8e" class="stroke-dark"/>
-    <!-- Body -->
-    <rect x="144" y="215" width="132" height="585" rx="36" fill="#88284c" class="stroke-dark"/>
-    <line x1="166" y1="260" x2="254" y2="260" class="stroke-thin"/>
-    <line x1="166" y1="650" x2="254" y2="650" class="stroke-thin"/>
-    <!-- Label box -->
-    <rect x="165" y="688" width="88" height="84" rx="22" fill="#fdf2f8" stroke="#88284c" stroke-width="4"/>
+  <!-- 1. TOP BOOK (Emerald Green) -->
+  <g id="top-book">
+    <rect x="116" y="200" width="740" height="188" rx="56" fill="#00b875" class="book-outline" />
+    <!-- White Spine Label -->
+    <rect x="764" y="230" width="68" height="128" rx="4" fill="#e6fcf5" />
+  </g>
 
-    <!-- 2. BOOK 2 (Purple / Violet) -->
-    <!-- Bookmark 2 -->
-    <rect x="340" y="245" width="42" height="60" rx="6" fill="#a855f7" class="stroke-dark"/>
-    <!-- Body -->
-    <rect x="298" y="295" width="124" height="505" rx="34" fill="#653f96" class="stroke-dark"/>
-    <line x1="320" y1="340" x2="398" y2="340" class="stroke-thin"/>
-    <line x1="320" y1="650" x2="398" y2="650" class="stroke-thin"/>
-    <!-- Label box -->
-    <rect x="318" y="688" width="84" height="84" rx="22" fill="#faf5ff" stroke="#653f96" stroke-width="4"/>
+  <!-- 2. MIDDLE BOOK (Cerulean Blue) -->
+  <g id="middle-book">
+    <rect x="208" y="425" width="662" height="188" rx="56" fill="#0084d6" class="book-outline" />
+    <!-- White Spine Label -->
+    <rect x="776" y="455" width="68" height="128" rx="4" fill="#e8f4fc" />
+  </g>
 
-    <!-- 3. BOOK 3 (Center Anchor - Deep Pine Teal) -->
-    <!-- Bookmark 3 -->
-    <rect x="490" y="105" width="42" height="60" rx="6" fill="#0284c7" class="stroke-dark"/>
-    <!-- Body -->
-    <rect x="444" y="155" width="132" height="645" rx="36" fill="#1b6b5b" class="stroke-dark"/>
-    <line x1="466" y1="200" x2="554" y2="200" class="stroke-thin"/>
-    <line x1="466" y1="650" x2="554" y2="650" class="stroke-thin"/>
-    <!-- Label box -->
-    <rect x="465" y="688" width="88" height="84" rx="22" fill="#f0fdfa" stroke="#1b6b5b" stroke-width="4"/>
+  <!-- 3. BOTTOM BOOK (Warm Terracotta Orange-Red) -->
+  <g id="bottom-book">
+    <rect x="142" y="650" width="796" height="188" rx="56" fill="#e85600" class="book-outline" />
+    <!-- Pale Cream Spine Label -->
+    <rect x="830" y="680" width="80" height="128" rx="4" fill="#fef9c3" />
+  </g>
 
-    <!-- 4. BOOK 4 (Warm Sienna / Ochre) -->
-    <!-- Bookmark 4 -->
-    <rect x="640" y="285" width="42" height="60" rx="6" fill="#f59e0b" class="stroke-dark"/>
-    <!-- Body -->
-    <rect x="600" y="335" width="120" height="465" rx="34" fill="#9e5628" class="stroke-dark"/>
-    <line x1="622" y1="380" x2="698" y2="380" class="stroke-thin"/>
-    <line x1="622" y1="650" x2="698" y2="650" class="stroke-thin"/>
-    <!-- Label box -->
-    <rect x="620" y="688" width="80" height="84" rx="22" fill="#fffbeb" stroke="#9e5628" stroke-width="4"/>
-
-    <!-- 5. BOOK 5 (Denim / Slate Navy Blue) -->
-    <!-- Bookmark 5 -->
-    <rect x="790" y="205" width="42" height="60" rx="6" fill="#6366f1" class="stroke-dark"/>
-    <!-- Body -->
-    <rect x="744" y="255" width="132" height="545" rx="36" fill="#295588" class="stroke-dark"/>
-    <line x1="766" y1="300" x2="854" y2="300" class="stroke-thin"/>
-    <line x1="766" y1="650" x2="854" y2="650" class="stroke-thin"/>
-    <!-- Label box -->
-    <rect x="765" y="688" width="88" height="84" rx="22" fill="#eff6ff" stroke="#295588" stroke-width="4"/>
-
-    <!-- 6. SHELF BASE (Warm Honey Sand Wood) -->
-    <!-- Top Shelf Plank -->
-    <rect x="88" y="796" width="828" height="68" rx="28" fill="#f0be40" class="stroke-dark"/>
-    <!-- Shelf Bottom Shadow Board -->
-    <path d="M 94 864 L 910 864 L 910 882 C 910 892 902 900 892 900 L 112 900 C 102 900 94 892 94 882 Z" fill="#d99b1c" class="stroke-dark"/>
+  <!-- 4. HANGING BOOKMARK RIBBON (Golden Amber / Orange) -->
+  <!-- Hanging down over the blue book with bottom triangular notch over the orange book -->
+  <g id="bookmark-ribbon">
+    <path d="M 330 388 L 434 388 L 434 705 L 382 650 L 330 705 Z" fill="#ea8c00" class="book-outline" />
   </g>
 </svg>

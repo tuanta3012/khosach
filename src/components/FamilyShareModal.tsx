@@ -152,16 +152,16 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
         />
 
         {/* Header - Dark Theme */}
-        <div className="px-4 py-3 bg-[#2b170e] text-white flex items-center justify-between shrink-0 border-b border-[#452215]">
+        <div className="px-4 py-3 bg-[#0284C7] text-white flex items-center justify-between shrink-0 border-b border-sky-700">
           <div className="flex items-center gap-2.5">
-            <Users className="w-5 h-5 text-emerald-400" />
+            <Users className="w-5 h-5 text-emerald-300" />
             <h2 className="text-base font-extrabold text-white tracking-tight">
               Quản lý thành viên
             </h2>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-full text-amber-200/80 hover:text-white hover:bg-[#381c12] transition"
+            className="p-1.5 rounded-full text-sky-100/80 hover:text-white hover:bg-sky-600/60 transition cursor-pointer"
             aria-label="Đóng"
           >
             <X className="w-5 h-5" />
@@ -221,7 +221,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                 onClick={() => setRoleInput('Viewer')}
                 className={`h-8 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border cursor-pointer ${
                   roleInput === 'Viewer'
-                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                    ? 'bg-[#10B981] text-white border-[#10B981] shadow-xs'
                     : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}
               >
@@ -234,7 +234,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                 onClick={() => setRoleInput('Editor')}
                 className={`h-8 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border cursor-pointer ${
                   roleInput === 'Editor'
-                    ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                    ? 'bg-[#EA580C] text-white border-[#EA580C] shadow-xs'
                     : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}
               >
@@ -247,13 +247,13 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full h-8.5 bg-[#2b170e] hover:bg-[#381c12] disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-xs cursor-pointer"
+              className="w-full h-8.5 bg-[#EA580C] hover:bg-[#c2410c] disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-xs cursor-pointer"
             >
               {isSubmitting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <>
-                  <UserPlus className="w-3.5 h-3.5 text-amber-400" />
+                  <UserPlus className="w-3.5 h-3.5 text-amber-200" />
                   <span>Thêm & Cấp quyền</span>
                 </>
               )}
@@ -425,7 +425,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="px-5 py-2 bg-[#2b170e] hover:bg-[#381c12] text-white font-bold text-xs rounded-xl transition shadow-xs cursor-pointer"
+            className="px-5 py-2 bg-slate-700 hover:bg-slate-800 text-white font-bold text-xs rounded-xl transition shadow-xs cursor-pointer"
           >
             Đóng
           </button>

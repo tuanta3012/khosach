@@ -537,7 +537,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             <button
               onClick={() => cameraInputRef.current?.click()}
               disabled={isScanning}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#9e5628] hover:bg-[#85451e] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#EA580C] hover:bg-[#c2410c] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50 cursor-pointer"
             >
               <Camera className="w-4 h-4" />
               <span>Chụp Ảnh</span>
@@ -546,7 +546,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isScanning}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#1b6b5b] hover:bg-[#165b4c] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
             >
               <UploadCloud className="w-4 h-4" />
               <span>Thư Viện</span>
@@ -597,7 +597,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             <button
               type="button"
               onClick={handleRetryFailedImages}
-              className="flex items-center gap-1 px-3 py-1.5 bg-[#9e5628] hover:bg-[#85451e] text-white rounded-lg text-xs font-bold shadow-2xs transition active:scale-95 shrink-0"
+              className="flex items-center gap-1 px-3 py-1.5 bg-[#EA580C] hover:bg-[#c2410c] text-white rounded-lg text-xs font-bold shadow-2xs transition active:scale-95 shrink-0 cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Thử lại {failedImagesQueue.length} ảnh</span>
@@ -610,7 +610,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3.5 sm:p-4">
         <div className="flex items-center justify-between gap-3 pb-2.5 border-b border-slate-100">
           <div className="flex items-center gap-2">
-            <span className="p-1.5 bg-amber-100 text-[#9e5628] rounded-xl">
+            <span className="p-1.5 bg-emerald-100 text-[#10B981] rounded-xl">
               <Layers className="w-4 h-4" />
             </span>
             <h3 className="text-sm font-black text-slate-900">
@@ -622,7 +622,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             {draftItems.length > 0 && (
               <button
                 onClick={() => setDraftItems([])}
-                className="px-2.5 py-1 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                className="px-2.5 py-1 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
               >
                 Xóa hết
               </button>
@@ -631,7 +631,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             <button
               onClick={handleSaveAllDrafts}
               disabled={draftItems.filter((d) => !d.isDuplicate).length === 0 || isSaving}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#9e5628] hover:bg-[#85451e] text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-40"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-40 cursor-pointer"
             >
               {isSaving ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />

@@ -22,16 +22,14 @@ interface ShelfBookItem {
 
 // Bảng màu 5 cuốn sách chủ đạo từ App Icon + các sắc thái trang nhã
 const BRAND_SHELF_BOOK_PALETTES: { bg: string; accent: string; text: string }[] = [
-  { bg: '#1b6b5b', accent: '#a7f3d0', text: '#ffffff' }, // Pine Teal (Center Book)
-  { bg: '#653f96', accent: '#e9d5ff', text: '#ffffff' }, // Royal Violet (Book 2)
-  { bg: '#88284c', accent: '#fecaca', text: '#ffffff' }, // Wine Maroon (Book 1)
-  { bg: '#9e5628', accent: '#fde68a', text: '#ffffff' }, // Sienna Amber (Book 4)
-  { bg: '#295588', accent: '#bfdbfe', text: '#ffffff' }, // Denim Navy (Book 5)
+  { bg: '#0284C7', accent: '#bae6fd', text: '#ffffff' }, // Ocean Blue
+  { bg: '#10B981', accent: '#a7f3d0', text: '#ffffff' }, // Emerald Green
+  { bg: '#EA580C', accent: '#ffedd5', text: '#ffffff' }, // Warm Orange
+  { bg: '#653f96', accent: '#e9d5ff', text: '#ffffff' }, // Royal Violet
+  { bg: '#295588', accent: '#bfdbfe', text: '#ffffff' }, // Denim Navy
   { bg: '#0f766e', accent: '#99f6e4', text: '#ffffff' }, // Teal Emerald
   { bg: '#7c2d12', accent: '#fed7aa', text: '#ffffff' }, // Terracotta
   { bg: '#4c1d95', accent: '#ddd6fe', text: '#ffffff' }, // Deep Purple
-  { bg: '#1e3a8a', accent: '#dbeafe', text: '#ffffff' }, // Royal Navy
-  { bg: '#9f1239', accent: '#ffe4e6', text: '#ffffff' }, // Crimson Rose
 ];
 
 function formatCategorySpineText(rawCategory: string): { displayName: string; fontSize: string } {
@@ -149,7 +147,7 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = React.mem
     <div className="space-y-3 animate-in fade-in duration-300">
       {/* 3 Nút Thống Kê Thu Nhỏ Gọn Phía Trên */}
       <div className="grid grid-cols-3 gap-2">
-        <div className="bg-[#1b6b5b] text-white rounded-xl py-2 px-2.5 shadow-xs flex items-center justify-between transition active:scale-95">
+        <div className="bg-[#0284C7] text-white rounded-xl py-2 px-2.5 shadow-xs flex items-center justify-between transition active:scale-95">
           <div className="flex items-center gap-1.5 min-w-0">
             <BookOpen className="w-3.5 h-3.5 shrink-0 opacity-90" />
             <span className="text-xs font-bold tracking-tight whitespace-nowrap">
@@ -158,7 +156,7 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = React.mem
           </div>
         </div>
 
-        <div className="bg-[#653f96] text-white rounded-xl py-2 px-2.5 shadow-xs flex items-center justify-between transition active:scale-95">
+        <div className="bg-[#10B981] text-white rounded-xl py-2 px-2.5 shadow-xs flex items-center justify-between transition active:scale-95">
           <div className="flex items-center gap-1.5 min-w-0">
             <Layers className="w-3.5 h-3.5 shrink-0 opacity-90" />
             <span className="text-xs font-bold tracking-tight whitespace-nowrap">
@@ -170,7 +168,7 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = React.mem
         <div
           onClick={() => topCategory && onSelectCategory(topCategory.category)}
           title={topCategory ? `Lọc thể loại ${topCategory.category}` : ''}
-          className="bg-[#9e5628] hover:bg-[#85451e] text-white rounded-xl py-2 px-2.5 shadow-xs flex items-center justify-between transition active:scale-95 cursor-pointer"
+          className="bg-[#EA580C] hover:bg-[#c2410c] text-white rounded-xl py-2 px-2.5 shadow-xs flex items-center justify-between transition active:scale-95 cursor-pointer"
         >
           <div className="flex items-center gap-1 min-w-0">
             <ArrowUpRight className="w-4 h-4 shrink-0 font-extrabold" />
