@@ -1088,17 +1088,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* Bottom: Trạng thái & Hàng nút thao tác cân đối */}
               <div className="space-y-2 pt-1.5 border-t border-slate-100">
                 {isNormalizing && currentBatchText ? (
-                  <div className="text-[11.5px] font-semibold text-[#653f96] bg-purple-50/90 px-2.5 py-1.5 rounded-xl border border-purple-100 flex items-center gap-1.5 shadow-3xs">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-[#8233ff]" />
-                    <span className="truncate">{currentBatchText}</span>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="text-[11.5px] font-semibold text-[#653f96] bg-purple-50/90 px-2.5 py-1.5 rounded-xl border border-purple-100 flex items-center justify-between shadow-3xs">
+                      <div className="flex items-center gap-1.5 truncate">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-[#8233ff]" />
+                        <span className="truncate">{currentBatchText}</span>
+                      </div>
+                      {pendingReviewAccumulatorRef.current.length > 0 && (
+                        <span className="font-black text-amber-600 shrink-0">
+                          !{pendingReviewAccumulatorRef.current.length}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                ) : (
-                  <span className="text-[11px] text-slate-500 block">
-                    {autoNormalize
-                      ? 'AI sẽ tự động rà soát và bổ sung thông tin ngầm'
-                      : 'Hiệu chỉnh thủ công sẽ tra cứu Google Books/Open Library miễn phí và hiển thị nguồn khi có đề xuất cần duyệt.'}
-                  </span>
-                )}
+                ) : null}
 
                 <div className="flex items-center gap-1.5">
                   {isNormalizing ? (
