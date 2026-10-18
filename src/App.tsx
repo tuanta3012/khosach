@@ -13,10 +13,11 @@ import {
   saveLocalSettings,
   setLastDriveSyncTimestamp,
   DEFAULT_CATEGORIES,
+  clearAllLocalBooks,
 } from './utils/localBooksStorage';
 import { Navbar, NavTabType } from './components/Navbar';
 import { BookTableView } from './components/BookTableView';
-import { ModeSelectionModal } from './components/ModeSelectionModal';
+import { SplashScreen } from './components/SplashScreen';
 const BatchScanner = lazy(() => import('./components/BatchScanner').then((module) => ({ default: module.BatchScanner })));
 const AddEditBookModal = lazy(() => import('./components/AddEditBookModal').then((module) => ({ default: module.AddEditBookModal })));
 const DataSyncModal = lazy(() => import('./components/DataSyncModal').then((module) => ({ default: module.DataSyncModal })));
@@ -76,7 +77,7 @@ export default function App() {
     return 'offline';
   });
 
-  const [isModeSelectionOpen, setIsModeSelectionOpen] = useState<boolean>(false);
+  const [showSplash, setShowSplash] = useState<boolean>(true);
 
   // TẦNG 3: KIỂM TRA LẦN ĐẦU CÀI ĐẶT (CHỐNG DỮ LIỆU RÁC AUTO-RESTORE CỦA ANDROID)
   useEffect(() => {
@@ -88,7 +89,6 @@ export default function App() {
           setBooks([]);
           setSettings(loadLocalSettings());
           setAppMode('offline');
-          setIsModeSelectionOpen(false); // Vào thẳng app offline, không chặn màn hình
           setCurrentUser(null);
           setSpreadsheetInfo(null);
         }
@@ -165,7 +165,6 @@ export default function App() {
         // NẾU phát hiện phiên Google Auth hợp lệ, tự động chuyển sang chế độ Online và đóng màn hình 2 nút bấm!
         if (token) {
           setAppMode('online');
-          setIsModeSelectionOpen(false);
           try {
             localStorage.setItem('app_mode_v2', 'online');
           } catch {}
@@ -560,7 +559,6 @@ export default function App() {
       try {
         localStorage.setItem('app_mode_v2', 'offline');
       } catch {}
-      setIsModeSelectionOpen(false);
     } else if (selectedMode === 'online') {
       try {
         // KIỂM TRA TRƯỚC: Nếu đã có phiên Google Auth hợp lệ sẵn rồi, chuyển thẳng vào trang và đồng bộ ngay
@@ -570,7 +568,6 @@ export default function App() {
           try {
             localStorage.setItem('app_mode_v2', 'online');
           } catch {}
-          setIsModeSelectionOpen(false);
           await syncWithGoogleDrive(books).catch((e) => {
             console.warn('[Sync] Đồng bộ khi chuyển chế độ Online:', e);
           });
@@ -580,7 +577,6 @@ export default function App() {
         const res = await googleSignIn();
         if (res) {
           if (res.isIframeRedirect) {
-            setIsModeSelectionOpen(false);
             return;
           }
           
@@ -595,7 +591,6 @@ export default function App() {
             try {
               localStorage.setItem('app_mode_v2', 'online');
             } catch {}
-            setIsModeSelectionOpen(false);
             
             // Cập nhật ngay lập tức thông tin người dùng đang đăng nhập
             const loggedInUser: AuthUser = res.authUser || {
@@ -895,14 +890,13 @@ export default function App() {
       showToast('⚠️ Bạn đang ở chế độ CHỈ XEM (Viewer). Không có quyền xóa sạch thư viện!', 'warning');
       return;
     }
-    await deepClearAllApplicationData();
+    clearAllLocalBooks();
     setBooks([]);
-    setSettings(loadLocalSettings());
     setAppMode('offline');
-    setIsModeSelectionOpen(true);
-    setCurrentUser(null);
-    setSpreadsheetInfo(null);
-    showToast('Đã dọn sạch 100% dữ liệu sách và cài đặt trên thiết bị!', 'info');
+    try {
+      localStorage.setItem('app_mode_v2', 'offline');
+    } catch {}
+    showToast('Đã xóa toàn bộ sách trên thiết bị!', 'info');
   };
 
   // Nạp sách nhập từ Smart Importer (Excel, Ảnh OCR, Google Sheet)
@@ -989,7 +983,6 @@ export default function App() {
           setIsAddEditModalOpen(true);
         }}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
-        onOpenModeModal={() => setIsModeSelectionOpen(true)}
         onOpenFamilyShare={() => setIsFamilyShareModalOpen(true)}
         appMode={appMode}
         isSyncingDrive={isSyncingDrive}
@@ -1175,7 +1168,6 @@ export default function App() {
         onClearLocalBooksOnly={handleClearLocalBooksOnly}
         isAutoNormalizing={isAutoNormalizing}
         appMode={appMode}
-        onSwitchMode={() => setIsModeSelectionOpen(true)}
         onOpenFamilyShare={() => setIsFamilyShareModalOpen(true)}
         currentUser={currentUser}
         onGoogleSignIn={() => handleSelectMode('online')}
@@ -1191,16 +1183,9 @@ export default function App() {
         currentUser={currentUser}
       />}
 
-      {/* Modal 6: Chọn Chế Độ Sử Dụng (Mở khi người dùng chủ động bấm) */}
-      {isModeSelectionOpen && (
-        <ModeSelectionModal
-          isOpen={isModeSelectionOpen}
-          onSelectMode={handleSelectMode}
-          currentMode={appMode}
-          onClose={() => setIsModeSelectionOpen(false)}
-          canClose={true}
-          onCheckUpdates={!IS_BUILD_AAB ? handleManualCheckUpdates : undefined}
-        />
+      {/* SplashScreen khi khởi động ứng dụng */}
+      {showSplash && (
+        <SplashScreen onFinished={() => setShowSplash(false)} minDurationMs={2400} />
       )}
 
       {/* Modal 7: Auto Update (Chỉ khả dụng ở bản APK) */}
