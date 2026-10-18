@@ -2,14 +2,14 @@
  * Client-Centric Google Gemini SDK Integration Service (@google/genai)
  * 
  * Kiến trúc 100% Client-Side (Không phụ thuộc bất kỳ máy chủ proxy nào):
- * 1. Hỗ trợ đa API Keys cá nhân với một hàng đợi sliding-window tối đa 15 RPM trên client.
- * 2. Auto Failover 2 cấp độ tối ưu:
- *    - Cấp 1 (Chính): gemini-3.8-flash (ưu tiên chất lượng)
- *    - Cấp 2 (Dự phòng): gemini-3.1-flash-lite (Ổn định, bền bỉ khi gặp 429/quá tải)
+ * 1. Hỗ trợ đa API Keys cá nhân, điều tiết tốc độ (15 RPM / 500 RPD) độc lập cho từng Key.
+ * 2. Auto Failover 2 cấp độ tối ưu (chỉ sử dụng 2 model flash-lite):
+ *    - Cấp 1 (Chính): gemini-3.5-flash-lite (Tốc độ cao, siêu nhẹ, tiết kiệm hạn ngạch)
+ *    - Cấp 2 (Dự phòng): gemini-3.1-flash-lite (Bền bỉ, ổn định khi gặp 429/quá tải)
  *    - Tự động xoay sang Key kế tiếp khi một Key đạt trần RPD hoặc cooldown.
- * 3. Xử lý đa luồng ảnh chụp gáy sách (Batch Scan Vision):
- *    - Tự động chia nhỏ micro-batch (1-2 ảnh/lô) tránh quá tải token & bộ nhớ RAM thiết bị di động.
- *    - Concurrency thích ứng theo số lượng API Keys (tối đa 3 luồng ảnh / 4 luồng chuẩn hóa).
+ * 3. Xử lý đa luồng ảnh chụp gáy sách (Batch Scan Vision) & Chuẩn hóa hàng loạt (Batch Normalize):
+ *    - Tự động chia nhỏ micro-batch tránh quá tải token & bộ nhớ RAM thiết bị di động.
+ *    - Tối ưu hóa tốc độ: Chạy đa luồng song song tỷ lệ thuận theo số lượng API Keys (tối đa 4 luồng).
  *    - Yield Event Loop giải phóng Main Thread chống treo UI (Zero-Jank UX).
  *    - Callback cập nhật tiến độ chi tiết theo thời gian thực.
  */
@@ -38,18 +38,18 @@ const MODEL_STORAGE_KEY = 'gemini_selected_model_v1';
 export const AVAILABLE_GEMINI_MODELS: GeminiModelInfo[] = [
   { 
     id: 'auto', 
-    name: 'Tự động (Gemini 3.8 Flash + 3.1 Flash Lite)', 
-    desc: 'Ưu tiên Gemini 3.8 Flash chính xác cao, tự động dự phòng 3.1 Flash Lite khi gặp quá tải/429' 
+    name: 'Tự động (Gemini 3.5 Flash Lite + 3.1 Flash Lite)', 
+    desc: 'Ưu tiên Gemini 3.5 Flash Lite tốc độ cao, tự động dự phòng 3.1 Flash Lite khi gặp quá tải/429' 
   },
   { 
-    id: 'gemini-3.8-flash', 
-    name: 'Gemini 3.8 Flash', 
-    desc: 'Engine chính: Thông minh, chuẩn hóa ngữ pháp, văn học & dịch thuật xuất sắc' 
+    id: 'gemini-3.5-flash-lite', 
+    name: 'Gemini 3.5 Flash Lite', 
+    desc: 'Engine chính: Tối ưu tốc độ cao, nhận diện văn bản & gáy sách nhanh nhẹn (15 RPM / 500 RPD)' 
   },
   { 
     id: 'gemini-3.1-flash-lite', 
     name: 'Gemini 3.1 Flash Lite', 
-    desc: 'Engine dự phòng: Bền bỉ, tiết kiệm hạn ngạch' 
+    desc: 'Engine dự phòng: Bền bỉ, tiết kiệm hạn ngạch (15 RPM / 500 RPD)' 
   },
 ];
 
@@ -71,23 +71,35 @@ export const GEMINI_BOOK_CATEGORIES = [
 
 // Danh sách thứ tự failover khi gặp lỗi quá tải
 const FAILOVER_CHAIN: GeminiModelId[] = [
-  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
 ];
 
 const RPM_LIMIT = 15;
+const RPD_LIMIT = 500;
 const RPM_WINDOW_MS = 60000;
-const MIN_REQUEST_INTERVAL_MS = Math.ceil(RPM_WINDOW_MS / RPM_LIMIT);
+const MIN_REQUEST_INTERVAL_MS = Math.ceil(RPM_WINDOW_MS / RPM_LIMIT); // 4000ms: giãn cách giữa 2 cuộc gọi cùng 1 model (15 RPM)
+const MIN_INTERLEAVE_INTERVAL_MS = 2000; // 2000ms: lệch pha giữa các cuộc gọi trên cùng 1 Key (nhịp 30 RPM mượt mà)
 const RPM_SCHEDULER_STORAGE_KEY = 'gemini_rpm_scheduler_v1';
 const RPD_STATE_STORAGE_KEY = 'gemini_rpd_state_v1';
 
-// Trạng thái theo dõi từng API Key để kiểm soát tốc độ gọi và trạng thái lỗi
+// Trạng thái theo dõi từng API Key để kiểm soát tốc độ gọi và trạng thái lỗi độc lập
 const keyStateMap = new Map<string, KeyQuotaState>();
-let fallbackSchedulerQueue: Promise<void> = Promise.resolve();
-let schedulerMemoryState: { timestamps: number[]; nextRequestAt: number } = {
-  timestamps: [],
-  nextRequestAt: 0,
-};
+const fallbackQueueMap = new Map<string, Promise<void>>();
+const schedulerMemoryStateMap = new Map<string, { timestamps: number[]; nextRequestAt: number }>();
+const channelCooldownMap = new Map<string, number>();
+
+export function isChannelInCooldown(key: string, model: string): boolean {
+  if (isChannelRpdExhausted(key, model)) return true;
+  const channelFingerprint = `${fingerprintKey(key)}_${model}`;
+  const cooldownUntil = channelCooldownMap.get(channelFingerprint) || 0;
+  return Date.now() < cooldownUntil;
+}
+
+export function setChannelCooldown(key: string, model: string, durationMs = MIN_REQUEST_INTERVAL_MS): void {
+  const channelFingerprint = `${fingerprintKey(key)}_${model}`;
+  channelCooldownMap.set(channelFingerprint, Date.now() + durationMs);
+}
 
 function getPacificDateKey(timestamp = Date.now()): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -108,6 +120,38 @@ function fingerprintKey(key: string): string {
   return (hash >>> 0).toString(36);
 }
 
+export function isChannelRpdExhausted(key: string, model: string): boolean {
+  const today = getPacificDateKey();
+  const channelFingerprint = `${fingerprintKey(key)}_${model}`;
+  try {
+    const persisted = JSON.parse(localStorage.getItem(RPD_STATE_STORAGE_KEY) || '{}') as Record<string, string>;
+    return persisted[channelFingerprint] === today;
+  } catch {
+    return false;
+  }
+}
+
+export function markChannelRpdExhausted(key: string, model: string): void {
+  const today = getPacificDateKey();
+  const channelFingerprint = `${fingerprintKey(key)}_${model}`;
+  try {
+    const persisted = JSON.parse(localStorage.getItem(RPD_STATE_STORAGE_KEY) || '{}') as Record<string, string>;
+    persisted[channelFingerprint] = today;
+    
+    // Nếu cả 2 model trong FAILOVER_CHAIN đều đã hết hạn ngạch ngày trên key này:
+    const allModelsExhausted = FAILOVER_CHAIN.every((m) => persisted[`${fingerprintKey(key)}_${m}`] === today);
+    if (allModelsExhausted) {
+      persisted[fingerprintKey(key)] = today;
+      const state = getKeyState(key);
+      state.isRpdExhausted = true;
+      state.rpdExhaustedDate = today;
+    }
+    localStorage.setItem(RPD_STATE_STORAGE_KEY, JSON.stringify(persisted));
+  } catch (err) {
+    console.warn('[Gemini Quota] Không thể lưu trạng thái RPD của channel:', err);
+  }
+}
+
 function refreshPersistedRpdState(key: string): KeyQuotaState {
   const state = getKeyState(key);
   const today = getPacificDateKey();
@@ -120,8 +164,9 @@ function refreshPersistedRpdState(key: string): KeyQuotaState {
 
   try {
     const persisted = JSON.parse(localStorage.getItem(RPD_STATE_STORAGE_KEY) || '{}') as Record<string, string>;
+    const allModelsExhausted = FAILOVER_CHAIN.every((m) => persisted[`${fingerprintKey(key)}_${m}`] === today);
     const exhaustedDate = persisted[fingerprintKey(key)];
-    if (exhaustedDate === today) {
+    if (exhaustedDate === today || allModelsExhausted) {
       state.isRpdExhausted = true;
       state.rpdExhaustedDate = today;
     } else if (exhaustedDate) {
@@ -142,6 +187,9 @@ function markKeyRpdExhausted(key: string): void {
   try {
     const persisted = JSON.parse(localStorage.getItem(RPD_STATE_STORAGE_KEY) || '{}') as Record<string, string>;
     persisted[fingerprintKey(key)] = today;
+    for (const m of FAILOVER_CHAIN) {
+      persisted[`${fingerprintKey(key)}_${m}`] = today;
+    }
     localStorage.setItem(RPD_STATE_STORAGE_KEY, JSON.stringify(persisted));
   } catch (err) {
     console.warn('[Gemini Quota] Không thể lưu trạng thái RPD của key:', err);
@@ -296,51 +344,86 @@ export function getDynamicApiQuotaMetrics(): KeyQuotaMetrics {
   const keys = getStoredGeminiApiKeys();
   const keyCount = keys.length;
   const healthyCount = keys.filter(k => !isKeyInCooldown(k)).length;
-  const concurrency = Math.max(1, Math.min(healthyCount || keyCount, 4));
+  const effectiveCount = Math.max(1, healthyCount || keyCount);
+  // Mỗi Key kích hoạt đồng thời 2 kênh Model lệch pha nhau (Gemini 3.5 Flash-Lite + 3.1 Flash-Lite)
+  // 1 Key: concurrency = 2 luồng lệch pha nhịp 2.0s (tổng 30 RPM, 1.000 RPD)
+  // 2+ Keys: concurrency = 4 luồng lệch pha (mức trần an toàn cho RAM mobile, tổng 60 RPM, 2.000 RPD)
+  const concurrency = Math.max(1, Math.min(effectiveCount * 2, 4));
 
   return {
     keyCount,
     healthyKeyCount: healthyCount,
-    microBatchSize: 2,
+    microBatchSize: 1, // Gom 1 ảnh / batch cho Vision, 6 cuốn / batch cho văn bản để tối ưu chất lượng cao nhất
     concurrency,
-    maxRpm: RPM_LIMIT,
-    maxRpd: 500,
+    maxRpm: effectiveCount * 2 * RPM_LIMIT,
+    maxRpd: effectiveCount * 2 * RPD_LIMIT,
   };
 }
 
 /**
- * Client-wide sliding-window scheduler; each model/key retry reserves a separate request slot.
+ * Điều tiết tốc độ gọi API độc lập cho từng model (15 RPM) VÀ lệch pha 2.0 giây giữa các request trên cùng 1 Key.
+ * Cơ chế Lệch Pha (Phase Staggering):
+ * - Kênh Model A (3.5 Flash-Lite): khoảng cách tối thiểu giữa 2 lần gọi là 4000ms (15 RPM).
+ * - Kênh Model B (3.1 Flash-Lite): khoảng cách tối thiểu giữa 2 lần gọi là 4000ms (15 RPM).
+ * - Khoảng cách giữa BẤT KỲ 2 request nào trên cùng 1 Key là tối thiểu 2000ms (Lệch pha).
+ * -> Kết quả: Nhịp bắn request đều đặn mỗi 2 giây luân phiên giữa 2 model. Đạt chính xác 30 RPM, 
+ *    100% không bao giờ bắn đồng thời 2 model cùng lúc, triệt tiêu xung đột mạng/RAM trên điện thoại di động!
  */
-async function acquireRpmSlot(key: string): Promise<void> {
+async function acquireRpmSlot(key: string, model: string): Promise<void> {
+  const keyFp = fingerprintKey(key);
+  const channelFingerprint = `${keyFp}_${model}`;
+  const keyGlobalFingerprint = `${keyFp}_GLOBAL`;
+  const keySchedulerKey = `${RPM_SCHEDULER_STORAGE_KEY}_${channelFingerprint}`;
+  const globalSchedulerKey = `${RPM_SCHEDULER_STORAGE_KEY}_${keyGlobalFingerprint}`;
+
   const reserveSlot = async () => {
-    let stored = schedulerMemoryState;
+    let channelStored = schedulerMemoryStateMap.get(channelFingerprint) || { timestamps: [], nextRequestAt: 0 };
+    let globalStored = schedulerMemoryStateMap.get(keyGlobalFingerprint) || { timestamps: [], nextRequestAt: 0 };
+
     try {
-      const raw = localStorage.getItem(RPM_SCHEDULER_STORAGE_KEY);
-      if (raw) stored = JSON.parse(raw);
+      const rawChan = localStorage.getItem(keySchedulerKey);
+      if (rawChan) channelStored = JSON.parse(rawChan);
+      const rawGlobal = localStorage.getItem(globalSchedulerKey);
+      if (rawGlobal) globalStored = JSON.parse(rawGlobal);
     } catch (err) {
       console.warn('[Gemini Rate Limiter] Không đọc được trạng thái limiter đã lưu:', err);
     }
 
-    let timestamps = Array.isArray(stored.timestamps) ? stored.timestamps : [];
-    let nextRequestAt = Number(stored.nextRequestAt) || 0;
+    let timestamps = Array.isArray(channelStored.timestamps) ? channelStored.timestamps : [];
+    let nextChannelRequestAt = Number(channelStored.nextRequestAt) || 0;
+    let nextGlobalRequestAt = Number(globalStored.nextRequestAt) || 0;
+
     while (true) {
       const now = Date.now();
+      // 1. Quota trần 15 RPM trong cửa sổ trượt 60 giây của riêng model này
       timestamps = timestamps.filter((timestamp) => now - timestamp < RPM_WINDOW_MS);
       const windowWaitUntil = timestamps.length >= RPM_LIMIT
         ? timestamps[0] + RPM_WINDOW_MS
         : 0;
-      const scheduledAt = Math.max(now, nextRequestAt, windowWaitUntil);
+
+      // 2. Khoảng cách tối thiểu 4000ms giữa 2 lần gọi của cùng 1 model (15 RPM)
+      // 3. Khoảng cách LỆCH PHA tối thiểu 2000ms giữa bất kỳ cuộc gọi nào trên cùng 1 Key
+      const scheduledAt = Math.max(now, windowWaitUntil, nextChannelRequestAt, nextGlobalRequestAt);
+
       if (scheduledAt > now) {
         await new Promise((resolve) => setTimeout(resolve, scheduledAt - now));
         continue;
       }
 
+      // Cấp phát slot thành công tại thời điểm now
       timestamps.push(now);
-      nextRequestAt = now + MIN_REQUEST_INTERVAL_MS;
-      stored = { timestamps, nextRequestAt };
-      schedulerMemoryState = stored;
+      nextChannelRequestAt = now + MIN_REQUEST_INTERVAL_MS;
+      nextGlobalRequestAt = now + MIN_INTERLEAVE_INTERVAL_MS;
+
+      channelStored = { timestamps, nextRequestAt: nextChannelRequestAt };
+      globalStored = { timestamps: [], nextRequestAt: nextGlobalRequestAt };
+
+      schedulerMemoryStateMap.set(channelFingerprint, channelStored);
+      schedulerMemoryStateMap.set(keyGlobalFingerprint, globalStored);
+
       try {
-        localStorage.setItem(RPM_SCHEDULER_STORAGE_KEY, JSON.stringify(stored));
+        localStorage.setItem(keySchedulerKey, JSON.stringify(channelStored));
+        localStorage.setItem(globalSchedulerKey, JSON.stringify(globalStored));
       } catch (err) {
         console.warn('[Gemini Rate Limiter] Không thể lưu trạng thái limiter:', err);
       }
@@ -352,17 +435,20 @@ async function acquireRpmSlot(key: string): Promise<void> {
     }
   };
 
+  // Dùng Web Locks API trên Key Fingerprint để đồng bộ an toàn giữa các luồng/worker
+  const lockName = `gemini-api-rpm-scheduler-${keyFp}`;
   if (typeof navigator !== 'undefined' && navigator.locks) {
-    await navigator.locks.request('gemini-api-rpm-scheduler', reserveSlot);
+    await navigator.locks.request(lockName, reserveSlot);
     return;
   }
 
+  let queue = fallbackQueueMap.get(keyFp) || Promise.resolve();
   let release!: () => void;
-  const previous = fallbackSchedulerQueue;
-  fallbackSchedulerQueue = new Promise<void>((resolve) => {
+  const current = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await previous;
+  fallbackQueueMap.set(keyFp, current);
+  await queue;
   try {
     await reserveSlot();
   } finally {
@@ -390,8 +476,10 @@ function checkSafetyBlockReason(response: any): void {
   }
 }
 
+let autoModelTurn = 0;
+
 /**
- * THỰC THI CUỘC GỌI API GEMINI VỚI AUTO FAILOVER & XOAY VÒNG MULTI-KEYS
+ * THỰC THI CUỘC GỌI API GEMINI VỚI AUTO FAILOVER & XOAY VÒNG MULTI-KEYS / DUAL-MODELS
  * 100% Client-Side sử dụng @google/genai SDK trực tiếp.
  */
 export async function executeWithFailover(
@@ -407,10 +495,22 @@ export async function executeWithFailover(
 
   let lastError: unknown = null;
   const selectedModel = overridePreferredModel || getStoredSelectedModel();
-  const preferredModel = selectedModel === 'auto' ? FAILOVER_CHAIN[0] : selectedModel;
-  const modelsToTry = selectedModel === 'auto' || overridePreferredModel
-    ? [preferredModel, ...FAILOVER_CHAIN.filter((model) => model !== preferredModel)]
-    : [preferredModel];
+  
+  // Khi ở chế độ 'auto', tự động xoay tua xen kẽ (Interleaving) giữa 3.5 Flash-Lite và 3.1 Flash-Lite
+  // để kích hoạt đồng thời 2 kênh RPM (15 + 15 = 30 RPM) và 2 kênh RPD (500 + 500 = 1000 RPD) trên mỗi Key!
+  let modelsToTry: GeminiModelId[];
+  if (selectedModel === 'auto') {
+    const turn = autoModelTurn++;
+    const primary = FAILOVER_CHAIN[turn % FAILOVER_CHAIN.length];
+    const secondary = FAILOVER_CHAIN.find((m) => m !== primary) || FAILOVER_CHAIN[0];
+    modelsToTry = [primary, secondary];
+  } else if (overridePreferredModel) {
+    const primary = overridePreferredModel as GeminiModelId;
+    modelsToTry = [primary, ...FAILOVER_CHAIN.filter((m) => m !== primary)];
+  } else {
+    modelsToTry = [selectedModel as GeminiModelId];
+  }
+
   const attemptedKeys = new Set<string>();
 
   while (attemptedKeys.size < keys.length) {
@@ -429,13 +529,28 @@ export async function executeWithFailover(
     attemptedKeys.add(key);
     const keyState = refreshPersistedRpdState(key);
     const ai = new GoogleGenAI({ apiKey: key });
+
+    // Lọc bỏ những model đã hết 500 RPD trong ngày đối với Key này
+    const availableModels = modelsToTry.filter((m) => !isChannelRpdExhausted(key, m));
+    if (availableModels.length === 0) {
+      markKeyRpdExhausted(key);
+      continue;
+    }
+
+    // Sắp xếp ưu tiên: model nào KHÔNG trong cooldown RPM thử trước (failover mượt mà)
+    const prioritizedModels = [
+      ...availableModels.filter((m) => !isChannelInCooldown(key, m)),
+      ...availableModels.filter((m) => isChannelInCooldown(key, m)),
+    ];
+
+    let requestSucceeded = false;
     let skipKey = false;
 
-    for (const modelName of modelsToTry) {
+    for (const modelName of prioritizedModels) {
       let transientAttempts = 0;
       while (transientAttempts < 2) {
         try {
-          await acquireRpmSlot(key);
+          await acquireRpmSlot(key, modelName);
           const response = await ai.models.generateContent({
             model: modelName,
             contents: buildContents(),
@@ -447,6 +562,7 @@ export async function executeWithFailover(
 
           keyState.backoffFactor = 0;
           keyState.cooldownUntil = 0;
+          requestSucceeded = true;
           if (config?.responseMimeType === 'application/json') {
             return JSON.parse(textOutput.trim());
           }
@@ -457,8 +573,8 @@ export async function executeWithFailover(
           console.warn(`[Gemini Failover] Model ${modelName}, key ${key.slice(0, 6)}... (${failure}):`, err);
 
           if (failure === 'RPD') {
-            markKeyRpdExhausted(key);
-            skipKey = true;
+            markChannelRpdExhausted(key, modelName);
+            // Model này hết RPD -> tự động failover ngay sang model còn lại của Key này!
             break;
           }
           if (failure === 'AUTH') {
@@ -474,14 +590,20 @@ export async function executeWithFailover(
             continue;
           }
           if (failure === 'RPM') {
-            keyState.cooldownUntil = Math.max(keyState.cooldownUntil, Date.now() + MIN_REQUEST_INTERVAL_MS);
+            // Model này bị trả mã lỗi 429/RPM -> đánh dấu cooldown cho model này
+            // và ngay lập tức failover sang model còn lại mà không làm đứt đoạn tác vụ!
+            setChannelCooldown(key, modelName, MIN_REQUEST_INTERVAL_MS);
+            break;
           }
           break;
         }
       }
-      if (skipKey) break;
+      if (requestSucceeded || skipKey) break;
     }
     if (skipKey) continue;
+    if (requestSucceeded) return;
+
+    // Chỉ khi tất cả model của Key đều thất bại mới tăng backoff cho cả Key
     keyState.backoffFactor += 1;
     keyState.cooldownUntil = Date.now() + Math.min(60_000, 2_000 * 2 ** (keyState.backoffFactor - 1));
   }
@@ -660,17 +782,18 @@ export async function scanImages(
   const existingTitlesRef = existingBooks.slice(0, 80).map((b) => b.title).filter(Boolean).join(', ');
   const categories = options.categories?.length ? options.categories : [...GEMINI_BOOK_CATEGORIES];
 
-  // Chia nhỏ thành các micro-batch: Mỗi batch gồm tối đa 2 ảnh để giữ kích thước base64 an toàn
-  const MICRO_BATCH_SIZE = 2;
+  // Chia nhỏ thành các micro-batch: Mỗi batch gồm đúng 1 ảnh để tối ưu chất lượng bóc tách,
+  // giúp AI Vision tập trung 100% vào từng gáy sách, không bị bỏ sót sách mỏng hoặc lẫn lộn giữa các ảnh
+  const MICRO_BATCH_SIZE = 1;
   const imageBatches: string[][] = [];
   for (let i = 0; i < images.length; i += MICRO_BATCH_SIZE) {
     imageBatches.push(images.slice(i, i + MICRO_BATCH_SIZE));
   }
 
   const keys = getStoredGeminiApiKeys();
-  const concurrency = Math.max(1, Math.min(keys.length, 3)); // Tối đa 3 luồng song song
+  const concurrency = Math.max(1, Math.min(Math.max(1, keys.length) * 2, 4)); // Tối đa 4 luồng song song (mỗi key mở 2 kênh: 3.5 và 3.1)
 
-  console.log(`[Gemini Vision] Bắt đầu phân tích ${images.length} ảnh (${imageBatches.length} lô nhỏ) với ${concurrency} luồng đồng thời...`);
+  console.log(`[Gemini Vision] Bắt đầu phân tích ${images.length} ảnh (${imageBatches.length} lô nhỏ) với ${concurrency} luồng lệch pha...`);
 
   const detectedBooksMap = new Map<string, ScannedBookItem>();
   let processedImagesCount = 0;
@@ -696,7 +819,12 @@ export async function scanImages(
 
   notifyProgress('Bắt đầu phân tích ảnh gáy sách...');
 
-  const runWorker = async () => {
+  const runWorker = async (workerIndex: number) => {
+    // Khởi động lệch pha 2.0 giây giữa các worker để tạo nhịp thở đều đặn và tránh xung đột
+    if (workerIndex > 0) {
+      await new Promise((resolve) => setTimeout(resolve, workerIndex * 2000));
+    }
+
     while (currentBatchIndex < imageBatches.length) {
       if (options.stopSignal?.current) break;
 
@@ -734,7 +862,7 @@ export async function scanImages(
 
   const workers: Promise<void>[] = [];
   for (let w = 0; w < concurrency; w++) {
-    workers.push(runWorker());
+    workers.push(runWorker(w));
   }
 
   await Promise.all(workers);
@@ -1058,16 +1186,18 @@ export async function batchNormalize(
       ? { preferredModel: preferredModelOrOptions }
       : preferredModelOrOptions || {};
 
-  const CHUNK_SIZE = 12;
+  // Giảm kích thước lô từ 12 xuống 6 cuốn/request để nâng cao tối đa chất lượng phân tích:
+  // Giúp Gemini đọc kỹ từng cuốn, phân loại danh mục chính xác, chuẩn hóa tác giả và NXB mà không bị quá tải token hay hallucination
+  const CHUNK_SIZE = 6;
   const chunks: BookRecord[][] = [];
   for (let i = 0; i < books.length; i += CHUNK_SIZE) {
     chunks.push(books.slice(i, i + CHUNK_SIZE));
   }
 
   const keys = getStoredGeminiApiKeys();
-  const concurrency = Math.max(1, Math.min(keys.length, 4));
+  const concurrency = Math.max(1, Math.min(Math.max(1, keys.length) * 2, 4)); // Tối đa 4 luồng song song (mỗi key mở 2 kênh: 3.5 và 3.1)
 
-  console.log(`[Gemini Normalizer] Bắt đầu chuẩn hóa song song ${chunks.length} lô (${books.length} cuốn) với ${concurrency} luồng...`);
+  console.log(`[Gemini Normalizer] Bắt đầu chuẩn hóa song song ${chunks.length} lô (${books.length} cuốn) với ${concurrency} luồng lệch pha...`);
 
   const allNormalizedResults: BatchNormalizeResult['normalized'] = [];
   const failedChunks: BatchNormalizeFailure[] = [];
@@ -1080,7 +1210,12 @@ export async function batchNormalize(
     normalizedBookCount += chunkResults.length;
   };
 
-  const runWorker = async () => {
+  const runWorker = async (workerIndex: number) => {
+    // Khởi động lệch pha 2.0 giây giữa các worker để tạo nhịp thở đều đặn và luân phiên model
+    if (workerIndex > 0) {
+      await new Promise((resolve) => setTimeout(resolve, workerIndex * 2000));
+    }
+
     while (activeIndex < chunks.length) {
       if (options.stopSignal?.current) break;
 
@@ -1134,7 +1269,7 @@ export async function batchNormalize(
 
   const workers: Promise<void>[] = [];
   for (let i = 0; i < concurrency; i++) {
-    workers.push(runWorker());
+    workers.push(runWorker(i));
   }
 
   await Promise.all(workers);

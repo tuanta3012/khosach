@@ -157,15 +157,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       setKeyStatus({
         hasError: true,
         type: 'EMPTY',
-        message: 'Chưa khai báo Gemini API Key.',
+        message: 'Chưa có Gemini API Key.',
       });
       setKeyAlertModal({
         isOpen: true,
         type: 'EMPTY',
-        title: 'Chưa khai báo Gemini Key',
-        message: 'Chưa khai báo Gemini API Key. Vui lòng khai báo key để tiếp tục.',
+        title: 'Thiếu Gemini Key',
+        message: 'Cần thêm API Key để tiếp tục.',
       });
-      showToast('Chưa khai báo Gemini API Key.', 'warning');
+      showToast('Chưa có Gemini API Key.', 'warning');
       return;
     }
 
@@ -174,15 +174,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       setKeyStatus({
         hasError: true,
         type: 'COOLDOWN',
-        message: 'Key lỗi. Chờ hoặc thay key mới.',
+        message: 'Key tạm thời bận.',
       });
       setKeyAlertModal({
         isOpen: true,
         type: 'ERROR',
-        title: 'Key lỗi hoặc hết hạn',
-        message: 'Key lỗi hoặc hết hạn. Vui lòng chờ hoặc thay key mới.',
+        title: 'Key không khả dụng',
+        message: 'Key gặp sự cố hoặc hết hạn ngạch.',
       });
-      showToast('Key lỗi. Chờ hoặc thay key mới.', 'warning');
+      showToast('Key lỗi hoặc hết hạn.', 'warning');
       return;
     }
 
@@ -195,15 +195,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       setKeyStatus({
         hasError: true,
         type: 'EMPTY',
-        message: 'Chưa khai báo Gemini API Key.',
+        message: 'Chưa có Gemini API Key.',
       });
       setKeyAlertModal({
         isOpen: true,
         type: 'EMPTY',
-        title: 'Chưa khai báo Gemini Key',
-        message: 'Chưa khai báo Gemini API Key. Vui lòng khai báo key để tiếp tục.',
+        title: 'Thiếu Gemini Key',
+        message: 'Cần thêm API Key để tiếp tục.',
       });
-      showToast('Chưa khai báo Gemini API Key.', 'warning');
+      showToast('Chưa có Gemini API Key.', 'warning');
       return;
     }
 
@@ -212,15 +212,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       setKeyStatus({
         hasError: true,
         type: 'COOLDOWN',
-        message: 'Key lỗi. Chờ hoặc thay key mới.',
+        message: 'Key tạm thời bận.',
       });
       setKeyAlertModal({
         isOpen: true,
         type: 'ERROR',
-        title: 'Key lỗi hoặc hết hạn',
-        message: 'Key lỗi hoặc hết hạn. Vui lòng chờ hoặc thay key mới.',
+        title: 'Key không khả dụng',
+        message: 'Key gặp sự cố hoặc hết hạn ngạch.',
       });
-      showToast('Key lỗi. Chờ hoặc thay key mới.', 'warning');
+      showToast('Key lỗi hoặc hết hạn.', 'warning');
       return;
     }
 
@@ -477,15 +477,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       setKeyStatus({
         hasError: true,
         type: 'EMPTY',
-        message: 'Chưa khai báo Gemini API Key.',
+        message: 'Chưa có Gemini API Key.',
       });
       setKeyAlertModal({
         isOpen: true,
         type: 'EMPTY',
-        title: 'Chưa khai báo Gemini Key',
-        message: 'Chưa khai báo Gemini API Key. Vui lòng khai báo key để tiếp tục.',
+        title: 'Thiếu Gemini Key',
+        message: 'Cần thêm API Key để tiếp tục.',
       });
-      showToast('Chưa khai báo Gemini API Key.', 'warning');
+      showToast('Chưa có Gemini API Key.', 'warning');
       return;
     }
     const allInCooldown = keys.every((k) => isKeyInCooldown(k));
@@ -493,15 +493,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
       setKeyStatus({
         hasError: true,
         type: 'COOLDOWN',
-        message: 'Key lỗi. Chờ hoặc thay key mới.',
+        message: 'Key tạm thời bận.',
       });
       setKeyAlertModal({
         isOpen: true,
         type: 'ERROR',
-        title: 'Key lỗi hoặc hết hạn',
-        message: 'Key lỗi hoặc hết hạn. Vui lòng chờ hoặc thay key mới.',
+        title: 'Key không khả dụng',
+        message: 'Key gặp sự cố hoặc hết hạn ngạch.',
       });
-      showToast('Key lỗi. Chờ hoặc thay key mới.', 'warning');
+      showToast('Key lỗi hoặc hết hạn.', 'warning');
       return;
     }
     if (failedImagesQueue.length === 0) return;
@@ -668,7 +668,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-[#653f96] hover:bg-[#52327c] text-white rounded-lg text-xs font-bold shadow-2xs transition active:scale-95 shrink-0 cursor-pointer"
               >
                 <Key className="w-3.5 h-3.5" />
-                <span>{keyStatus.type === 'EMPTY' ? 'Khai báo Key' : 'Thay key mới'}</span>
+                <span>{keyStatus.type === 'EMPTY' ? 'Thêm Key' : 'Đổi Key'}</span>
               </button>
             )}
           </div>
@@ -701,8 +701,8 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             </div>
 
             <div className="flex items-center justify-between text-[10.5px] font-semibold text-purple-800">
-              <span>Đã xong: {scanProgress.processedImages}/{scanProgress.totalImages} ảnh ({progressPercent}%)</span>
-              <span className="font-bold text-purple-950">Đã bóc tách được: {scanProgress.booksFound} cuốn</span>
+              <span>Đã xong: {scanProgress.processedImages}/{scanProgress.totalImages} ({progressPercent}%)</span>
+              <span className="font-bold text-purple-950">Tìm thấy: {scanProgress.booksFound} cuốn</span>
             </div>
           </div>
         )}
@@ -712,7 +712,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
           <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-amber-950 text-xs font-bold">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>Có {failedImagesQueue.length} ảnh bị gián đoạn chưa bóc tách xong.</span>
+              <span>{failedImagesQueue.length} ảnh chưa hoàn tất</span>
             </div>
             <button
               type="button"
@@ -720,7 +720,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
               className="flex items-center gap-1 px-3 py-1.5 bg-[#EA580C] hover:bg-[#c2410c] text-white rounded-lg text-xs font-bold shadow-2xs transition active:scale-95 shrink-0 cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>Thử lại {failedImagesQueue.length} ảnh</span>
+              <span>Thử lại ({failedImagesQueue.length})</span>
             </button>
           </div>
         )}
@@ -981,7 +981,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
                   className="px-3 py-2 bg-[#653f96] hover:bg-[#52327c] text-white text-xs font-bold rounded-xl shadow-xs transition active:scale-95 cursor-pointer flex-1 flex items-center justify-center gap-1.5"
                 >
                   <Key className="w-3.5 h-3.5" />
-                  <span>{keyAlertModal.type === 'EMPTY' ? 'Khai báo Key' : 'Thay key mới'}</span>
+                  <span>{keyAlertModal.type === 'EMPTY' ? 'Thêm Key' : 'Đổi Key'}</span>
                 </button>
               )}
             </div>

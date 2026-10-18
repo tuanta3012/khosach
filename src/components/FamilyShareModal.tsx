@@ -213,7 +213,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
           <form onSubmit={handleAddMember} autoComplete="off" className="bg-white p-2.5 rounded-xl border border-slate-200/90 shadow-3xs space-y-2">
             <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
               <UserPlus className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Thêm thành viên mới</span>
+              <span>Thêm thành viên</span>
             </div>
 
             <div className="space-y-1.5">
@@ -231,7 +231,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                   data-form-type="other"
                   readOnly
                   onFocus={(e) => e.target.removeAttribute('readonly')}
-                  placeholder="Nhập tài khoản liên kết"
+                  placeholder="Nhập email..."
                   value={emailInput}
                   onChange={(e) => setEmailInput(e.target.value)}
                   className="w-full pl-8 pr-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#9e5628] focus:bg-white transition font-mono"
@@ -280,7 +280,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
               ) : (
                 <>
                   <UserPlus className="w-3.5 h-3.5 text-amber-200" />
-                  <span>Thêm & Cấp quyền</span>
+                  <span>Thêm</span>
                 </>
               )}
             </button>

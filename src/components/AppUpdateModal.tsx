@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowUpCircle, X, Download, Calendar, CheckCircle2, Loader2 } from 'lucide-react';
+import { ArrowUpCircle, X, Download, CheckCircle2, Loader2 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { FileOpener } from '@capacitor-community/file-opener';
@@ -40,12 +40,12 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
 
     setIsDownloading(true);
     setDownloadProgress(10);
-    setStatusMessage('Đang khởi tạo kết nối tải APK...');
+    setStatusMessage('Đang kết nối...');
 
     try {
       if (Capacitor.isNativePlatform()) {
         const fileName = `khosach_v${updateInfo.version}.apk`;
-        setStatusMessage('Đang tải tệp APK trực tiếp về bộ nhớ máy...');
+        setStatusMessage('Đang tải bản cập nhật...');
         setDownloadProgress(25);
 
         let progressVal = 25;
@@ -67,7 +67,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
             }
           });
         } catch (listenerErr) {
-          console.warn('Không đăng ký được downloadProgress listener:', listenerErr);
+          console.warn('Filesystem progress listener warning:', listenerErr);
         }
 
         let savedUri = '';
@@ -97,8 +97,8 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
             filesystemListener.remove();
           }
 
-          console.warn('Filesystem.downloadFile failed, trying fetch fallback:', downloadErr);
-          setStatusMessage('Đang chuyển hướng tải qua kênh dự phòng...');
+          console.warn('Filesystem download failed, fallback to fetch:', downloadErr);
+          setStatusMessage('Đang tải dữ liệu...');
           setDownloadProgress(40);
 
           let fetchProgressVal = 40;
@@ -111,13 +111,13 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
           const response = await fetch(targetLink, { redirect: 'follow' });
           if (!response.ok) {
             clearInterval(fetchInterval);
-            throw new Error('Không thể tải file APK từ máy chủ.');
+            throw new Error('Không thể tải tệp APK.');
           }
           const blob = await response.blob();
 
           clearInterval(fetchInterval);
           setDownloadProgress(75);
-          setStatusMessage('Đang lưu tệp cài đặt...');
+          setStatusMessage('Đang lưu tệp...');
 
           const reader = new FileReader();
           const base64Data = await new Promise<string>((resolve, reject) => {
@@ -138,7 +138,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
         }
 
         setDownloadProgress(95);
-        setStatusMessage('Đã tải xong! Đang kích hoạt Trình Cài Đặt Android...');
+        setStatusMessage('Đang mở cài đặt...');
 
         try {
           await FileOpener.open({
@@ -146,21 +146,19 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
             contentType: 'application/vnd.android.package-archive',
           });
           setDownloadProgress(100);
-          setStatusMessage('Đang hiển thị màn hình cài đặt nâng cấp...');
         } catch (fileOpenerErr) {
-          console.warn('FileOpener native trigger failed, trying Share intent fallback:', fileOpenerErr);
+          console.warn('FileOpener fallback to share intent:', fileOpenerErr);
           const formattedUri = savedUri.startsWith('file://') || savedUri.startsWith('content://')
             ? savedUri
             : `file://${savedUri.startsWith('/') ? '' : '/'}${savedUri}`;
 
           try {
             await Share.share({
-              title: `Cập nhật Kho Sách Cá Nhân v${updateInfo.version}`,
+              title: `Cập nhật v${updateInfo.version}`,
               url: formattedUri,
-              dialogTitle: 'Mở bằng Trình Cài Đặt Gói (Package Installer) để nâng cấp',
             });
           } catch (shareErr) {
-            console.warn('Share intent error, opening HTTPS release link:', shareErr);
+            console.warn('Share intent error, open in browser:', shareErr);
             window.open(targetLink, '_system') || (window.location.href = targetLink);
           }
         }
@@ -175,135 +173,115 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
       }
     } catch (err: any) {
       console.error('Update download error:', err);
-      setStatusMessage('Đang mở trình duyệt hệ thống để tải trực tiếp...');
+      setStatusMessage('Chuyển sang trình duyệt...');
       setTimeout(() => {
         try {
           window.open(targetLink, '_system') || (window.location.href = targetLink);
         } catch {}
         setIsDownloading(false);
-      }, 1000);
+      }, 800);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div 
-        className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs transition-opacity" 
+        className="absolute inset-0 bg-slate-950/60 backdrop-blur-xs transition-opacity" 
         onClick={!isDownloading ? onClose : undefined}
       />
 
-      <div className="relative w-full max-w-md transform overflow-hidden rounded-3xl bg-slate-900 border border-slate-700 shadow-2xl transition-all p-6 text-slate-100 flex flex-col space-y-5">
-        <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-[#0284C7] via-[#10B981] to-[#EA580C]" />
-
+      <div className="relative w-full max-w-sm rounded-3xl bg-white border border-slate-100 shadow-2xl p-5 text-slate-800 flex flex-col space-y-4">
         {!isDownloading && (
           <button
             onClick={onClose}
-            className="absolute top-4 right-4 text-sky-200/70 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
-            title="Bỏ qua"
+            className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+            aria-label="Đóng"
           >
             <X className="w-4 h-4" />
           </button>
         )}
 
-        <div className="flex flex-col items-center text-center space-y-2 pt-2">
-          <div className="p-3.5 bg-[#0284C7] text-white rounded-2xl shadow-xs">
+        {/* Header gọn gàng, phong cách mobile-first */}
+        <div className="flex items-center gap-3 pt-0.5">
+          <div className="w-10 h-10 rounded-2xl bg-sky-50 text-[#0284C7] flex items-center justify-center shrink-0 border border-sky-100 shadow-3xs">
             {isDownloading ? (
-              <Loader2 className="w-10 h-10 animate-spin text-white" />
+              <Loader2 className="w-5 h-5 animate-spin text-[#0284C7]" />
             ) : (
-              <ArrowUpCircle className="w-10 h-10 animate-bounce text-white" />
+              <ArrowUpCircle className="w-5 h-5 text-[#0284C7]" />
             )}
           </div>
-          <h2 className="text-lg font-extrabold tracking-tight text-white px-2">
-            {isDownloading ? `Đang tải v${updateInfo.version}...` : `Đã có bản cập nhật mới (v${updateInfo.version})!`}
-          </h2>
-          <p className="text-xs text-sky-200/80 px-4">
-            {isDownloading ? statusMessage : 'Bạn có muốn nâng cấp để vá lỗi và trải nghiệm tính năng tốt nhất không?'}
-          </p>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-black tracking-tight text-slate-900 leading-tight">
+              {isDownloading ? `Đang tải v${updateInfo.version}` : `Cập nhật v${updateInfo.version}`}
+            </h2>
+            <p className="text-xs text-slate-500 font-medium mt-0.5">
+              {isDownloading ? statusMessage : `Bản hiện tại: v${currentVersion}`}
+            </p>
+          </div>
         </div>
 
+        {/* Nội dung tương tác */}
         {isDownloading ? (
-          <div className="space-y-3 py-3">
-            <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5 border border-slate-700">
+          <div className="space-y-3 py-1">
+            <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
               <div 
-                className="bg-[#10B981] h-full rounded-full transition-all duration-300"
+                className="bg-[#0284C7] h-full rounded-full transition-all duration-300"
                 style={{ width: `${downloadProgress}%` }}
               />
             </div>
-            <div className="flex justify-between text-[11px] text-sky-200/80 font-medium">
+            <div className="flex justify-between text-xs text-slate-500 font-medium">
               <span>{statusMessage}</span>
-              <span className="text-emerald-300 font-bold">{downloadProgress}%</span>
+              <span className="text-[#0284C7] font-bold">{downloadProgress}%</span>
             </div>
-            <div className="text-center pt-2 border-t border-slate-800">
+            <div className="text-center pt-1 border-t border-slate-100">
               <button
                 type="button"
                 onClick={() => {
                   const targetLink = updateInfo.apkUrl || updateInfo.downloadUrl;
                   if (targetLink) window.open(targetLink, '_system') || (window.location.href = targetLink);
                 }}
-                className="text-xs text-sky-300 underline hover:text-sky-200 transition-colors font-medium cursor-pointer"
+                className="text-xs text-[#0284C7] hover:underline font-semibold cursor-pointer"
               >
-                Mở tải về trực tiếp bằng Trình duyệt
+                Tải qua trình duyệt
               </button>
             </div>
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 bg-slate-800/80 rounded-2xl p-3 border border-slate-700 text-center">
-              <div>
-                <span className="block text-[10px] text-slate-400 uppercase font-bold tracking-wider">Phiên bản hiện tại</span>
-                <span className="text-sm font-semibold text-slate-300">v{currentVersion}</span>
-              </div>
-              <div className="border-l border-slate-700">
-                <span className="block text-[10px] text-emerald-400 uppercase font-bold tracking-wider">Phiên bản mới nhất</span>
-                <span className="text-sm font-extrabold text-emerald-300">v{updateInfo.version}</span>
-              </div>
-            </div>
-
-            <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-              <div className="flex items-center justify-between text-xs font-semibold text-sky-200/80 border-b border-slate-800 pb-1.5">
-                <span>Danh sách thay đổi:</span>
-                {updateInfo.releaseDate && (
-                  <span className="flex items-center space-x-1 text-[10px] text-slate-400">
-                    <Calendar className="w-3 h-3" />
-                    <span>{updateInfo.releaseDate}</span>
-                  </span>
-                )}
-              </div>
-              <ul className="space-y-2 text-slate-300 text-xs">
+            {/* Changelog ngắn gọn, súc tích */}
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              <ul className="space-y-1.5 text-slate-700 text-xs">
                 {updateInfo.changelog && updateInfo.changelog.length > 0 ? (
                   updateInfo.changelog.map((item, idx) => (
-                    <li key={idx} className="flex items-start space-x-2 text-slate-200">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                      <span className="leading-relaxed">{item}</span>
+                    <li key={idx} className="flex items-start gap-2">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                      <span className="leading-snug">{item}</span>
                     </li>
                   ))
                 ) : (
-                  <li className="text-slate-400 italic text-center py-2">
-                    {updateInfo.notes || 'Nâng cấp hiệu năng hệ thống, sửa lỗi và tối ưu hóa trải nghiệm.'}
+                  <li className="text-slate-500 text-xs py-1">
+                    {updateInfo.notes || 'Cải thiện hiệu năng và tối ưu trải nghiệm.'}
                   </li>
                 )}
               </ul>
             </div>
 
-            <div className="flex space-x-3 pt-2">
+            {/* Nút hành động */}
+            <div className="flex gap-2.5 pt-1">
               <button
                 onClick={onClose}
-                className="flex-1 py-2.5 rounded-2xl border border-slate-700 hover:bg-slate-800 text-slate-300 hover:text-white font-bold text-xs transition-all cursor-pointer"
+                className="flex-1 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition cursor-pointer"
               >
                 Để sau
               </button>
               <button
                 onClick={handleUpdate}
-                className="flex-1 py-2.5 rounded-2xl bg-[#EA580C] hover:bg-[#c2410c] text-white font-extrabold text-xs flex items-center justify-center space-x-1.5 shadow-md transition-all active:scale-[0.98] cursor-pointer"
+                className="flex-1 py-2 rounded-xl bg-[#0284C7] hover:bg-[#0369a1] text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition active:scale-[0.98] cursor-pointer"
               >
-                <Download className="w-4 h-4 shrink-0" />
-                <span>Cập nhật ngay</span>
+                <Download className="w-3.5 h-3.5 shrink-0" />
+                <span>Cập nhật</span>
               </button>
             </div>
-
-            <p className="text-[10px] text-sky-300 text-center font-medium pt-1">
-              ✓ Giữ nguyên 100% dữ liệu sách đã lưu trong máy và đám mây
-            </p>
           </>
         )}
       </div>

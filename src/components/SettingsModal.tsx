@@ -118,6 +118,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // States cho duyệt đề xuất thay đổi Tên sách & Tác giả sau khi chạy xong hoặc bấm tạm dừng
   const [reviewProposals, setReviewProposals] = useState<TitleAuthorProposal[] | null>(null);
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
   const pendingReviewAccumulatorRef = useRef<TitleAuthorProposal[]>([]);
   const sourceLookupWarningsRef = useRef(new Set<string>());
 
@@ -130,6 +131,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const totalBooks = books.length;
   const normalizedCount = books.filter((b) => b.is_ai_normalized).length;
   const pendingBooks = books.filter((b) => !b.is_ai_normalized);
+  const activeReviewCount = reviewProposals ? reviewProposals.length : (pendingReviewCount || pendingReviewAccumulatorRef.current.length);
 
   // Mặc định tính năng AI tự động luôn là OFF khi cài app mới
   const [autoNormalize, setAutoNormalize] = useState<boolean>(() => !!settings.autoNormalizeEnabled);
@@ -310,7 +312,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
     setIsNormalizing(true);
     stopNormalizingRef.current = false;
-    pendingReviewAccumulatorRef.current = [];
+    // Giữ lại các đề xuất trước đó nếu chưa duyệt, hoặc khởi tạo mảng nếu chưa có
+    if (!pendingReviewAccumulatorRef.current) {
+      pendingReviewAccumulatorRef.current = [];
+    }
+    setPendingReviewCount(pendingReviewAccumulatorRef.current.length);
     sourceLookupWarningsRef.current.clear();
     let localPending = [...pendingBooks];
     let currentProcessed = 0;
@@ -355,19 +361,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         // Chỉ khi có thay đổi ngữ nghĩa lớn (đổi hẳn sang tác phẩm khác / tác giả khác) mới đưa vào danh sách duyệt
         if (titleMeaningfullyChanged || authorMeaningfullyChanged) {
-          pendingReviewAccumulatorRef.current.push({
-            bookId: orig.id,
-            originalTitle: orig.title,
-            proposedTitle: normTitleTrim,
-            titleChanged: titleMeaningfullyChanged,
-            originalAuthor: orig.author,
-            proposedAuthor: normAuthorTrim,
-            authorChanged: authorMeaningfullyChanged,
-            category: enrichedCategory,
-            publisher: enrichedPublisher,
-            sources: normItem.sources || [],
-            selected: true,
-          });
+          const exists = pendingReviewAccumulatorRef.current.some((p) => p.bookId === orig.id);
+          if (!exists) {
+            pendingReviewAccumulatorRef.current.push({
+              bookId: orig.id,
+              originalTitle: orig.title,
+              proposedTitle: normTitleTrim,
+              titleChanged: titleMeaningfullyChanged,
+              originalAuthor: orig.author,
+              proposedAuthor: normAuthorTrim,
+              authorChanged: authorMeaningfullyChanged,
+              category: enrichedCategory,
+              publisher: enrichedPublisher,
+              sources: normItem.sources || [],
+              selected: true,
+            });
+          }
         }
       });
 
@@ -376,6 +385,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         currentProcessed += safeUpdatedList.length;
         setProcessedCount(currentProcessed);
       }
+
+      setPendingReviewCount(pendingReviewAccumulatorRef.current.length);
 
       setCurrentBatchText(
         remaining > 0
@@ -436,6 +447,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     stopNormalizingRef.current = true;
     setIsNormalizing(false);
     setCurrentBatchText('');
+
+    const proposals = pendingReviewAccumulatorRef.current;
+    if (proposals.length > 0) {
+      console.log('[Normalize] Bấm Dừng -> Mở ngay lập tức danh sách duyệt:', proposals.length);
+      setReviewProposals([...proposals]);
+      showToast(`Đã tạm dừng. Có ${proposals.length} cuốn sách cần duyệt đổi tên/tác giả.`, 'info');
+    }
   };
 
   const toggleProposalSelect = (index: number) => {
@@ -483,6 +501,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       await onBatchUpdateBooks(updatedList);
       showToast(`Đã áp dụng tên & tác giả cho ${selectedOnes.length} cuốn!`, 'success');
       setReviewProposals(null);
+      setPendingReviewCount(0);
+      pendingReviewAccumulatorRef.current = [];
     } catch (err: any) {
       showToast(`Lỗi: ${err.message}`, 'error');
     } finally {
@@ -492,6 +512,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleDismissAllProposals = () => {
     setReviewProposals(null);
+    setPendingReviewCount(0);
+    pendingReviewAccumulatorRef.current = [];
     showToast('Đã giữ nguyên tên sách & tác giả gốc.', 'info');
   };
 
@@ -502,6 +524,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       is_ai_normalized: false,
     }));
     await onBatchUpdateBooks(resetList);
+    pendingReviewAccumulatorRef.current = [];
+    setPendingReviewCount(0);
     showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách!`, 'success');
   };
 
@@ -627,20 +651,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const isDuplicateView = Boolean(duplicateGroups && duplicateGroups.length > 0);
+  const isReviewView = Boolean(reviewProposals && reviewProposals.length > 0);
+  const isExpandedView = isDuplicateView || isReviewView;
 
   return (
     <div
       className={`fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center ${
-        isDuplicateView ? 'p-0 sm:p-4' : 'p-3 sm:p-4'
+        isExpandedView ? 'p-0 sm:p-4' : 'p-3 sm:p-4'
       }`}
       onClick={() => {
         if (duplicateGroups) setDuplicateGroups(null);
+        else if (reviewProposals) setReviewProposals(null);
         else onClose();
       }}
     >
       <div
         className={`bg-white shadow-2xl border border-slate-100 overflow-hidden flex flex-col ${
-          isDuplicateView
+          isExpandedView
             ? 'w-full h-full sm:h-auto sm:max-h-[92vh] sm:max-w-2xl sm:rounded-3xl rounded-none'
             : 'rounded-3xl max-w-md w-full max-h-[88vh]'
         }`}
@@ -654,7 +681,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-extrabold text-white leading-tight">
-                {isDuplicateView ? 'Dọn Dẹp Sách Trùng Lặp' : 'Cấu Hình Kho Sách'}
+                {isReviewView
+                  ? 'Duyệt Đề Xuất Đổi Tên & Tác Giả'
+                  : isDuplicateView
+                  ? 'Dọn Dẹp Sách Trùng Lặp'
+                  : 'Cấu Hình Kho Sách'}
               </h3>
             </div>
           </div>
@@ -931,7 +962,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {/* Ô nhập Key mới - Luôn hiển thị để thêm bao nhiêu tuỳ ý */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10.5px] font-bold text-slate-500">Thêm API Key mới</span>
+                      <span className="text-[10.5px] font-bold text-slate-500">Thêm Key</span>
                       <a
                         href="https://aistudio.google.com/app/apikey"
                         target="_blank"
@@ -969,7 +1000,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               handleAddKey();
                             }
                           }}
-                          placeholder="Dán mã API mới..."
+                          placeholder="Dán API Key..."
                           className="w-full px-3 py-1.5 text-xs bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#653f96] rounded-xl focus:ring-2 focus:ring-[#653f96]/20 focus:outline-none transition font-medium text-slate-800"
                         />
                         {newKeyInput && (
@@ -997,7 +1028,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {apiKeys.length > 0 && (
                     <div className="space-y-1 pt-1 border-t border-dashed border-slate-100">
                       <div className="text-[10px] text-slate-400 font-bold px-0.5">
-                        Danh sách Key đã lưu ({apiKeys.length}):
+                        Đã lưu ({apiKeys.length}):
                       </div>
                       <div className="max-h-28 overflow-y-auto space-y-1 pr-0.5">
                         {apiKeys.map((key, idx) => {
@@ -1145,13 +1176,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               </div>
 
-              {/* Progress: Tiến độ: 100% */}
+              {/* Progress: Tiến độ: 100% !X */}
               <div className="space-y-1.5">
-                <div className="text-xs text-slate-700">
+                <div className="flex items-center text-xs text-slate-700 gap-1.5">
                   <span className="font-semibold">Tiến độ: </span>
                   <span className="font-bold text-[#653f96]">
                     {Math.round((normalizedCount / (totalBooks || 1)) * 100)}%
                   </span>
+                  {activeReviewCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (pendingReviewAccumulatorRef.current.length > 0) {
+                          setReviewProposals([...pendingReviewAccumulatorRef.current]);
+                        }
+                      }}
+                      title={`${activeReviewCount} cuốn sách cần duyệt đổi tên/tác giả (Bấm để xem)`}
+                      className="font-black text-red-600 hover:text-red-700 transition cursor-pointer"
+                    >
+                      !{activeReviewCount}
+                    </button>
+                  )}
                 </div>
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                   <div
@@ -1161,24 +1206,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               </div>
 
-              {/* Bottom: Trạng thái & Hàng nút thao tác cân đối */}
+              {/* Bottom: Hàng nút thao tác cân đối */}
               <div className="space-y-2 pt-1.5 border-t border-slate-100">
-                {isNormalizing && currentBatchText ? (
-                  <div className="flex flex-col gap-1.5">
-                    <div className="text-[11.5px] font-semibold text-[#653f96] bg-purple-50/90 px-2.5 py-1.5 rounded-xl border border-purple-100 flex items-center justify-between shadow-3xs">
-                      <div className="flex items-center gap-1.5 truncate">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-[#8233ff]" />
-                        <span className="truncate">{currentBatchText}</span>
-                      </div>
-                      {pendingReviewAccumulatorRef.current.length > 0 && (
-                        <span className="font-black text-amber-600 shrink-0">
-                          !{pendingReviewAccumulatorRef.current.length}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-
                 <div className="flex items-center gap-1.5">
                   {isNormalizing ? (
                     <button
@@ -1220,7 +1249,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="bg-rose-50/50 rounded-2xl border border-rose-100/80 p-3.5 shadow-3xs flex items-center justify-between gap-3">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <span className="text-xs font-black text-rose-900 block leading-tight">
-                  Xóa dữ liệu sách trên máy
+                  Xóa dữ liệu trên máy
                 </span>
               </div>
 
@@ -1235,14 +1264,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
             </div>
 
-            {/* 5. PHIÊN BẢN ỨNG DỤNG */}
+            {/* 5. PHIÊN BẢN */}
             <div className="bg-white rounded-2xl border border-slate-100 p-3.5 shadow-3xs flex items-center justify-between gap-3">
               <div className="space-y-0.5 min-w-0 flex-1">
                 <span className="text-xs font-black text-slate-800 block leading-tight">
-                  Phiên bản ứng dụng
+                  Phiên bản
                 </span>
-                <span className="text-[11px] text-slate-500 block leading-tight">
-                  Bản hiện tại: <strong className="text-slate-800 font-bold">v{CURRENT_APP_VERSION}</strong>
+                <span className="text-[11px] text-slate-500 block leading-tight font-medium">
+                  v{CURRENT_APP_VERSION}
                 </span>
               </div>
 
@@ -1275,7 +1304,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 className="flex-1 py-2.5 px-4 bg-[#EA580C] hover:bg-[#c2410c] text-white text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer text-center shadow-xs flex items-center justify-center gap-1.5"
               >
                 <Check className="w-4 h-4" />
-                <span>Lưu Cấu Hình</span>
+                <span>Lưu</span>
               </button>
             </div>
           </div>
