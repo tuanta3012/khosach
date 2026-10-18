@@ -2,7 +2,7 @@
   "name": "react-example",
   "private": true,
   "version": "1.0.5",
-  "builbuildAab": false,
+  "buildAab": false,
   "type": "module",
   "scripts": {
     "dev": "vite",
