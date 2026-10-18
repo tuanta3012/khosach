@@ -1,6 +1,6 @@
 {
-  "summary":  "Cập nhật kế hoạch loại bỏ hoàn toàn Audit Logs theo yêu cầu của người dùng, tinh gọn bảng __CONFIG__ thành A1:B10 và đơn giản hóa logic đồng bộ.",
-  "updatedAt":  "2026-10-06T11:25:50.826365295Z",
-  "requestFeedback":  true,
-  "userFacing":  true
+  "summary": "Kế hoạch tối ưu hóa cơ chế Offline-First chuẩn dự án Sổ Tiết Kiệm: tối ưu LocalStorage, dọn dẹp chế độ user offline cũ và thêm thẻ khuyến nghị đăng nhập Google đồng bộ đám mây.",
+  "updatedAt": "2026-10-17T01:51:33.667667499Z",
+  "requestFeedback": true,
+  "userFacing": true
 }

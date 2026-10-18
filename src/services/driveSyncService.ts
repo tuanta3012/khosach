@@ -2,12 +2,23 @@ import { BookRecord, UserRole } from '../types';
 import { sanitizeDocId, sanitizeSingleCategory } from '../utils/driveSyncClient';
 import { checkDuplicateBook } from '../utils/fuzzyMatcher';
 import { getAccessToken } from './googleAuthService';
+import { saveStoredGeminiApiKeys } from './geminiService';
+import {
+  getPendingBookMutations,
+  removePendingBookMutationsByIds,
+  clearPendingBookMutations,
+  isMasterRestoreRequired,
+  setMasterRestoreRequired,
+} from '../utils/localBooksStorage';
 
 export interface FamilyMember {
   email: string;
   role: 'Owner' | 'Editor' | 'Viewer';
   addedAt: string;
   permissionId?: string;
+  apiKey?: string;
+  apiKeys?: string[];
+  apiKeyUpdatedAt?: string;
 }
 
 export interface SpreadsheetInfo {
@@ -45,6 +56,7 @@ export interface SheetConfigMetadata {
   lastSyncBy?: string;
   ignoredDuplicatePairs?: string[];
   resolvedDuplicates?: DuplicateResolutionLog[];
+  userApiKeys?: Record<string, string[]>;
   customSettings?: Record<string, any>;
 }
 
@@ -63,6 +75,7 @@ export interface MasterSyncState {
   updatedAtVi?: string;
   members: FamilyMember[];
   ignoredDuplicatePairs?: string[];
+  userApiKeys?: Record<string, string[]>;
   customSettings?: Record<string, any>;
 }
 
@@ -177,6 +190,9 @@ export async function tagSpreadsheetAsAppCreated(
         appProperties: {
           [APP_PROPERTY_KEY]: APP_PROPERTY_VALUE,
           created_by: APP_PROPERTY_VALUE,
+          khosach_app_id: 'com.khosach.app',
+          workspace_type: 'family_library',
+          status: 'active',
         },
       }),
     });
@@ -187,14 +203,18 @@ export async function tagSpreadsheetAsAppCreated(
 
 /**
  * Kiểm tra xác thực một Google Sheet xem có phải là file do App Tủ Sách Gia Đình tạo hay không.
- * Lọc DUY NHẤT theo điều kiện: appProperties.app == 'khosach_app'
+ * Lọc theo điều kiện: appProperties.app == 'khosach_app' hoặc khosach_app_id == 'com.khosach.app'
  */
 export async function isBookLibrarySpreadsheet(
   _accessToken: string,
   _spreadsheetId: string,
   appProps?: any
 ): Promise<boolean> {
-  return Boolean(appProps && appProps[APP_PROPERTY_KEY] === APP_PROPERTY_VALUE);
+  return Boolean(
+    appProps &&
+      (appProps[APP_PROPERTY_KEY] === APP_PROPERTY_VALUE ||
+        appProps['khosach_app_id'] === 'com.khosach.app')
+  );
 }
 
 /**
@@ -206,58 +226,59 @@ export async function fetchUserSpreadsheetsFromDrive(
 ): Promise<SpreadsheetInfo[]> {
   const map = new Map<string, SpreadsheetInfo>();
 
-  if (!accessToken) {
-    return getKnownSpreadsheets();
-  }
-
-  // Nạp sẵn các file đã từng lưu trong máy trước
+  // Nạp sẵn các file đã từng lưu trong máy trước (tức thì 0ms)
   getKnownSpreadsheets().forEach((s) => map.set(s.id, s));
 
-  // Quét danh sách Google Sheet bằng truy vấn chuẩn (giống như trong googleDriveService.ts)
-  // Tuyệt đối không truyền includeItemsFromAllDrives gây lỗi HTTP 400 Bad Request
+  if (!accessToken) {
+    return Array.from(map.values());
+  }
+
+  // Quét đa nguồn: Lọc trực tiếp theo nhãn appProperties ngầm, File sở hữu và File chia sẻ
   const queries = [
+    `appProperties has { key='khosach_app_id' and value='com.khosach.app' } and trashed = false`,
+    `appProperties has { key='${APP_PROPERTY_KEY}' and value='${APP_PROPERTY_VALUE}' } and trashed = false`,
     "trashed = false and mimeType = 'application/vnd.google-apps.spreadsheet'",
-    "sharedWithMe = true and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+    "sharedWithMe = true and trashed = false",
+    "sharedWithMe = true",
+    "trashed = false",
   ];
 
-  for (const q of queries) {
-    try {
-      let pageToken: string | undefined;
-      let pageCount = 0;
-      do {
+  await Promise.all(
+    queries.map(async (q) => {
+      try {
         const url = new URL('https://www.googleapis.com/drive/v3/files');
-        url.searchParams.set('pageSize', '100');
-        url.searchParams.set('fields', 'nextPageToken,files(id,name,webViewLink,trashed,modifiedTime)');
+        url.searchParams.set('pageSize', '50');
+        url.searchParams.set('fields', 'files(id,name,webViewLink,trashed,modifiedTime,appProperties,sharedWithMeTime,mimeType)');
         url.searchParams.set('orderBy', 'modifiedTime desc');
-        url.searchParams.set('spaces', 'drive');
+        url.searchParams.set('supportsAllDrives', 'true');
+        url.searchParams.set('includeItemsFromAllDrives', 'true');
         url.searchParams.set('q', q);
-        if (pageToken) url.searchParams.set('pageToken', pageToken);
 
         const response = await fetch(url.toString(), {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
 
         if (!response.ok) {
-          console.warn(`[DriveSync] Drive discovery query failed (HTTP ${response.status}) for "${q}".`);
-          break;
+          return;
         }
 
         const data = await response.json();
         for (const file of data.files || []) {
           if (!file.id || file.trashed) continue;
+          if (file.mimeType && file.mimeType !== 'application/vnd.google-apps.spreadsheet' && !file.name?.toLowerCase().includes('kho sach') && !file.name?.toLowerCase().includes('kho sách') && !file.name?.toLowerCase().includes('tu sach') && !file.name?.toLowerCase().includes('tủ sách')) {
+            continue;
+          }
           map.set(file.id, {
             id: file.id,
             name: file.name || 'Kho Sách Gia Đình',
             webViewLink: file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
           });
         }
-        pageToken = data.nextPageToken;
-        pageCount += 1;
-      } while (pageToken && pageCount < 3);
-    } catch (err) {
-      console.warn('[DriveSync] Quét danh sách Google Sheet từ Drive gặp lỗi:', err);
-    }
-  }
+      } catch (err) {
+        console.warn('[DriveSync] Quét danh sách Google Sheet từ Drive gặp lỗi:', err);
+      }
+    })
+  );
 
   const savedSheetId = (() => {
     try {
@@ -336,139 +357,99 @@ export async function createNewLibrarySpreadsheet(
   userEmail: string,
   customTitle = 'Kho Sách Cá Nhân'
 ): Promise<SpreadsheetInfo> {
-  console.log(`[DriveSync] Đang tạo mới Google Sheet: "${customTitle}"...`);
+  console.log(`[DriveSync] Đang tạo mới Google Sheet tốc độ cao: "${customTitle}"...`);
   
   let spreadsheetId = '';
   let webViewLink = '';
-
   let activeToken = accessToken;
 
-  // 1. Thử tạo file qua Google Drive API (Hoàn hảo cho scope https://www.googleapis.com/auth/drive.file)
-  try {
-    let driveCreateResp = await fetch('https://www.googleapis.com/drive/v3/files', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${activeToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        name: customTitle,
-        mimeType: 'application/vnd.google-apps.spreadsheet',
-        appProperties: {
-          [APP_PROPERTY_KEY]: APP_PROPERTY_VALUE,
-          created_by: APP_PROPERTY_VALUE,
+  // 1. Tạo trực tiếp Spreadsheet có sẵn 2 Tab (Khosach & __CONFIG__) qua Sheets API v4
+  const createUrl = 'https://sheets.googleapis.com/v4/spreadsheets';
+  const createPayload = {
+    properties: {
+      title: customTitle,
+    },
+    sheets: [
+      {
+        properties: {
+          title: KHOSACH_SHEET_TITLE,
+          gridProperties: { frozenRowCount: 1 },
         },
-      }),
-    });
+      },
+      {
+        properties: {
+          title: MASTER_CONFIG_SHEET_TITLE,
+          hidden: true,
+          gridProperties: { rowCount: 30, columnCount: 5 },
+        },
+      },
+    ],
+  };
 
-    // Nếu gặp mã lỗi 401, tự động silent refresh token và thử lại ngay lập tức
-    if (driveCreateResp.status === 401) {
-      console.log('[DriveSync] Token 401, đang tự động silent refresh và tạo lại file...');
-      const freshToken = await getAccessToken(true);
-      if (freshToken) {
-        activeToken = freshToken;
-        driveCreateResp = await fetch('https://www.googleapis.com/drive/v3/files', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${activeToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            name: customTitle,
-            mimeType: 'application/vnd.google-apps.spreadsheet',
-            appProperties: {
-              [APP_PROPERTY_KEY]: APP_PROPERTY_VALUE,
-              created_by: APP_PROPERTY_VALUE,
-            },
-          }),
-        });
-      }
-    }
+  let createResp = await fetch(createUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${activeToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(createPayload),
+  });
 
-    if (driveCreateResp.ok) {
-      const driveData = await driveCreateResp.json();
-      spreadsheetId = driveData.id;
-      webViewLink = driveData.webViewLink || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-      console.log(`[DriveSync] Đã tạo file qua Google Drive API thành công: ${spreadsheetId}`);
-    } else {
-      const err = await driveCreateResp.json().catch(() => ({}));
-      console.warn('[DriveSync] Drive API create file status:', driveCreateResp.status, err);
+  if (createResp.status === 401) {
+    const freshToken = await getAccessToken(true);
+    if (freshToken) {
+      activeToken = freshToken;
+      createResp = await fetch(createUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${activeToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(createPayload),
+      });
     }
-  } catch (err) {
-    console.warn('[DriveSync] Lỗi gọi Drive API tạo file, chuyển sang Sheets API:', err);
   }
 
-  // 2. Nếu Drive API không khả dụng, gọi Sheets API làm fallback
-  if (!spreadsheetId) {
-    const createUrl = 'https://sheets.googleapis.com/v4/spreadsheets';
-    const createPayload = {
-      properties: {
-        title: customTitle,
-      },
-      sheets: [
-        {
-          properties: {
-            title: KHOSACH_SHEET_TITLE,
-            gridProperties: { frozenRowCount: 1 },
-          },
-        },
-        {
-          properties: {
-            title: MASTER_CONFIG_SHEET_TITLE,
-            hidden: false,
-            gridProperties: { rowCount: 30, columnCount: 5 },
-          },
-        },
-      ],
-    };
-
-    let createResp = await fetch(createUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${activeToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(createPayload),
-    });
-
-    if (createResp.status === 401) {
-      const freshToken = await getAccessToken(true);
-      if (freshToken) {
-        activeToken = freshToken;
-        createResp = await fetch(createUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${activeToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(createPayload),
-        });
-      }
-    }
-
-    if (!createResp.ok) {
-      const errorData = await createResp.json().catch(() => ({}));
-      if (createResp.status === 401) {
-        throw new Error('Phiên đăng nhập Google đã hết hạn. Vui lòng bấm Đăng nhập lại.');
-      }
-      throw new Error(
-        errorData?.error?.message || `Không thể tạo Google Sheet (Mã lỗi ${createResp.status})`
-      );
-    }
-
+  if (createResp.ok) {
     const createdData = await createResp.json();
     spreadsheetId = createdData.spreadsheetId;
     webViewLink = createdData.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+  } else {
+    // Fallback: Thử tạo qua Drive API nếu Sheets API gặp trở ngại
+    try {
+      const driveCreateResp = await fetch('https://www.googleapis.com/drive/v3/files', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${activeToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: customTitle,
+          mimeType: 'application/vnd.google-apps.spreadsheet',
+          appProperties: {
+            [APP_PROPERTY_KEY]: APP_PROPERTY_VALUE,
+            created_by: APP_PROPERTY_VALUE,
+          },
+        }),
+      });
 
-    // Gắn tag appProperties cho file tạo bằng Sheets API
-    await tagSpreadsheetAsAppCreated(activeToken, spreadsheetId);
+      if (driveCreateResp.ok) {
+        const driveData = await driveCreateResp.json();
+        spreadsheetId = driveData.id;
+        webViewLink = driveData.webViewLink || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+        await ensureSpreadsheetTabs(activeToken, spreadsheetId, userEmail);
+      }
+    } catch (err) {
+      console.warn('[DriveSync] Drive API fallback create error:', err);
+    }
   }
 
-  // Luôn đảm bảo file có tag appProperties trên Google Drive
-  await tagSpreadsheetAsAppCreated(activeToken, spreadsheetId);
+  if (!spreadsheetId) {
+    throw new Error('Không thể tạo file Google Sheet. Vui lòng kiểm tra quyền truy cập Google.');
+  }
 
-  // 3. Đảm bảo cấu trúc 2 Tab và ghi tiêu đề dòng 1
-  await ensureSpreadsheetTabs(activeToken, spreadsheetId, userEmail);
+  // Gắn tag appProperties trên Google Drive và ghi tiêu đề dòng 1
+  tagSpreadsheetAsAppCreated(activeToken, spreadsheetId).catch(() => {});
   await initializeSheetHeaders(activeToken, spreadsheetId, userEmail, customTitle);
 
   const result: SpreadsheetInfo = {
@@ -550,13 +531,13 @@ async function ensureSpreadsheetTabs(accessToken: string, spreadsheetId: string,
     // 2. Nếu chưa có Tab __CONFIG__:
     if (!masterConfigSheet) {
       if (legacyConfigSheet && legacyConfigSheet.properties?.sheetId !== undefined) {
-        // Chuyển đổi tab Config cũ sang __CONFIG__ chuẩn (hiện rõ ràng, không ẩn)
+        // Chuyển đổi tab Config cũ sang __CONFIG__ chuẩn (mặc định ẩn an toàn)
         requests.push({
           updateSheetProperties: {
             properties: {
               sheetId: legacyConfigSheet.properties.sheetId,
               title: MASTER_CONFIG_SHEET_TITLE,
-              hidden: false,
+              hidden: true,
               gridProperties: { rowCount: 30, columnCount: 5 },
             },
             fields: 'title,hidden,gridProperties',
@@ -568,19 +549,19 @@ async function ensureSpreadsheetTabs(accessToken: string, spreadsheetId: string,
             properties: {
               title: MASTER_CONFIG_SHEET_TITLE,
               index: 1,
-              hidden: false,
+              hidden: true,
               gridProperties: { rowCount: 30, columnCount: 5 },
             },
           },
         });
       }
-    } else if (masterConfigSheet.properties?.hidden) {
-      // Đảm bảo tab __CONFIG__ luôn hiển thị rõ ràng để người dùng dễ theo dõi
+    } else if (!masterConfigSheet.properties?.hidden) {
+      // Đảm bảo tab __CONFIG__ luôn được ẩn an toàn để tránh user vô tình sửa
       requests.push({
         updateSheetProperties: {
           properties: {
             sheetId: masterConfigSheet.properties.sheetId,
-            hidden: false,
+            hidden: true,
           },
           fields: 'hidden',
         },
@@ -715,7 +696,23 @@ export async function saveMasterSyncStateToGoogleSheet(
     const linkedIso = state.linkedTimestamp || nowIso;
     const linkedVi = state.linkedLocalTimeVi || formatVietnameseFullDate(linkedIso);
 
-    const members = state.members || [];
+    const members = (state.members || []).map((m) => ({ ...m }));
+    const userApiKeys: Record<string, string[]> = {
+      ...(state.userApiKeys || {}),
+      ...(state.customSettings?.userApiKeys || {}),
+    };
+
+    // Đảm bảo đồng bộ 2 chiều giữa members.apiKeys và userApiKeys
+    for (const m of members) {
+      const email = m.email.trim().toLowerCase();
+      if (m.apiKeys && Array.isArray(m.apiKeys) && m.apiKeys.length > 0) {
+        userApiKeys[email] = m.apiKeys;
+      } else if (userApiKeys[email] && userApiKeys[email].length > 0) {
+        m.apiKeys = userApiKeys[email];
+        m.apiKey = userApiKeys[email][0] || '';
+      }
+    }
+
     const coreMetadataPayload = JSON.stringify({
       schemaVersion: 2,
       status: state.status || 'active',
@@ -729,14 +726,16 @@ export async function saveMasterSyncStateToGoogleSheet(
       linkedLocalTimeVi: linkedVi,
       updatedAt: nowIso,
       updatedAtVi: nowVi,
+      userApiKeys,
     });
 
     const customSettingsPayload = JSON.stringify({
       ignoredDuplicatePairs: state.ignoredDuplicatePairs || [],
       customSettings: state.customSettings || {},
+      userApiKeys,
     });
 
-    // Ma trận chuẩn 10 hàng x 2 cột A1:B10 theo đúng mẫu (KHÔNG CÓ AUDIT LOGS)
+    // Ma trận chuẩn hàng x 2 cột A1:B11 (Bao gồm User API Keys cho Admin & Editor)
     const values: (string | number)[][] = [
       ['__METADATA_JSON__', coreMetadataPayload],
       ['Vault Name', state.activeFileName || 'Kho Sách Gia Đình'],
@@ -748,6 +747,7 @@ export async function saveMasterSyncStateToGoogleSheet(
       ['Updated At', nowVi],
       ['Members JSON', JSON.stringify(members)],
       ['Custom Settings', customSettingsPayload],
+      ['User API Keys JSON', JSON.stringify(userApiKeys)],
     ];
 
     const batchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values:batchUpdate`;
@@ -787,7 +787,7 @@ export async function saveMasterSyncStateToGoogleSheet(
               addSheet: {
                 properties: {
                   title: MASTER_CONFIG_SHEET_TITLE,
-                  hidden: false,
+                  hidden: true,
                   gridProperties: { rowCount: 30, columnCount: 5 },
                 },
               },
@@ -862,8 +862,9 @@ export async function readMasterSyncStateFromGoogleSheet(
           membersList = metadataParsed.members;
         }
 
-        // Đọc custom settings / ignoredDuplicatePairs
+        // Đọc custom settings / ignoredDuplicatePairs / userApiKeys
         let ignoredDuplicatePairs: string[] = [];
+        let userApiKeysMap: Record<string, string[]> = {};
         const rawCustom = kvMap.get('custom settings');
         if (typeof rawCustom === 'string') {
           try {
@@ -871,10 +872,44 @@ export async function readMasterSyncStateFromGoogleSheet(
             if (Array.isArray(parsed.ignoredDuplicatePairs)) {
               ignoredDuplicatePairs = parsed.ignoredDuplicatePairs;
             }
+            if (parsed.userApiKeys && typeof parsed.userApiKeys === 'object') {
+              userApiKeysMap = { ...userApiKeysMap, ...parsed.userApiKeys };
+            } else if (parsed.customSettings?.userApiKeys && typeof parsed.customSettings.userApiKeys === 'object') {
+              userApiKeysMap = { ...userApiKeysMap, ...parsed.customSettings.userApiKeys };
+            }
           } catch {}
         }
         if (ignoredDuplicatePairs.length === 0 && Array.isArray(metadataParsed.ignoredDuplicatePairs)) {
           ignoredDuplicatePairs = metadataParsed.ignoredDuplicatePairs;
+        }
+
+        // Đọc từ hàng 'User API Keys JSON'
+        const rawUserApiKeys = kvMap.get('user api keys json') || kvMap.get('user api keys');
+        if (typeof rawUserApiKeys === 'string') {
+          try {
+            const parsed = JSON.parse(rawUserApiKeys);
+            if (parsed && typeof parsed === 'object') {
+              userApiKeysMap = { ...userApiKeysMap, ...parsed };
+            }
+          } catch {}
+        }
+
+        // Đọc từ metadataParsed nếu có
+        if (metadataParsed.userApiKeys && typeof metadataParsed.userApiKeys === 'object') {
+          userApiKeysMap = { ...userApiKeysMap, ...metadataParsed.userApiKeys };
+        }
+
+        // Đồng bộ ngược lại vào từng member nếu member có apiKeys
+        for (const m of membersList) {
+          const em = m.email.trim().toLowerCase();
+          if (m.apiKeys && Array.isArray(m.apiKeys) && m.apiKeys.length > 0) {
+            userApiKeysMap[em] = m.apiKeys;
+          } else if (m.apiKey && typeof m.apiKey === 'string' && m.apiKey.trim()) {
+            if (!userApiKeysMap[em]) userApiKeysMap[em] = [m.apiKey.trim()];
+          } else if (userApiKeysMap[em] && userApiKeysMap[em].length > 0) {
+            m.apiKeys = userApiKeysMap[em];
+            m.apiKey = userApiKeysMap[em][0] || '';
+          }
         }
 
         const meta: SheetConfigMetadata = {
@@ -893,6 +928,7 @@ export async function readMasterSyncStateFromGoogleSheet(
           appName: 'Kho Sách',
           appVersion: '1.0.0',
           ignoredDuplicatePairs,
+          userApiKeys: userApiKeysMap,
         };
 
         return { metadata: meta, members: membersList };
@@ -931,20 +967,30 @@ export async function readMasterSyncStateFromGoogleSheet(
 
       if (fallbackStatus) {
         const membersResp = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values/Config!A:C`,
+          `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values/Config!A:D`,
           { headers: { Authorization: `Bearer ${accessToken}` } }
         );
         const membersList: FamilyMember[] = [];
+        const fallbackApiKeys: Record<string, string[]> = {};
         if (membersResp.ok) {
           const mData = await membersResp.json();
           const mRows: any[][] = mData.values || [];
           for (let i = 1; i < mRows.length; i++) {
             const r = mRows[i];
             if (!r || !r[0] || !String(r[0]).includes('@')) continue;
+            const em = String(r[0]).trim().toLowerCase();
+            const role = (r[1] === 'Owner' || r[1] === 'Editor') ? r[1] : 'Viewer';
+            const rawKey = r[3] ? String(r[3]).trim() : '';
+            const keys = rawKey ? rawKey.split(';').map((k) => k.trim()).filter(Boolean) : [];
+            if (keys.length > 0) {
+              fallbackApiKeys[em] = keys;
+            }
             membersList.push({
-              email: String(r[0]).trim().toLowerCase(),
-              role: (r[1] === 'Owner' || r[1] === 'Editor') ? r[1] : 'Viewer',
+              email: em,
+              role,
               addedAt: r[2] ? String(r[2]) : new Date().toISOString(),
+              apiKey: keys[0] || undefined,
+              apiKeys: keys.length > 0 ? keys : undefined,
             });
           }
         }
@@ -958,6 +1004,7 @@ export async function readMasterSyncStateFromGoogleSheet(
           activeFileUrl: `https://docs.google.com/spreadsheets/d/${fileId}/edit`,
           appName: 'Kho Sách',
           updatedAt: metaParsed.updatedAt || new Date().toISOString(),
+          userApiKeys: fallbackApiKeys,
         };
 
         return { metadata: meta, members: membersList };
@@ -1387,6 +1434,241 @@ export async function removeFamilyMember(
 }
 
 /**
+ * 7b. Lưu hoặc cập nhật Gemini API Key của thành viên (Admin hoặc Editor) vào Google Sheet Config
+ * Đồng bộ sang mọi thiết bị hoặc phiên đăng nhập khác của user đó mà không cần nhập lại.
+ */
+export async function saveUserApiKeyToSheetConfig(
+  accessToken: string,
+  spreadsheetId: string,
+  userEmail: string,
+  apiKeys: string[],
+  userRole?: UserRole
+): Promise<boolean> {
+  const cleanEmail = (userEmail || '').trim().toLowerCase();
+  if (!accessToken || !spreadsheetId || !cleanEmail) return false;
+
+  // Bảo vệ phân quyền: Chỉ thành viên có vai trò Admin hoặc Editor mới được lưu API Key vào Sheet Config
+  if (userRole === 'VIEWER') {
+    console.warn(`[DriveSync] Từ chối lưu API Key vào Sheet Config: Người dùng ${cleanEmail} có vai trò VIEWER`);
+    return false;
+  }
+
+  try {
+    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
+    if (!state) {
+      console.warn('[DriveSync] Không đọc được trạng thái Master Sync để lưu API Key');
+      return false;
+    }
+
+    const cleanKeys = (apiKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
+    const existingMembers = state.members ? state.members.map((m) => ({ ...m })) : [];
+    let matchedMember = existingMembers.find((m) => m.email.trim().toLowerCase() === cleanEmail);
+
+    // Kiểm tra xem member trong sheet có phải là Viewer hay không
+    if (matchedMember && matchedMember.role === 'Viewer') {
+      console.warn(`[DriveSync] Không thể lưu API Key: Member ${cleanEmail} được cấu hình là Viewer trong Sheet`);
+      return false;
+    }
+
+    const nowIso = new Date().toISOString();
+    if (matchedMember) {
+      matchedMember.apiKeys = cleanKeys;
+      matchedMember.apiKey = cleanKeys[0] || '';
+      matchedMember.apiKeyUpdatedAt = nowIso;
+    } else {
+      // Nếu user là Admin (Owner) hoặc Editor nhưng chưa có trong danh sách members
+      const role = (userRole === 'ADMIN' || state.metadata.adminEmail?.trim().toLowerCase() === cleanEmail)
+        ? 'Owner'
+        : 'Editor';
+      matchedMember = {
+        email: cleanEmail,
+        role,
+        addedAt: nowIso,
+        apiKeys: cleanKeys,
+        apiKey: cleanKeys[0] || '',
+        apiKeyUpdatedAt: nowIso,
+      };
+      existingMembers.push(matchedMember);
+    }
+
+    const userApiKeys: Record<string, string[]> = {
+      ...(state.metadata.userApiKeys || {}),
+      ...(state.metadata.customSettings?.userApiKeys || {}),
+      [cleanEmail]: cleanKeys,
+    };
+
+    const saveSuccess = await saveMasterSyncStateToGoogleSheet(accessToken, spreadsheetId, {
+      ...state.metadata,
+      members: existingMembers,
+      userApiKeys,
+      customSettings: {
+        ...(state.metadata.customSettings || {}),
+        userApiKeys,
+      },
+      updatedAt: nowIso,
+    });
+
+    // Cập nhật bổ trợ vào Tab Config cũ (nếu tệp đang dùng tab Config)
+    try {
+      const configResp = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Config!A:D`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (configResp.ok) {
+        const cData = await configResp.json();
+        const rows: any[][] = cData.values || [];
+        for (let i = 1; i < rows.length; i++) {
+          if (rows[i] && String(rows[i][0] || '').trim().toLowerCase() === cleanEmail) {
+            const rowNum = i + 1;
+            await fetch(
+              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Config!D${rowNum}?valueInputOption=USER_ENTERED`,
+              {
+                method: 'PUT',
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ values: [[cleanKeys.join(';')]] }),
+              }
+            );
+            break;
+          }
+        }
+      }
+    } catch {}
+
+    return saveSuccess;
+  } catch (err) {
+    console.warn('[DriveSync] saveUserApiKeyToSheetConfig thất bại:', err);
+    return false;
+  }
+}
+
+/**
+ * 7c. Lấy danh sách Gemini API Key đã lưu trong Google Sheet Config của một thành viên
+ */
+export async function fetchUserApiKeysFromSheetConfig(
+  accessToken: string,
+  spreadsheetId: string,
+  userEmail: string
+): Promise<string[]> {
+  try {
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    if (!accessToken || !spreadsheetId || !cleanEmail) return [];
+
+    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
+    if (state) {
+      // 1. Kiểm tra trong metadata.userApiKeys
+      if (state.metadata.userApiKeys && state.metadata.userApiKeys[cleanEmail]) {
+        const keys = state.metadata.userApiKeys[cleanEmail];
+        if (Array.isArray(keys) && keys.length > 0) return keys;
+      }
+
+      // 2. Kiểm tra trong customSettings.userApiKeys
+      const customApiKeys = state.metadata.customSettings?.userApiKeys;
+      if (customApiKeys && customApiKeys[cleanEmail] && Array.isArray(customApiKeys[cleanEmail])) {
+        return customApiKeys[cleanEmail];
+      }
+
+      // 3. Kiểm tra trong danh sách members
+      const matched = state.members.find((m) => m.email.trim().toLowerCase() === cleanEmail);
+      if (matched?.apiKeys && matched.apiKeys.length > 0) {
+        return matched.apiKeys;
+      }
+      if (matched?.apiKey) {
+        return [matched.apiKey];
+      }
+    }
+
+    // 4. Fallback: Kiểm tra trong tab Config cũ
+    const configResp = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Config!A:D`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (configResp.ok) {
+      const cData = await configResp.json();
+      const rows: any[][] = cData.values || [];
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i] && String(rows[i][0] || '').trim().toLowerCase() === cleanEmail) {
+          const rawKey = String(rows[i][3] || '').trim();
+          if (rawKey) {
+            return rawKey.split(';').map((k) => k.trim()).filter(Boolean);
+          }
+        }
+      }
+    }
+
+    return [];
+  } catch (err) {
+    console.warn('[DriveSync] fetchUserApiKeysFromSheetConfig error:', err);
+    return [];
+  }
+}
+
+/**
+ * 7d. Tự động đồng bộ 2 chiều API Key giữa LocalStorage và Google Sheet Config
+ * - Khi user Admin hoặc Editor đăng nhập ở máy mới: Tự nạp key từ Sheet về máy
+ * - Khi user nhập key mới ở máy hiện tại: Tự lưu lên Sheet Config
+ * - Khi cả 2 đều có: Hợp nhất (deduplicate) để đảm bảo đồng nhất
+ */
+export async function syncUserApiKeyWithSheetConfig(
+  accessToken: string,
+  spreadsheetId: string,
+  userEmail: string,
+  userRole: UserRole,
+  localKeys: string[]
+): Promise<{
+  syncedKeys: string[];
+  hasUpdatedLocal: boolean;
+  hasUpdatedRemote: boolean;
+}> {
+  const cleanEmail = (userEmail || '').trim().toLowerCase();
+  if (!accessToken || !spreadsheetId || !cleanEmail) {
+    return { syncedKeys: localKeys, hasUpdatedLocal: false, hasUpdatedRemote: false };
+  }
+
+  // Chỉ Admin và Editor mới được lưu và đồng bộ API key trong sheet config
+  if (userRole === 'VIEWER') {
+    return { syncedKeys: localKeys, hasUpdatedLocal: false, hasUpdatedRemote: false };
+  }
+
+  const cleanLocal = (localKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
+  const remoteKeys = await fetchUserApiKeysFromSheetConfig(accessToken, spreadsheetId, cleanEmail);
+
+  // Trường hợp 1: Remote có keys, Local chưa có (đăng nhập trên máy mới / trình duyệt mới)
+  if (remoteKeys.length > 0 && cleanLocal.length === 0) {
+    saveStoredGeminiApiKeys(remoteKeys);
+    return { syncedKeys: remoteKeys, hasUpdatedLocal: true, hasUpdatedRemote: false };
+  }
+
+  // Trường hợp 2: Local có keys, Remote chưa có (vừa nhập key trên máy hiện tại)
+  if (cleanLocal.length > 0 && remoteKeys.length === 0) {
+    await saveUserApiKeyToSheetConfig(accessToken, spreadsheetId, cleanEmail, cleanLocal, userRole);
+    return { syncedKeys: cleanLocal, hasUpdatedLocal: false, hasUpdatedRemote: true };
+  }
+
+  // Trường hợp 3: Cả 2 đều có key -> Gộp hợp nhất các key mới nhất (không trùng lặp)
+  const mergedSet = new Set<string>();
+  cleanLocal.forEach((k) => mergedSet.add(k));
+  remoteKeys.forEach((k) => mergedSet.add(k));
+  const mergedList = Array.from(mergedSet);
+
+  let hasUpdatedLocal = false;
+  let hasUpdatedRemote = false;
+
+  if (mergedList.length > cleanLocal.length) {
+    saveStoredGeminiApiKeys(mergedList);
+    hasUpdatedLocal = true;
+  }
+  if (mergedList.length > remoteKeys.length) {
+    await saveUserApiKeyToSheetConfig(accessToken, spreadsheetId, cleanEmail, mergedList, userRole);
+    hasUpdatedRemote = true;
+  }
+
+  return { syncedKeys: mergedList, hasUpdatedLocal, hasUpdatedRemote };
+}
+
+/**
  * 7. Thuật toán Đồng Bộ 2 Chiều: Google Drive là Master Database tuyệt đối
  * - Dữ liệu trên Google Drive luôn là Single Source of Truth (Sở hữu tối cao).
  * - Mọi thiết bị local sẽ cập nhật trùng khớp tuyệt đối với Master Database trên Drive sau khi đồng bộ.
@@ -1412,6 +1694,20 @@ export async function syncBooksTwoWay(
     await syncIgnoredDuplicatePairsWithDrive(accessToken, spreadsheetId);
   } catch {}
 
+  // 1b. KIỂM TRA CỜ PHỤC HỒI MASTER (Master Restore Protection)
+  // Nếu local bị người dùng xóa trắng (clear all) hoặc cài đặt mới, kéo toàn bộ Master về máy
+  if (isMasterRestoreRequired()) {
+    console.log('[DriveSync] Phát hiện cờ Master Restore. Khôi phục toàn bộ sách từ Google Drive về máy...');
+    setMasterRestoreRequired(false);
+    clearPendingBookMutations();
+    return {
+      mergedBooks: remoteBooks,
+      cloudCount: remoteBooks.length,
+      localCount: 0,
+      hasChanges: true,
+    };
+  }
+
   // Nếu là VIEWER, dữ liệu trên Drive luôn là tuyệt đối, không ghi đè, không thay đổi
   if (userRole === 'VIEWER') {
     return {
@@ -1422,9 +1718,7 @@ export async function syncBooksTwoWay(
     };
   }
 
-  // 2. Với ADMIN/EDITOR, hợp nhất dựa trên nguyên tắc Master Database:
-  // - Toàn bộ sách trên Drive (Master) được giữ nguyên.
-  // - Chỉ các sách mới tạo hoặc sửa đổi sau thời gian trên Drive mới được đồng bộ lên Master.
+  // 2. Với ADMIN/EDITOR, hợp nhất dựa trên Master Database kết hợp Hàng Đợi Mutation Ngoại Tuyến
   const mergedMap = new Map<string, BookRecord>();
 
   // Đưa toàn bộ sách từ Master Database trên Drive vào trước
@@ -1435,12 +1729,34 @@ export async function syncBooksTwoWay(
   }
 
   let localChangesMade = false;
+  const pendingMutations = getPendingBookMutations();
+  const appliedMutationIds: string[] = [];
 
+  // 2a. ÁP DỤNG HÀNG ĐỢI BIẾN ĐỘNG (MUTATION REPLAY) NẾU CÓ
+  if (pendingMutations.length > 0) {
+    console.log(`[DriveSync] Đang phát lại ${pendingMutations.length} thao tác ngoại tuyến (Mutations)...`);
+    for (const mutation of pendingMutations) {
+      if (mutation.type === 'DELETE') {
+        if (mergedMap.has(mutation.bookId)) {
+          mergedMap.delete(mutation.bookId);
+          localChangesMade = true;
+        }
+      } else if (mutation.type === 'CREATE' || mutation.type === 'UPDATE') {
+        if (mutation.book) {
+          mergedMap.set(mutation.bookId, mutation.book);
+          localChangesMade = true;
+        }
+      }
+      appliedMutationIds.push(mutation.id);
+    }
+  }
+
+  // 2b. Đối chiếu bổ sung các sách local hiện tại với remote theo timestamp
   for (const lBook of localBooks) {
     if (!lBook.id) continue;
     const existing = mergedMap.get(lBook.id);
     if (!existing) {
-      // Sách mới tạo hoàn toàn ở local chưa có trên Drive -> Đồng bộ lên Master
+      // Sách mới tạo ở local chưa có trên Drive (và chưa bị DELETE trong queue)
       mergedMap.set(lBook.id, lBook);
       localChangesMade = true;
     } else {
@@ -1463,6 +1779,13 @@ export async function syncBooksTwoWay(
   // 3. Nếu phát sinh thay đổi, ghi đè cập nhật lại lên Master Database trên Google Drive
   if (localChangesMade || finalMergedList.length !== remoteBooks.length) {
     await saveBooksToGoogleSheet(accessToken, spreadsheetId, finalMergedList);
+    // Sau khi lưu lên Google Sheet thành công, dọn dẹp các mutation đã áp dụng
+    if (appliedMutationIds.length > 0) {
+      removePendingBookMutationsByIds(appliedMutationIds);
+      console.log(`[DriveSync] Đã xóa ${appliedMutationIds.length} mutation khỏi hàng đợi thành công.`);
+    }
+  } else if (appliedMutationIds.length > 0) {
+    removePendingBookMutationsByIds(appliedMutationIds);
   }
 
   return {
@@ -1498,7 +1821,18 @@ export async function determineCurrentUserRole(
   if (matched?.role === 'Owner') return 'ADMIN';
   if (matched?.role === 'Editor') return 'EDITOR';
   if (matched?.role === 'Viewer') return 'VIEWER';
-  throw new Error('Tài khoản Google hiện tại không có trong danh sách thành viên của Workspace.');
+
+  // Fallback: Nếu đã được share quyền trên Drive nhưng chưa lưu vào bảng __CONFIG__
+  try {
+    const testWrite = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/__CONFIG__!D1?valueInputOption=USER_ENTERED`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: [['check']] }),
+    });
+    if (testWrite.ok) return 'EDITOR';
+  } catch {}
+
+  return 'VIEWER';
 }
 
 /**
@@ -1770,21 +2104,33 @@ export async function autoDiscoverSharedSpreadsheets(
       const verified = await Promise.all(
         batch.map(async (sheet) => {
           const syncState = await readMasterSyncStateFromGoogleSheet(accessToken, sheet.id);
-          if (!syncState || !syncState.metadata) return null;
+          let isMember = false;
+          let isAdmin = false;
+          let resolvedName = sheet.name || 'Kho Sách Gia Đình';
+          let adminEmail = '';
 
-          const meta = syncState.metadata;
-          if (meta.status !== 'active' || meta.lastAction === 'unlink') return null;
+          if (syncState && syncState.metadata) {
+            const meta = syncState.metadata;
+            if (meta.status === 'unlinked' || meta.lastAction === 'unlink') return null;
 
-          const adminEmail = (meta.adminEmail || '').trim().toLowerCase();
-          const isAdmin = adminEmail === cleanEmail;
-          const members = syncState.members || [];
-          const matchedMember = members.find((member) => member.email.trim().toLowerCase() === cleanEmail);
+            adminEmail = (meta.adminEmail || '').trim().toLowerCase();
+            isAdmin = adminEmail === cleanEmail;
+            const members = syncState.members || [];
+            const matchedMember = members.find((member) => member.email.trim().toLowerCase() === cleanEmail);
+            isMember = !!matchedMember;
+            resolvedName = meta.activeFileName || sheet.name || 'Kho Sách Gia Đình';
+          } else {
+            // Fallback nếu chưa đọc được metadata
+            const members = await fetchFamilyMembers(accessToken, sheet.id);
+            const matchedMember = members.find((member) => member.email.trim().toLowerCase() === cleanEmail);
+            isMember = !!matchedMember;
+          }
 
-          if (!isAdmin && !matchedMember) return null;
+          if (!isAdmin && !isMember) return null;
 
           const resolvedSheet: SpreadsheetInfo = {
             id: sheet.id,
-            name: meta.activeFileName || sheet.name || 'Kho Sách Gia Đình',
+            name: resolvedName,
             webViewLink: sheet.webViewLink || `https://docs.google.com/spreadsheets/d/${sheet.id}/edit`,
           };
 

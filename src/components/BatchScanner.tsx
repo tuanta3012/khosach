@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Camera,
   UploadCloud,
@@ -11,10 +11,12 @@ import {
   RefreshCw,
   XCircle,
   Square,
+  Key,
 } from 'lucide-react';
 import { BookRecord, DraftBookItem } from '../types';
 import { flagDuplicateDrafts, checkDuplicateBook } from '../utils/fuzzyMatcher';
-import { scanImages, enrichBook } from '../utils/geminiService';
+import { scanImages, enrichBook, getStoredGeminiApiKeys, isKeyInCooldown } from '../utils/geminiService';
+import { useToast } from '../context/ToastContext';
 import { ImageCropModal } from './ImageCropModal';
 
 interface BatchScannerProps {
@@ -22,6 +24,7 @@ interface BatchScannerProps {
   categories: string[];
   onSaveToLibrary: (books: BookRecord[]) => Promise<void>;
   onSwitchToTable: () => void;
+  onOpenSettingsKey?: () => void;
 }
 
 /**
@@ -74,7 +77,9 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
   categories,
   onSaveToLibrary,
   onSwitchToTable,
+  onOpenSettingsKey,
 }) => {
+  const { showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const stopScanRef = useRef(false);
@@ -88,6 +93,143 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     booksFound: 0,
     statusMessage: '',
   });
+
+  // Trạng thái kiểm tra Gemini API Key
+  const [keyStatus, setKeyStatus] = useState<{
+    hasError: boolean;
+    type: 'EMPTY' | 'INVALID' | 'COOLDOWN';
+    message: string;
+  }>({
+    hasError: false,
+    type: 'EMPTY',
+    message: '',
+  });
+
+  // Modal cảnh báo yêu cầu khai báo Key hoặc thay Key mới khi bấm Chụp ảnh / Thư viện
+  const [keyAlertModal, setKeyAlertModal] = useState<{
+    isOpen: boolean;
+    type: 'EMPTY' | 'ERROR';
+    title: string;
+    message: string;
+  }>({
+    isOpen: false,
+    type: 'EMPTY',
+    title: '',
+    message: '',
+  });
+
+  const checkKeyCondition = (showToastIfError = false): boolean => {
+    const keys = getStoredGeminiApiKeys();
+    if (keys.length === 0) {
+      const status = {
+        hasError: true,
+        type: 'EMPTY' as const,
+        message: 'Chưa khai báo Gemini API Key.',
+      };
+      setKeyStatus(status);
+      if (showToastIfError) {
+        showToast('Chưa khai báo Gemini API Key.', 'warning');
+      }
+      return false;
+    }
+
+    const allInCooldown = keys.every((k) => isKeyInCooldown(k));
+    if (allInCooldown) {
+      const status = {
+        hasError: true,
+        type: 'COOLDOWN' as const,
+        message: 'Key lỗi. Chờ hoặc thay key mới.',
+      };
+      setKeyStatus(status);
+      if (showToastIfError) {
+        showToast('Key lỗi. Chờ hoặc thay key mới.', 'warning');
+      }
+      return false;
+    }
+
+    setKeyStatus({ hasError: false, type: 'EMPTY', message: '' });
+    return true;
+  };
+
+  const handleTriggerCamera = () => {
+    const keys = getStoredGeminiApiKeys();
+    if (keys.length === 0) {
+      setKeyStatus({
+        hasError: true,
+        type: 'EMPTY',
+        message: 'Chưa khai báo Gemini API Key.',
+      });
+      setKeyAlertModal({
+        isOpen: true,
+        type: 'EMPTY',
+        title: 'Chưa khai báo Gemini Key',
+        message: 'Chưa khai báo Gemini API Key. Vui lòng khai báo key để tiếp tục.',
+      });
+      showToast('Chưa khai báo Gemini API Key.', 'warning');
+      return;
+    }
+
+    const allInCooldown = keys.every((k) => isKeyInCooldown(k));
+    if (allInCooldown) {
+      setKeyStatus({
+        hasError: true,
+        type: 'COOLDOWN',
+        message: 'Key lỗi. Chờ hoặc thay key mới.',
+      });
+      setKeyAlertModal({
+        isOpen: true,
+        type: 'ERROR',
+        title: 'Key lỗi hoặc hết hạn',
+        message: 'Key lỗi hoặc hết hạn. Vui lòng chờ hoặc thay key mới.',
+      });
+      showToast('Key lỗi. Chờ hoặc thay key mới.', 'warning');
+      return;
+    }
+
+    cameraInputRef.current?.click();
+  };
+
+  const handleTriggerLibrary = () => {
+    const keys = getStoredGeminiApiKeys();
+    if (keys.length === 0) {
+      setKeyStatus({
+        hasError: true,
+        type: 'EMPTY',
+        message: 'Chưa khai báo Gemini API Key.',
+      });
+      setKeyAlertModal({
+        isOpen: true,
+        type: 'EMPTY',
+        title: 'Chưa khai báo Gemini Key',
+        message: 'Chưa khai báo Gemini API Key. Vui lòng khai báo key để tiếp tục.',
+      });
+      showToast('Chưa khai báo Gemini API Key.', 'warning');
+      return;
+    }
+
+    const allInCooldown = keys.every((k) => isKeyInCooldown(k));
+    if (allInCooldown) {
+      setKeyStatus({
+        hasError: true,
+        type: 'COOLDOWN',
+        message: 'Key lỗi. Chờ hoặc thay key mới.',
+      });
+      setKeyAlertModal({
+        isOpen: true,
+        type: 'ERROR',
+        title: 'Key lỗi hoặc hết hạn',
+        message: 'Key lỗi hoặc hết hạn. Vui lòng chờ hoặc thay key mới.',
+      });
+      showToast('Key lỗi. Chờ hoặc thay key mới.', 'warning');
+      return;
+    }
+
+    fileInputRef.current?.click();
+  };
+
+  React.useEffect(() => {
+    checkKeyCondition(false);
+  }, []);
 
   // Hàng đợi lưu lại các ảnh bị lỗi chưa bóc tách xong để Resume / Retry
   const [failedImagesQueue, setFailedImagesQueue] = useState<string[]>(() => {
@@ -222,6 +364,20 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
     if (currentFailedImages.length > 0) {
       setFailedImagesQueue((prev) => [...prev, ...currentFailedImages]);
+      const keys = getStoredGeminiApiKeys();
+      if (keys.length === 0) {
+        setKeyStatus({
+          hasError: true,
+          type: 'EMPTY',
+          message: 'Chưa khai báo Gemini API Key.',
+        });
+      } else if (keys.every((k) => isKeyInCooldown(k))) {
+        setKeyStatus({
+          hasError: true,
+          type: 'COOLDOWN',
+          message: 'Key lỗi. Chờ hoặc thay key mới.',
+        });
+      }
     }
 
     setIsScanning(false);
@@ -316,6 +472,38 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
   // THỬ LẠI CÁC ẢNH BỊ LỖI (RESUME)
   const handleRetryFailedImages = async () => {
+    const keys = getStoredGeminiApiKeys();
+    if (keys.length === 0) {
+      setKeyStatus({
+        hasError: true,
+        type: 'EMPTY',
+        message: 'Chưa khai báo Gemini API Key.',
+      });
+      setKeyAlertModal({
+        isOpen: true,
+        type: 'EMPTY',
+        title: 'Chưa khai báo Gemini Key',
+        message: 'Chưa khai báo Gemini API Key. Vui lòng khai báo key để tiếp tục.',
+      });
+      showToast('Chưa khai báo Gemini API Key.', 'warning');
+      return;
+    }
+    const allInCooldown = keys.every((k) => isKeyInCooldown(k));
+    if (allInCooldown) {
+      setKeyStatus({
+        hasError: true,
+        type: 'COOLDOWN',
+        message: 'Key lỗi. Chờ hoặc thay key mới.',
+      });
+      setKeyAlertModal({
+        isOpen: true,
+        type: 'ERROR',
+        title: 'Key lỗi hoặc hết hạn',
+        message: 'Key lỗi hoặc hết hạn. Vui lòng chờ hoặc thay key mới.',
+      });
+      showToast('Key lỗi. Chờ hoặc thay key mới.', 'warning');
+      return;
+    }
     if (failedImagesQueue.length === 0) return;
     const imagesToRetry = [...failedImagesQueue];
     setFailedImagesQueue([]); // Clear queue trước khi chạy lại
@@ -447,7 +635,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             />
 
             <button
-              onClick={() => cameraInputRef.current?.click()}
+              onClick={handleTriggerCamera}
               disabled={isScanning}
               className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#EA580C] hover:bg-[#c2410c] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50 cursor-pointer"
             >
@@ -456,15 +644,35 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
             </button>
 
             <button
-              onClick={() => fileInputRef.current?.click()}
+              onClick={handleTriggerLibrary}
               disabled={isScanning}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition disabled:opacity-50 cursor-pointer"
             >
               <UploadCloud className="w-4 h-4" />
               <span>Thư Viện</span>
             </button>
           </div>
         </div>
+
+        {/* Cảnh báo Gemini API Key rỗng hoặc lỗi */}
+        {keyStatus.hasError && (
+          <div className="mt-3 p-3 bg-amber-50 border border-amber-200/90 rounded-xl flex items-center justify-between gap-2.5 animate-in fade-in duration-150">
+            <div className="flex items-center gap-2 text-amber-950 text-xs font-bold min-w-0 flex-1">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span className="truncate">{keyStatus.message}</span>
+            </div>
+            {onOpenSettingsKey && (
+              <button
+                type="button"
+                onClick={onOpenSettingsKey}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#653f96] hover:bg-[#52327c] text-white rounded-lg text-xs font-bold shadow-2xs transition active:scale-95 shrink-0 cursor-pointer"
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>{keyStatus.type === 'EMPTY' ? 'Khai báo Key' : 'Thay key mới'}</span>
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Thanh Tiến Trình Bóc Tách Theo Lô */}
         {isScanning && (
@@ -727,6 +935,59 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
         onSkipCrop={handleSkipCrop}
         onCancel={handleCancelCrop}
       />
+
+      {/* Modal Yêu cầu Khai báo Key hoặc Thay Key Mới */}
+      {keyAlertModal.isOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setKeyAlertModal((prev) => ({ ...prev, isOpen: false }))}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-xs w-full p-4.5 shadow-2xl border border-slate-100 text-center space-y-3.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-11 h-11 mx-auto rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shadow-xs">
+              {keyAlertModal.type === 'EMPTY' ? (
+                <Key className="w-5.5 h-5.5 text-[#653f96]" />
+              ) : (
+                <AlertTriangle className="w-5.5 h-5.5 text-amber-600" />
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                {keyAlertModal.title}
+              </h3>
+              <p className="text-xs text-slate-600 font-medium">
+                {keyAlertModal.message}
+              </p>
+            </div>
+
+            <div className="flex items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setKeyAlertModal((prev) => ({ ...prev, isOpen: false }))}
+                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition cursor-pointer flex-1"
+              >
+                Đóng
+              </button>
+              {onOpenSettingsKey && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKeyAlertModal((prev) => ({ ...prev, isOpen: false }));
+                    onOpenSettingsKey();
+                  }}
+                  className="px-3 py-2 bg-[#653f96] hover:bg-[#52327c] text-white text-xs font-bold rounded-xl shadow-xs transition active:scale-95 cursor-pointer flex-1 flex items-center justify-center gap-1.5"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  <span>{keyAlertModal.type === 'EMPTY' ? 'Khai báo Key' : 'Thay key mới'}</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

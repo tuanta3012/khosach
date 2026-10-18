@@ -499,11 +499,11 @@ export async function testGeminiApiKey(
 ): Promise<{ success: boolean; message: string }> {
   const cleanKey = candidateKey.trim();
   if (!cleanKey) {
-    return { success: false, message: 'Vui lòng nhập API Key để kiểm tra!' };
+    return { success: false, message: 'Chưa nhập API Key.' };
   }
 
   if (isKeyInCooldown(cleanKey)) {
-    return { success: false, message: 'Key đang tạm ngưng do giới hạn quota hoặc lỗi xác thực.' };
+    return { success: false, message: 'Key lỗi hoặc hết hạn. Chờ hoặc thay key mới.' };
   }
 
   try {
@@ -514,18 +514,20 @@ export async function testGeminiApiKey(
       { keys: [cleanKey] }
     );
     if (response) {
-      return { success: true, message: 'Kết nối thành công! API key hoạt động.' };
+      return { success: true, message: 'Key hoạt động tốt.' };
     }
   } catch (err: unknown) {
     const failure = classifyGeminiFailure(err);
-    const msg = err instanceof Error ? err.message : String(err);
-    if (failure === 'RPD') {
-      return { success: false, message: 'Key đã đạt giới hạn cuộc gọi trong ngày (RPD) và được tạm ngưng đến ngày quota kế tiếp.' };
+    if (failure === 'RPD' || failure === 'RPM') {
+      return { success: false, message: 'Key hết hạn ngạch. Chờ hoặc thay key mới.' };
     }
-    return { success: false, message: `Key không hoạt động hoặc sai cấu hình: ${msg}` };
+    if (failure === 'AUTH') {
+      return { success: false, message: 'Key không hợp lệ. Vui lòng thay key mới.' };
+    }
+    return { success: false, message: 'Key lỗi. Chờ hoặc thay key mới.' };
   }
 
-  return { success: false, message: 'Không thể kết nối tới Google Gemini API.' };
+  return { success: false, message: 'Key lỗi. Chờ hoặc thay key mới.' };
 }
 
 export async function testAllGeminiApiKeys(

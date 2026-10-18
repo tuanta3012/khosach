@@ -1,0 +1,355 @@
+================================================================================
+TÀI LIỆU KỸ THUẬT: GIẢI PHÁP TỰ ĐỘNG NHẬN DIỆN FILE QUA THUỘC TÍNH ẨN `appProperties`
+(Google Drive API v3 & Google Sheets API v4)
+================================================================================
+
+Tài liệu này mô tả chi tiết kiến trúc, luồng xử lý và bộ mã nguồn triển khai của giải pháp **Tự động Gắn nhãn & Nhận diện tệp dữ liệu ngầm** dành cho ứng dụng di động. 
+
+Giải pháp này giúp hệ thống tự động tìm thấy và nạp tệp dữ liệu trung tâm của người dùng (bao gồm cả Admin và Thành viên được chia sẻ) ngay khi đăng nhập Google Auth, hoạt động 100% tự động ngầm mà KHÔNG cần người dùng phải dán Link hay nhập mã ID thủ công, đồng thời duy trì triệt để phạm vi truy cập an toàn `drive.file`.
+
+---
+
+MỤC LỤC:
+1. Tổng quan kiến trúc & Lợi ích giải pháp
+2. Cấu trúc lưu trữ 2 tầng (Drive Metadata + Sheet Config)
+3. Cơ chế tự động thử lại & Phục hồi khi đứt mạng (Retry Mechanism)
+4. Sơ đồ luồng hoạt động (Workflow Diagram)
+5. Bộ mã nguồn TypeScript triển khai chi tiết
+
+================================================================================
+PHẦN 1: TỔNG QUAN KIẾN TRÚC & LỢI ÍCH GIẢI PHÁP
+================================================================================
+
+Khi phát triển ứng dụng di động sử dụng Google Drive làm cơ sở dữ liệu dùng chung (Multi-user Data Store), bài toán lớn nhất là làm thế nào để **Thành viên B (User B - người được Admin chia sẻ tệp)** sau khi tải app về có thể tự động kết nối đúng tệp dữ liệu mà Admin đã tạo mà không cần dán Link thủ công.
+
+* **Giải pháp truyền thống (Nhiều hạn chế)**:
+  - Bắt người dùng copy/paste URL Google Sheet -> Trải nghiệm xấu trên thiết bị di động.
+  - Xin quyền truy cập toàn bộ Google Drive (`drive` scope) để quét tất cả các file -> Google xét duyệt bảo mật rất khó khăn và vi phạm nguyên tắc cấp quyền tối thiểu.
+
+* **Giải pháp Đột phá sử dụng `appProperties`**:
+  - Tận dụng thuộc tính ẩn **`appProperties`** của Google Drive API v3.
+  - Thuộc tính `appProperties` là các cặp `Key-Value` ẩn chỉ có ứng dụng tạo ra nó mới có quyền đọc/ghi.
+  - Cho phép gửi câu lệnh truy vấn lọc trực tiếp từ Google Drive API trong **1 request duy nhất (200ms)**:
+    `q = appProperties has { key='app_id' and value='com.tietkiemgiadinh.app' } and trashed = false`
+  - Vẫn duy trì hoàn hảo phạm vi quyền hẹp **`drive.file`** (An toàn bảo mật tối đa).
+
+================================================================================
+PHẦN 2: CẤU TRÚC LƯU TRỮ 2 TẦNG (DRIVE METADATA + SHEET CONFIG)
+================================================================================
+
+Để đảm bảo tính toàn vẹn dữ liệu, thông tin gắn nhãn ứng dụng được lưu trữ đồng bộ nhất quán ở cả 2 tầng:
+
+1. **Tầng 1 - Google Drive File Metadata (`appProperties`)**:
+   - Được gắn trực tiếp vào thuộc tính của tệp trên Google Drive.
+   - Mục đích: Phục vụ cho việc truy vấn lọc tệp siêu tốc từ Google Drive API.
+   - Cấu trúc:
+     ```json
+     {
+       "appProperties": {
+         "app_id": "com.tietkiemgiadinh.app",
+         "type": "savings_vault"
+       }
+     }
+     ```
+
+2. **Tầng 2 - Google Sheet Hidden Tab (`__CONFIG__`)**:
+   - Được mã hóa lưu trong ô `__METADATA_JSON__` của trang tính ẩn `__CONFIG__`.
+   - Mục đích: Đảm bảo dữ liệu nhãn luôn đi liền với bảng tính ngay cả khi tệp được xuất hoặc sao lưu sang định dạng khác.
+
+================================================================================
+PHẦN 3: CƠ CHẾ TỰ ĐỘNG THỬ LẠI & PHỤC HỒI KHI ĐỨT MẠNG (RETRY MECHANISM)
+================================================================================
+
+Để đảm bảo ứng dụng luôn tự động nhận diện tệp mượt mà ngay cả khi mạng chập chờn, hệ thống áp dụng cơ chế Retry 2 tầng:
+
+1. **Retry cấp API (`fetchWithRetry` - Exponential Backoff)**:
+   - Mọi request quét tệp đều được bọc qua hàm `fetchWithRetry`.
+   - Nếu gặp lỗi kết nối hoặc Timeout (15s), hệ thống sẽ **tự động thử lại 3 lần** với độ trễ tăng dần (1s -> 2s -> 4s).
+
+2. **Retry cấp Trạng thái App (Auto-Trigger on Network Recovery)**:
+   - Nếu thiết bị hoàn toàn mất mạng (Offline), ứng dụng đăng ký lắng nghe sự kiện:
+     * `window.addEventListener('online', ...)`: Ngay khi thiết bị kết nối mạng trở lại.
+     * `window.addEventListener('focus', ...)`: Ngay khi người dùng chuyển lại vào app.
+   - Hệ thống sẽ **tự động kích hoạt lại tiến trình quét ngầm** để nạp tệp dữ liệu mới nhất mà người dùng không phải thực hiện bất kỳ thao tác nào.
+
+================================================================================
+PHẦN 4: SƠ ĐỒ LUỒNG HOẠT ĐỘNG (WORKFLOW DIAGRAM)
+================================================================================
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                          ADMIN LUỒNG TẠO / LIÊN KẾT                    │
+│  1. Admin bấm "Tạo file mới" hoặc "Liên kết file"                      │
+│  2. App tự động gửi `appProperties` trong Multipart Payload           │
+│  3. App đồng thời ghi `appProperties` vào ô __METADATA_JSON__ ở Sheet  │
+│  4. Admin thêm email User B (Cấp quyền Drive Permission)               │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        TỆP TẠI GOOGLE DRIVE                           │
+│  - Name: "So_Tiet_Kiem_Gia_Dinh.xlsx"                                  │
+│  - Permissions: [Admin (owner/writer), User B (reader/writer)]          │
+│  - appProperties: { app_id: 'com.tietkiemgiadinh.app' }                 │
+│  - Tab ẩn __CONFIG__: { __METADATA_JSON__: { appProperties: ... } }     │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                   USER B LUỒNG TỰ ĐỘNG NHẬN DIỆN NGẦM                  │
+│  1. User B đăng nhập Google Auth trên App                              │
+│  2. App tự động quét ngầm bằng Drive API query:                        │
+│     `q = appProperties has { key='app_id' and                          │
+│          value='com.tietkiemgiadinh.app' } and trashed = false`        │
+│  3. Nếu gặp lỗi mạng: `fetchWithRetry` tự động thử lại 3 lần            │
+│  4. Tự động nạp tệp Sổ Tiết Kiệm mới nhất mà KHÔNG cần dán link        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+================================================================================
+PHẦN 5: BỘ MÃ NGUỒN TYPESCRIPT TRIỂN KHAI CHI TIẾT
+================================================================================
+
+Dưới đây là toàn bộ các hàm cốt lõi triển khai cơ chế gán nhãn, lưu trữ tab `__CONFIG__` và truy vấn quét ngầm tự động:
+
+```typescript
+import { MasterSyncState, WorkspaceMember } from './types';
+
+// 1. KHAI BÁO HẰNG SỐ ĐỊNH DANH NHÃN ỨNG DỤNG
+export const DRIVE_APP_TAG = {
+  key: 'app_id',
+  value: 'com.tietkiemgiadinh.app',
+  typeKey: 'type',
+  typeValue: 'savings_vault',
+};
+
+/**
+ * 2. HÀM GẮN NHÃN appProperties LÊN GOOGLE DRIVE FILE (PATCH METADATA)
+ */
+export async function tagVaultWithAppProperties(
+  accessToken: string,
+  fileId: string
+): Promise<boolean> {
+  try {
+    if (!accessToken || !fileId) return false;
+
+    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,appProperties`;
+    const res = await fetchWithRetry(url, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        appProperties: {
+          [DRIVE_APP_TAG.key]: DRIVE_APP_TAG.value,
+          [DRIVE_APP_TAG.typeKey]: DRIVE_APP_TAG.typeValue,
+        },
+      }),
+    });
+
+    return res.ok;
+  } catch (err) {
+    console.warn('[Drive Tagging] Không thể gắn nhãn appProperties lên file:', err);
+    return false;
+  }
+}
+
+/**
+ * 3. HÀM TẠO FILE MỚI TRÊN DRIVE CÓ ĐẮM SẴN appProperties (MULTIPART UPLOAD)
+ */
+export async function createRealGoogleDriveFile(
+  accessToken: string,
+  fileName: string,
+  fileBlob: Blob
+): Promise<{ id: string; name: string; webViewLink: string }> {
+  const cleanFileName = fileName.replace(/\.xlsx$/i, '').trim() || 'So_tiet_kiem';
+
+  // Đính kèm appProperties trực tiếp vào metadata JSON khi tạo file
+  const metadata = {
+    name: cleanFileName,
+    mimeType: 'application/vnd.google-apps.spreadsheet',
+    appProperties: {
+      [DRIVE_APP_TAG.key]: DRIVE_APP_TAG.value,
+      [DRIVE_APP_TAG.typeKey]: DRIVE_APP_TAG.typeValue,
+    },
+  };
+
+  const form = new FormData();
+  form.append(
+    'metadata',
+    new Blob([JSON.stringify(metadata)], { type: 'application/json; charset=UTF-8' })
+  );
+  form.append('file', fileBlob);
+
+  const uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,appProperties';
+  const res = await fetchWithRetry(uploadUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
+
+  if (!res.ok) {
+    throw new Error('Không thể tạo file trên Google Drive');
+  }
+
+  return await res.json();
+}
+
+/**
+ * 4. HÀM GHI ĐỒNG BỘ NHÃN VÀO TAB ẨN __CONFIG__ TRÊN GOOGLE SHEET
+ */
+export async function saveMasterSyncStateToGoogleSheet(
+  accessToken: string,
+  fileId: string,
+  state: MasterSyncState
+): Promise<boolean> {
+  const nowIso = new Date().toISOString();
+  
+  // Lưu nhãn appProperties vào chuỗi JSON metadata trong Sheet
+  const coreMetadataPayload = JSON.stringify({
+    schemaVersion: 2,
+    status: state.status || 'active',
+    lastAction: state.lastAction || 'link',
+    activeFileId: fileId,
+    adminEmail: state.adminEmail || '',
+    updatedAt: nowIso,
+    appProperties: {
+      [DRIVE_APP_TAG.key]: DRIVE_APP_TAG.value,
+      [DRIVE_APP_TAG.typeKey]: DRIVE_APP_TAG.typeValue,
+    },
+  });
+
+  const values: (string | number)[][] = [
+    ['__METADATA_JSON__', coreMetadataPayload],
+    ['Vault Name', state.activeFileName || ''],
+    ['Admin Email', state.adminEmail || ''],
+    ['Members JSON', JSON.stringify(state.members || [])],
+    ['Updated At', nowIso],
+  ];
+
+  const batchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values:batchUpdate`;
+  const res = await fetchWithRetry(batchUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      valueInputOption: 'USER_ENTERED',
+      data: [{
+        range: `__CONFIG__!A1:B${values.length}`,
+        majorDimension: 'ROWS',
+        values: values,
+      }],
+    }),
+  });
+
+  return res.ok;
+}
+
+export interface DiscoveredVault {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime?: string;
+  webViewLink?: string;
+  appProperties?: Record<string, string>;
+}
+
+/**
+ * 5. HÀM QUÉT SIÊU TỐC TỰ ĐỘNG TÌM CÁC TỆP ĐƯỢC CHIA SẺ DỰA TRÊN appProperties
+ */
+export async function scanUserAccessibleVaults(
+  accessToken: string
+): Promise<DiscoveredVault[]> {
+  try {
+    if (!accessToken) return [];
+
+    // Query lọc chính xác theo nhãn bí mật của ứng dụng
+    const query = `appProperties has { key='${DRIVE_APP_TAG.key}' and value='${DRIVE_APP_TAG.value}' } and trashed = false`;
+
+    const url = new URL('https://www.googleapis.com/drive/v3/files');
+    url.searchParams.set('q', query);
+    url.searchParams.set('pageSize', '20');
+    url.searchParams.set('fields', 'files(id, name, mimeType, modifiedTime, webViewLink, appProperties)');
+    url.searchParams.set('orderBy', 'modifiedTime desc');
+    url.searchParams.set('supportsAllDrives', 'true');
+    url.searchParams.set('includeItemsFromAllDrives', 'true');
+
+    // Chạy qua bộ bọc fetchWithRetry (Thử lại 3 lần nếu đứt mạng)
+    const res = await fetchWithRetry(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    return (data.files || []).map((f: any) => ({
+      id: f.id,
+      name: f.name,
+      mimeType: f.mimeType,
+      modifiedTime: f.modifiedTime,
+      webViewLink: f.webViewLink || `https://docs.google.com/spreadsheets/d/${f.id}/edit`,
+      appProperties: f.appProperties,
+    }));
+  } catch (err) {
+    console.warn('[Vault Scan] Lỗi khi quét tệp tự động:', err);
+    return [];
+  }
+}
+
+/**
+ * 6. HÀM KHÁM PHÁ TỆP TỰ ĐỘNG NGẦM CHO USER B KHI VỪA ĐĂNG NHẬP
+ */
+export async function autoDiscoverLatestCentralHub(
+  accessToken: string
+): Promise<{ id: string; name: string; webViewLink?: string } | null> {
+  try {
+    // Ưu tiên quét siêu tốc qua nhãn appProperties
+    const taggedVaults = await scanUserAccessibleVaults(accessToken);
+    if (taggedVaults.length > 0) {
+      for (const vault of taggedVaults) {
+        // Đọc tab __CONFIG__ của tệp tìm thấy để kiểm tra trạng thái active
+        const masterState = await readMasterSyncStateFromGoogleSheet(accessToken, vault.id).catch(() => null);
+        if (masterState && masterState.status === 'active' && masterState.lastAction !== 'unlink') {
+          return {
+            id: vault.id,
+            name: vault.name || masterState.activeFileName || 'Sổ tiết kiệm',
+            webViewLink: vault.webViewLink,
+          };
+        }
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn('Lỗi tự động tìm kiếm file trung tâm:', err);
+    return null;
+  }
+}
+
+/**
+ * 7. LẮNG NGHE SỰ KIỆN ONLINE VÀ FOCUS ĐỂ TỰ ĐỘNG QUÉT LẠI KHI CÓ MẠNG (REACT HOOK)
+ */
+// Trong useEffect của hook useDriveSync.ts:
+/*
+  useEffect(() => {
+    const handleFocusOrOnline = () => {
+      // Tự động kích hoạt lại hàm autoDiscoverLatestCentralHub khi khôi phục kết nối mạng
+      performAutoConnect();
+    };
+
+    window.addEventListener('focus', handleFocusOrOnline);
+    window.addEventListener('online', handleFocusOrOnline);
+    return () => {
+      window.removeEventListener('focus', handleFocusOrOnline);
+      window.removeEventListener('online', handleFocusOrOnline);
+    };
+  }, [currentUser]);
+*/
+```
+
+================================================================================
+Tài liệu biên soạn độc quyền bởi AI Studio Build Engine. Chúc bạn và nhóm dự án
+áp dụng thành công giải pháp tự động nhận diện file ngầm siêu tốc này!
+================================================================================

@@ -21,9 +21,8 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
-// Cấp quyền Google Drive & Google Sheets (Truy cập file do app tạo/mở và các bảng tính được chia sẻ)
+// Cấp quyền Google Drive (Chỉ dùng non-sensitive scope: drive.file)
 provider.addScope('https://www.googleapis.com/auth/drive.file');
-provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 // Loại bỏ prompt: 'select_account' để trình duyệt tự động đăng nhập ngầm không làm phiền người dùng nếu đã cấp quyền rồi
 
 // Khóa lưu trữ trong hệ thống
@@ -49,7 +48,6 @@ if (Capacitor.isNativePlatform()) {
       'profile',
       'email',
       'https://www.googleapis.com/auth/drive.file',
-      'https://www.googleapis.com/auth/spreadsheets',
     ],
     grantOfflineAccess: true,
   });
@@ -130,7 +128,7 @@ export function saveGoogleAuthSession(session: {
  * Không mở popup ngầm trên Web để tránh bị trình duyệt chặn (Browser Popup Blocker)
  */
 export async function trySilentRefresh(): Promise<string | null> {
-  // Gia hạn ngầm trên thiết bị Native App (Android/iOS) dùng Capacitor
+  // 1. Gia hạn ngầm trên thiết bị Native App (Android/iOS) dùng Capacitor Google Play Services
   if (Capacitor.isNativePlatform()) {
     try {
       console.log('[GoogleAuth] Đang tiến hành làm mới Native Token ngầm (Silent Refresh)...');
@@ -147,6 +145,30 @@ export async function trySilentRefresh(): Promise<string | null> {
       }
     } catch (err) {
       console.warn('[GoogleAuth] Không thể làm mới token ngầm trên Native:', err);
+    }
+  }
+
+  // 2. Gia hạn ngầm trên Web Browser thông qua Google Identity Services (GIS prompt: 'none')
+  if (!Capacitor.isNativePlatform()) {
+    let userEmail = auth.currentUser?.email;
+    if (!userEmail) {
+      try {
+        const raw = localStorage.getItem('library_user_v2');
+        if (raw) userEmail = JSON.parse(raw)?.email;
+      } catch {}
+    }
+
+    if (userEmail) {
+      try {
+        console.log('[GoogleAuth] Đang thử gia hạn ngầm Web GIS cho email:', userEmail);
+        const webToken = await silentSignInGoogleGIS(userEmail);
+        if (webToken) {
+          console.log('[GoogleAuth] Gia hạn ngầm Web GIS thành công!');
+          return webToken;
+        }
+      } catch (err) {
+        console.warn('[GoogleAuth] Gia hạn ngầm Web GIS không thành công:', err);
+      }
     }
   }
 
@@ -254,7 +276,6 @@ export const initAuth = (
           name: firebaseUser.displayName || 'Người dùng Google',
           photoURL: firebaseUser.photoURL || undefined,
           userRole: 'ADMIN',
-          isOffline: false,
         };
         localStorage.setItem('library_user_v2', JSON.stringify(authUser));
         console.log('[GoogleAuth] Đăng nhập Redirect thành công:', authUser);
@@ -298,7 +319,7 @@ export async function silentSignInGoogleGIS(userEmail: string): Promise<string |
     try {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: GOOGLE_CLIENT_ID,
-        scope: 'email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets',
+        scope: 'email profile https://www.googleapis.com/auth/drive.file',
         prompt: 'none',
         login_hint: userEmail,
         callback: (tokenResponse: any) => {
@@ -371,7 +392,7 @@ export async function signInWithGoogleGIS(): Promise<{
   return new Promise((resolve, reject) => {
     const client = google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
-      scope: 'email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets',
+      scope: 'email profile https://www.googleapis.com/auth/drive.file',
       callback: async (tokenResponse: any) => {
         if (tokenResponse.error) {
           if (tokenResponse.error === 'popup_closed_by_user') {
@@ -407,7 +428,6 @@ export async function signInWithGoogleGIS(): Promise<{
             name: userInfo.name || 'Người dùng Google',
             photoURL: userInfo.picture,
             userRole: 'ADMIN',
-            isOffline: false,
           };
 
           try {
@@ -474,7 +494,6 @@ export const googleSignIn = async (): Promise<{
         name: firebaseUser.displayName || 'Người dùng Google',
         photoURL: firebaseUser.photoURL || undefined,
         userRole: 'ADMIN',
-        isOffline: false,
       };
 
       try {
@@ -514,7 +533,6 @@ export const googleSignIn = async (): Promise<{
             name: firebaseUser.displayName || 'Người dùng Google',
             photoURL: firebaseUser.photoURL || undefined,
             userRole: 'ADMIN',
-            isOffline: false,
           };
 
           try {
@@ -584,3 +602,33 @@ export const googleLogout = async (): Promise<void> => {
 export const isAuthenticated = (): boolean => {
   return !!auth.currentUser && isGoogleTokenValid();
 };
+
+/**
+ * Xử lý khi API trả về mã lỗi Token (401 Unauthorized, Token Expired, v.v.):
+ * - Bước 1: Thử tự động ngầm gia hạn token (Silent Refresh).
+ *   Nếu tự động ngầm thành công và token hoạt động tốt -> trả về token mới ngay, BỎ QUA POPUP!
+ * - Bước 2: Chỉ khi tự động ngầm thất bại (mất phiên hoàn toàn) -> MỚI BẬT POPUP xin cấp quyền lại để người dùng xác nhận.
+ */
+export async function handleTokenErrorAndReauthorize(): Promise<string | null> {
+  console.log('[GoogleAuth] Bắt được mã lỗi xác thực token. Tiến hành thử gia hạn ngầm trước...');
+  const silentToken = await trySilentRefresh();
+  if (silentToken) {
+    console.log('[GoogleAuth] Tự động ngầm thành công, token đang hoạt động tốt -> BỎ QUA POPUP!');
+    return silentToken;
+  }
+
+  console.log('[GoogleAuth] Tự động ngầm thất bại. Hiển thị popup xin người dùng cấp quyền lại...');
+  clearExpiredGoogleSession();
+  try {
+    const res = await googleSignIn();
+    if (res?.accessToken) {
+      console.log('[GoogleAuth] Người dùng đã cấp quyền lại thành công qua popup!');
+      return res.accessToken;
+    }
+    return null;
+  } catch (err) {
+    console.warn('[GoogleAuth] Người dùng đã hủy hoặc gặp lỗi cấp quyền:', err);
+    return null;
+  }
+}
+

@@ -17,11 +17,6 @@ import {
   Trash2,
   CheckCircle2,
   XCircle,
-  Cloud,
-  HardDrive,
-  Users,
-  LogIn,
-  LogOut,
   Sliders,
   Filter,
   AlertTriangle,
@@ -49,6 +44,9 @@ import {
   getLocalIgnoredDuplicatePairs,
   saveLocalIgnoredDuplicatePairs,
   syncIgnoredDuplicatePairsWithDrive,
+  SpreadsheetInfo,
+  saveUserApiKeyToSheetConfig,
+  fetchUserApiKeysFromSheetConfig,
 } from '../services/driveSyncService';
 import { getAccessToken } from '../services/googleAuthService';
 import { saveAllLocalBooks } from '../utils/localBooksStorage';
@@ -76,7 +74,6 @@ interface SettingsModalProps {
   books?: BookRecord[];
   onBatchUpdateBooks?: (updatedBooksList: BookRecord[]) => Promise<void>;
   onBatchDeleteBooks?: (idsToDelete: string[]) => Promise<void>;
-  onClearLocalBooksOnly?: () => Promise<void>;
   isAutoNormalizing?: boolean;
   appMode?: 'offline' | 'online';
   onSwitchMode?: () => void;
@@ -84,6 +81,9 @@ interface SettingsModalProps {
   currentUser?: AuthUser | null;
   onGoogleSignIn?: () => Promise<void>;
   onGoogleLogout?: () => Promise<void>;
+  initialExpandKeySection?: boolean;
+  onClearLocalBooksOnly?: () => Promise<void>;
+  spreadsheetInfo?: SpreadsheetInfo | null;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -102,6 +102,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   currentUser,
   onGoogleSignIn,
   onGoogleLogout,
+  initialExpandKeySection = false,
+  spreadsheetInfo,
 }) => {
   const { showToast } = useToast();
   const [isSaving, setIsSaving] = useState(false);
@@ -152,8 +154,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const [isKeySectionExpanded, setIsKeySectionExpanded] = useState<boolean>(() => {
-    return getCleanKeys().length === 0;
+    return initialExpandKeySection || getCleanKeys().length === 0;
   });
+
+  useEffect(() => {
+    if (isOpen && initialExpandKeySection) {
+      setIsKeySectionExpanded(true);
+    }
+  }, [isOpen, initialExpandKeySection]);
   
   const [apiKeys, setApiKeys] = useState<string[]>(() => {
     return getCleanKeys();
@@ -172,18 +180,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setTestResultsMap((prev) => ({ ...prev, [clean]: res }));
       if (!silentToast) {
         if (res.success) {
-          showToast('API Key hoạt động tốt (OK)!', 'success');
+          showToast('Key hoạt động tốt.', 'success');
         } else {
-          showToast(`Lỗi Key: ${res.message || 'Không thể kết nối'}`, 'error');
+          showToast(res.message || 'Key lỗi. Chờ hoặc thay key mới.', 'error');
         }
       }
     } catch (err: any) {
       setTestResultsMap((prev) => ({
         ...prev,
-        [clean]: { success: false, message: err?.message || 'Lỗi kết nối mạng.' },
+        [clean]: { success: false, message: 'Key lỗi. Chờ hoặc thay key mới.' },
       }));
       if (!silentToast) {
-        showToast(`Lỗi Key: ${err?.message || 'Lỗi kết nối'}`, 'error');
+        showToast('Key lỗi. Chờ hoặc thay key mới.', 'error');
       }
     } finally {
       setTestingKeysMap((prev) => ({ ...prev, [clean]: false }));
@@ -199,9 +207,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
     const updatedKeys = [...apiKeys, clean];
     saveStoredGeminiApiKeys(updatedKeys);
-    await onSaveSettings({ ...settings, geminiApiKeys: updatedKeys });
     setApiKeys(updatedKeys);
     setNewKeyInput(''); // Xóa trắng ô gõ phím sau khi hoàn thành
+    await onSaveSettings({ ...settings, geminiApiKeys: updatedKeys });
+
+    // Tự động đồng bộ lên Google Sheet Config nếu người dùng là Admin hoặc Editor
+    if (
+      currentUser &&
+      (currentUser.userRole === 'ADMIN' || currentUser.userRole === 'EDITOR') &&
+      currentUser.email &&
+      spreadsheetInfo?.id
+    ) {
+      getAccessToken().then(async (token) => {
+        if (token && spreadsheetInfo?.id) {
+          const synced = await saveUserApiKeyToSheetConfig(
+            token,
+            spreadsheetInfo.id,
+            currentUser.email,
+            updatedKeys,
+            currentUser.userRole
+          );
+          if (synced) {
+            showToast('Đã lưu & đồng bộ API Key lên Google Sheet!', 'success');
+          }
+        }
+      }).catch(() => {});
+    }
     
     // Tự động kiểm tra ngay lập tức khi vừa nhập xong
     handleTestSingleKey(clean);
@@ -210,10 +241,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleDeleteKey = async (keyToDelete: string) => {
     const updatedKeys = apiKeys.filter((k) => k !== keyToDelete);
     saveStoredGeminiApiKeys(updatedKeys);
-    await onSaveSettings({ ...settings, geminiApiKeys: updatedKeys });
     setApiKeys(updatedKeys);
+    await onSaveSettings({ ...settings, geminiApiKeys: updatedKeys });
+
+    // Đồng bộ lại danh sách sau khi xóa lên Sheet Config nếu là Admin hoặc Editor
+    if (
+      currentUser &&
+      (currentUser.userRole === 'ADMIN' || currentUser.userRole === 'EDITOR') &&
+      currentUser.email &&
+      spreadsheetInfo?.id
+    ) {
+      getAccessToken().then(async (token) => {
+        if (token && spreadsheetInfo?.id) {
+          await saveUserApiKeyToSheetConfig(
+            token,
+            spreadsheetInfo.id,
+            currentUser.email,
+            updatedKeys,
+            currentUser.userRole
+          );
+        }
+      }).catch(() => {});
+    }
+
     showToast('Đã xóa Gemini API Key!', 'info');
   };
+
+  // Tự động đồng bộ nạp API Key từ Google Sheet Config về máy nếu máy này chưa có key
+  useEffect(() => {
+    if (
+      isOpen &&
+      apiKeys.length === 0 &&
+      currentUser &&
+      (currentUser.userRole === 'ADMIN' || currentUser.userRole === 'EDITOR') &&
+      currentUser.email &&
+      spreadsheetInfo?.id
+    ) {
+      getAccessToken().then(async (token) => {
+        if (token && spreadsheetInfo?.id && currentUser?.email) {
+          const remoteKeys = await fetchUserApiKeysFromSheetConfig(token, spreadsheetInfo.id, currentUser.email);
+          if (remoteKeys && remoteKeys.length > 0) {
+            setApiKeys(remoteKeys);
+            saveStoredGeminiApiKeys(remoteKeys);
+            await onSaveSettings({ ...settings, geminiApiKeys: remoteKeys });
+            showToast('✨ Đã tự động nhận Gemini API Key của bạn từ Google Sheet!', 'info');
+          }
+        }
+      }).catch(() => {});
+    }
+  }, [isOpen, currentUser?.email, currentUser?.userRole, spreadsheetInfo?.id]);
 
   if (!isOpen) return null;
 
@@ -851,7 +927,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
               {/* Nội dung chi tiết (Chỉ hiển thị khi Mở Rộng) */}
               {isKeySectionExpanded && (
-                <div className="space-y-2 pt-1.5 mt-1 border-t border-slate-100">
+                <div className="space-y-2.5 pt-1.5 mt-1 border-t border-slate-100">
                   {/* Ô nhập Key mới - Luôn hiển thị để thêm bao nhiêu tuỳ ý */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-2">

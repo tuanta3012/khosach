@@ -337,13 +337,18 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                           {getInitials(m.email, displayName)}
                         </div>
                         <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="text-xs font-bold text-slate-900 truncate">
                               {displayName}
                             </span>
                             {isSelf && (
                               <span className="text-[10px] font-bold bg-slate-100 border border-slate-200 text-slate-600 px-1.5 py-0.5 rounded-md">
                                 Bạn
+                              </span>
+                            )}
+                            {(m.role === 'Owner' || m.role === 'Editor') && ((m.apiKeys && m.apiKeys.length > 0) || m.apiKey) && (
+                              <span className="text-[9.5px] font-bold text-[#653f96] bg-purple-50 border border-purple-200/80 px-1.5 py-0.5 rounded-md shadow-3xs" title="Đã lưu Gemini API Key trong Sheet Config">
+                                🔑 Key ({m.apiKeys ? m.apiKeys.length : 1})
                               </span>
                             )}
                           </div>

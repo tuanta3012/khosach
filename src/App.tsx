@@ -34,7 +34,9 @@ import {
   getAccessToken,
   isGoogleTokenValid,
   clearExpiredGoogleSession,
+  handleTokenErrorAndReauthorize,
 } from './services/googleAuthService';
+import { setupNetworkRecoveryListener } from './services/networkService';
 import {
   findOrCreateLibrarySpreadsheet,
   createNewLibrarySpreadsheet,
@@ -51,8 +53,10 @@ import {
   checkSpreadsheetStatusOnDrive,
   removeKnownSpreadsheet,
   saveKnownSpreadsheet,
+  saveUserApiKeyToSheetConfig,
+  syncUserApiKeyWithSheetConfig,
 } from './services/driveSyncService';
-import { batchNormalize } from './utils/geminiService';
+import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
 import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
 
 export default function App() {
@@ -72,13 +76,7 @@ export default function App() {
     return 'offline';
   });
 
-  const [isModeSelectionOpen, setIsModeSelectionOpen] = useState<boolean>(() => {
-    try {
-      return !localStorage.getItem('app_mode_v2');
-    } catch {
-      return false;
-    }
-  });
+  const [isModeSelectionOpen, setIsModeSelectionOpen] = useState<boolean>(false);
 
   // TẦNG 3: KIỂM TRA LẦN ĐẦU CÀI ĐẶT (CHỐNG DỮ LIỆU RÁC AUTO-RESTORE CỦA ANDROID)
   useEffect(() => {
@@ -90,7 +88,7 @@ export default function App() {
           setBooks([]);
           setSettings(loadLocalSettings());
           setAppMode('offline');
-          setIsModeSelectionOpen(true);
+          setIsModeSelectionOpen(false); // Vào thẳng app offline, không chặn màn hình
           setCurrentUser(null);
           setSpreadsheetInfo(null);
         }
@@ -113,7 +111,6 @@ export default function App() {
           name: p.name || p.displayName || 'Người dùng Google',
           photoURL: p.picture || p.photoURL || undefined,
           userRole: 'ADMIN',
-          isOffline: false,
         };
       }
     } catch {}
@@ -134,6 +131,7 @@ export default function App() {
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isFamilyShareModalOpen, setIsFamilyShareModalOpen] = useState(false);
+  const [settingsInitialExpandKey, setSettingsInitialExpandKey] = useState(false);
   const [isAutoNormalizing, setIsAutoNormalizing] = useState(false);
   const autoNormalizeAttemptsRef = useRef(new Set<string>());
   
@@ -161,7 +159,6 @@ export default function App() {
           name: user.displayName || 'Người dùng Google',
           photoURL: user.photoURL || undefined,
           userRole: 'ADMIN',
-          isOffline: false,
         };
         setCurrentUser(u);
 
@@ -218,6 +215,20 @@ export default function App() {
                     })
                     .catch((e) => console.warn('[AutoDiscover] Đồng bộ sau tự động chuyển file thất bại:', e));
 
+                  // Tự động kiểm tra và đồng bộ Gemini API Key của user từ Sheet Config nếu là Admin hoặc Editor
+                  if (role === 'ADMIN' || role === 'EDITOR') {
+                    const localKeys = getStoredGeminiApiKeys();
+                    syncUserApiKeyWithSheetConfig(token, activeSheet.id, user.email, role, localKeys)
+                      .then((res) => {
+                        if (res.hasUpdatedLocal) {
+                          setSettings((prev) => ({ ...prev, geminiApiKeys: res.syncedKeys }));
+                          saveStoredGeminiApiKeys(res.syncedKeys);
+                          showToast('✨ Đã tự động đồng bộ Gemini API Key của bạn từ Google Sheet!', 'info');
+                        }
+                      })
+                      .catch((err) => console.warn('[AutoDiscover] Đồng bộ API Key thất bại:', err));
+                  }
+
                   if (isNewLink) {
                     const roleLabel = role === 'ADMIN' ? 'Quản trị viên' : role === 'EDITOR' ? 'Quyền Chỉnh sửa' : 'Quyền Xem';
                     showToast(`Đã tự động liên kết với "${activeSheet.name}" (${roleLabel})`, 'success');
@@ -229,21 +240,14 @@ export default function App() {
             }
           })();
         } else {
-          // Nếu app đang cấu hình chế độ online, nhưng không lấy được token (hết hạn hoặc chưa đăng nhập)
-          const savedMode = localStorage.getItem('app_mode_v2');
-          if (savedMode === 'online') {
-            console.log('[Auth] Đang cấu hình Online nhưng Token hết hạn/không có. Hiển thị màn hình 2 nút...');
-            setIsModeSelectionOpen(true);
-          }
+          // Nếu app đang cấu hình online nhưng chưa có token (hết hạn hoặc chưa cấp quyền)
+          console.log('[Auth] Chưa có token Google Drive hợp lệ. Giữ trạng thái local offline an toàn.');
         }
       },
       () => {
         // Sign out callback (khi user chủ động đăng xuất hoặc Firebase mất phiên)
-        const savedMode = localStorage.getItem('app_mode_v2');
-        if (savedMode === 'online') {
-          console.log('[Auth] Trạng thái đăng xuất. Hiển thị lại màn hình 2 nút...');
-          setIsModeSelectionOpen(true);
-        }
+        console.log('[Auth] Người dùng đã đăng xuất hoặc mất phiên.');
+        setCurrentUser(null);
       }
     );
     return () => unsubscribe();
@@ -261,8 +265,9 @@ export default function App() {
       }
 
       setIsSyncingDrive(true);
+      const sheetInfo = spreadsheetInfo;
+      let activeRole = currentUser?.userRole || 'VIEWER';
       try {
-        let sheetInfo = spreadsheetInfo;
         if (!sheetInfo || !sheetInfo.id) {
           console.log('[Sync] Chưa có Google Sheet nào được liên kết. Bỏ qua đồng bộ Drive.');
           setIsSyncingDrive(false);
@@ -301,7 +306,7 @@ export default function App() {
         }
 
         // 1. Dynamic Authorization: Xác thực chéo vai trò thực tế từ Tab Config ẩn
-        const activeRole = await determineCurrentUserRole(token, sheetInfo.id, currentUser?.email || '');
+        activeRole = await determineCurrentUserRole(token, sheetInfo.id, currentUser?.email || '');
         if (currentUser && currentUser.userRole !== activeRole) {
           console.log(`[Sync] Cập nhật vai trò thành viên thực tế: ${currentUser.userRole} -> ${activeRole}`);
           const updatedUser = { ...currentUser, userRole: activeRole };
@@ -324,6 +329,19 @@ export default function App() {
           synchronizeDrivePermissionsWithJsonMembers(token, sheetInfo.id, currentUser?.email || '')
             .then(() => console.log('[Sync] Đã tự động dọn dẹp và kiểm toán quyền truy cập Drive thành công.'))
             .catch((err) => console.warn('[Sync] Kiểm toán quyền Drive thất bại:', err));
+        }
+
+        // 3b. Tự động đồng bộ 2 chiều Gemini API Key của Admin/Editor với Sheet Config
+        if ((activeRole === 'ADMIN' || activeRole === 'EDITOR') && currentUser?.email) {
+          const localKeys = getStoredGeminiApiKeys();
+          syncUserApiKeyWithSheetConfig(token, sheetInfo.id, currentUser.email, activeRole, localKeys)
+            .then((keyRes) => {
+              if (keyRes.hasUpdatedLocal) {
+                setSettings((prev) => ({ ...prev, geminiApiKeys: keyRes.syncedKeys }));
+                saveStoredGeminiApiKeys(keyRes.syncedKeys);
+              }
+            })
+            .catch((err) => console.warn('[Sync] Đồng bộ API Key trong 2-way sync thất bại:', err));
         }
 
         if (syncRes.hasChanges) {
@@ -367,8 +385,30 @@ export default function App() {
           err.message?.includes('401') ||
           err.message?.includes('TOKEN_EXPIRED')
         ) {
-          clearExpiredGoogleSession();
-          showToast('⚠️ Phiên đăng nhập Google đã hết hạn. Vui lòng bấm vào avatar góc trên để kết nối lại.', 'warning');
+          console.warn('[Sync] Nhận mã lỗi token (401/hết hạn). Đang thử tự động gia hạn ngầm hoặc xin cấp lại quyền...');
+          const freshToken = await handleTokenErrorAndReauthorize();
+          if (freshToken) {
+            console.log('[Sync] Token đã hoạt động tốt trở lại. Đang tự động tiếp tục đồng bộ...');
+            try {
+              const retryRes = await syncBooksTwoWay(
+                currentBooks,
+                freshToken,
+                sheetInfo.id,
+                activeRole
+              );
+              if (retryRes.hasChanges) {
+                saveAllLocalBooks(retryRes.mergedBooks);
+                setBooks(retryRes.mergedBooks);
+                setLastDriveSyncTimestamp();
+                showToast(`🚀 Đã khôi phục và đồng bộ thành công ${retryRes.mergedBooks.length} sách với Google Drive!`, 'success');
+              }
+              return retryRes.mergedBooks;
+            } catch (retryErr: any) {
+              console.warn('[Sync] Thử lại sau khi khôi phục token thất bại:', retryErr);
+            }
+          } else {
+            showToast('⚠️ Không thể xác thực với Google Drive. Kho sách vẫn được lưu an toàn trên máy.', 'warning');
+          }
           return currentBooks;
         } else {
           console.warn('[Sync] Đồng bộ Google Drive gặp lỗi:', err.message || err);
@@ -481,6 +521,22 @@ export default function App() {
     initData();
   }, [appMode, syncWithGoogleDrive]);
 
+  // Tự động kiểm tra mạng (Wifi + Mobile Data) và Ping Internet thực tế trước khi đẩy đồng bộ (Auto-Reconnect)
+  useEffect(() => {
+    const cleanup = setupNetworkRecoveryListener(() => {
+      console.log('[Network] Internet thực tế đã được xác nhận. Tiến hành đồng bộ tự động...');
+      if (appMode === 'online' && spreadsheetInfo?.id) {
+        syncWithGoogleDrive(books).catch((err) => {
+          console.warn('[Network] Tự động đồng bộ khi có mạng gặp lỗi:', err);
+        });
+      }
+    });
+
+    return () => {
+      cleanup();
+    };
+  }, [appMode, spreadsheetInfo?.id, books, syncWithGoogleDrive]);
+
   // 3. Tự động kiểm tra bản cập nhật mới khi mở ứng dụng (sau 1.5 giây, chỉ áp dụng cho bản APK)
   useEffect(() => {
     if (IS_BUILD_AAB) return;
@@ -547,7 +603,6 @@ export default function App() {
               name: res.user.displayName || 'Người dùng Google',
               photoURL: res.user.photoURL,
               userRole: 'ADMIN',
-              isOffline: false,
             };
             setCurrentUser(loggedInUser);
             try {
@@ -675,7 +730,6 @@ export default function App() {
               name: info.name || 'Người dùng Google',
               photoURL: info.picture,
               userRole: 'ADMIN',
-              isOffline: false,
             };
             setCurrentUser(u);
             try {
@@ -884,37 +938,42 @@ export default function App() {
   const handleSaveSettings = async (newSettings: LibrarySettings) => {
     saveLocalSettings(newSettings);
     setSettings(newSettings);
+
+    // Đồng bộ API Key lên Google Sheet Config nếu người dùng là Admin hoặc Editor
+    if (
+      currentUser &&
+      (currentUser.userRole === 'ADMIN' || currentUser.userRole === 'EDITOR') &&
+      currentUser.email &&
+      spreadsheetInfo?.id
+    ) {
+      try {
+        const token = await getAccessToken();
+        if (token) {
+          const updatedKeys = newSettings.geminiApiKeys || getStoredGeminiApiKeys();
+          const synced = await saveUserApiKeyToSheetConfig(
+            token,
+            spreadsheetInfo.id,
+            currentUser.email,
+            updatedKeys,
+            currentUser.userRole
+          );
+          if (synced) {
+            console.log('[Settings] Đã lưu & đồng bộ API Key lên Sheet Config thành công');
+            showToast('Đã lưu cấu hình & đồng bộ API Key lên Google Sheet!', 'success');
+            return;
+          }
+        }
+      } catch (keySyncErr) {
+        console.warn('[Settings] Lỗi đồng bộ API Key lên Sheet Config:', keySyncErr);
+      }
+    }
+
     showToast('Đã lưu cấu hình cài đặt thành công!', 'success');
   };
 
   const currentCategories = settings.categoriesList && settings.categoriesList.length > 0
     ? settings.categoriesList
     : DEFAULT_CATEGORIES;
-
-  if (isModeSelectionOpen) {
-    return (
-      <>
-        <ModeSelectionModal
-          isOpen={true}
-          onSelectMode={handleSelectMode}
-          currentMode={appMode}
-          onClose={() => setIsModeSelectionOpen(false)}
-          canClose={Boolean(localStorage.getItem('app_mode_v2'))}
-          onCheckUpdates={!IS_BUILD_AAB ? handleManualCheckUpdates : undefined}
-        />
-        {!IS_BUILD_AAB && isUpdateModalOpen && (
-          <Suspense fallback={null}>
-            <AppUpdateModal
-              isOpen={isUpdateModalOpen}
-              currentVersion={CURRENT_APP_VERSION}
-              updateInfo={updateInfo}
-              onClose={closeUpdateModal}
-            />
-          </Suspense>
-        )}
-      </>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#f1f5f9] text-slate-900 flex flex-col font-sans pb-11 xl:pb-0">
@@ -967,6 +1026,10 @@ export default function App() {
               showToast(`🎉 Đã thêm ${newBooks.length} cuốn sách vào kho!`, 'success');
             }}
             onSwitchToTable={() => setCurrentTab('table')}
+            onOpenSettingsKey={() => {
+              setSettingsInitialExpandKey(true);
+              setIsSettingsModalOpen(true);
+            }}
           />
           </Suspense>
         )}
@@ -994,6 +1057,7 @@ export default function App() {
         onImportBooks={handleImportBooks}
         userEmail={currentUser?.email}
         appMode={appMode}
+        onSignInGoogle={() => handleSelectMode('online')}
         onSyncDriveNow={async () => { await syncWithGoogleDrive(books); }}
         isSyncingDrive={isSyncingDrive}
         spreadsheetInfo={spreadsheetInfo}
@@ -1097,7 +1161,11 @@ export default function App() {
       {/* Modal 3: Cài Đặt Hệ Thống */}
       {isSettingsModalOpen && <SettingsModal
         isOpen={isSettingsModalOpen}
-        onClose={() => setIsSettingsModalOpen(false)}
+        onClose={() => {
+          setIsSettingsModalOpen(false);
+          setSettingsInitialExpandKey(false);
+        }}
+        initialExpandKeySection={settingsInitialExpandKey}
         settings={settings}
         onSaveSettings={handleSaveSettings}
         onCheckUpdates={!IS_BUILD_AAB ? handleManualCheckUpdates : undefined}
@@ -1112,6 +1180,7 @@ export default function App() {
         currentUser={currentUser}
         onGoogleSignIn={() => handleSelectMode('online')}
         onGoogleLogout={handleGoogleLogout}
+        spreadsheetInfo={spreadsheetInfo}
       />}
 
       {/* Modal 5: Chia Sẻ Tủ Sách Gia Đình */}
@@ -1122,7 +1191,19 @@ export default function App() {
         currentUser={currentUser}
       />}
 
-      {/* Modal 6: Auto Update (Chỉ khả dụng ở bản APK) */}
+      {/* Modal 6: Chọn Chế Độ Sử Dụng (Mở khi người dùng chủ động bấm) */}
+      {isModeSelectionOpen && (
+        <ModeSelectionModal
+          isOpen={isModeSelectionOpen}
+          onSelectMode={handleSelectMode}
+          currentMode={appMode}
+          onClose={() => setIsModeSelectionOpen(false)}
+          canClose={true}
+          onCheckUpdates={!IS_BUILD_AAB ? handleManualCheckUpdates : undefined}
+        />
+      )}
+
+      {/* Modal 7: Auto Update (Chỉ khả dụng ở bản APK) */}
       {!IS_BUILD_AAB && isUpdateModalOpen && (
         <AppUpdateModal
           isOpen={isUpdateModalOpen}

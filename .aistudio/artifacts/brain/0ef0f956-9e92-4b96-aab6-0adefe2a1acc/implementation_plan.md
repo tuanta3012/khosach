@@ -1,76 +1,113 @@
-# Chuẩn Hóa Cấu Trúc Tab __CONFIG__ (Không Audit Logs) & Cơ Chế Tự Động Liên Kết Workspace
+# Tối Ưu Cơ Chế Offline-First & Đồng Bộ Google Theo Mô Hình Sổ Tiết Kiệm
 
-## Tóm tắt mục tiêu
-Sửa đổi toàn diện cơ chế ghi và đọc dữ liệu cấu hình Workspace lên tab ẩn `__CONFIG__` trên Google Sheet theo đúng cấu trúc Key-Value chuẩn từ `/googleDriveService.ts`, **hoàn toàn loại bỏ phần ghi nhật ký Audit Logs** để bảng tính nhẹ nhàng, tối ưu tốc độ và không dư thừa dữ liệu. Giải quyết dứt điểm lỗi tài khoản User B không tự động tìm thấy và đọc được file liên kết A khi được Admin chia sẻ.
+Tối ưu hóa toàn diện cơ chế Offline-First của Kho Sách: tối ưu hóa và chống tràn LocalStorage, loại bỏ hoàn toàn chế độ "user offline cũ" gò bó, và tích hợp khối khuyến nghị đăng nhập Google trực quan ngay trong popup đồng bộ và cài đặt (tương tự trải nghiệm ứng dụng Sổ Tiết Kiệm).
 
----
+### User Review & Critical Decisions
 
-## 1. Cấu trúc tinh gọn của Tab Ẩn `__CONFIG__` (Dải ô A1:B10 - Đã loại bỏ Audit Logs)
-
-Bảng cấu hình được tinh gọn thành 10 hàng x 2 cột (Key-Value), không lưu trữ Audit Logs:
-
-| Hàng | Cột A (Key) | Cột B (Value) | Mô tả chi tiết |
-|:---|:---|:---|:---|
-| **1** | `__METADATA_JSON__` | Chuỗi JSON Core Meta | Chứa `schemaVersion: 2`, `status`, `lastAction`, `activeFileId`, `activeFileName`, `activeFileUrl`, `adminEmail`, `linkedAccountEmail`, `linkedTimestamp`, `linkedLocalTimeVi`, `updatedAt`, `updatedAtVi` |
-| **2** | `Vault Name` | Tên kho sách | Ví dụ: "Kho Sách Gia Đình" |
-| **3** | `Admin Email` | Email Quản trị viên | Email chủ sở hữu không gian Workspace |
-| **4** | `Linked Account` | Email tài khoản liên kết | Email thực hiện liên kết tệp |
-| **5** | `Status` | `active` / `unlinked` | Trạng thái hoạt động của Workspace |
-| **6** | `Last Action` | `link` / `switch` / `unlink` / `create_and_link` | Hành động mới nhất trên Workspace |
-| **7** | `Linked Timestamp` | Ngày giờ liên kết VN | Định dạng: `HH:mm:ss DD/MM/YYYY (GMT+7)` |
-| **8** | `Updated At` | Ngày giờ cập nhật VN | Định dạng: `HH:mm:ss DD/MM/YYYY (GMT+7)` |
-| **9** | `Members JSON` | Chuỗi JSON Mảng thành viên | `[{ id, email, name, role: 'ADMIN'\|'EDITOR'\|'VIEWER', addedAt, addedBy, avatarUrl }]` |
-| **10** | `Custom Settings` | Chuỗi JSON Thiết lập ứng dụng | Cặp sách đã bỏ qua (`ignoredDuplicatePairs`), danh mục tùy chỉnh |
+> [!IMPORTANT]
+> **Điểm mấu chốt được xác nhận từ yêu cầu:**
+> 1. **Giữ LocalStorage nhưng tối ưu hóa sâu**: Không chuyển sang IndexedDB theo đúng mong muốn của bạn; thay vào đó, tối ưu serialization, chống tràn hạn ngạch (`QuotaExceededError`), dọn dẹp hàng đợi mutation sau đồng bộ và gỡ bỏ các trường dữ liệu rác.
+> 2. **Loại bỏ chế độ User Offline cũ**: Không bắt người dùng phải "vào Cấu hình để bật Trực tuyến" như cảnh báo hiện tại trong ảnh. Ứng dụng luôn mặc định hoạt động trơn tru ngoại tuyến và tự động sẵn sàng kết nối đám mây bất kỳ lúc nào.
+> 3. **Thêm Khuyến nghị Đăng nhập Google (Login Recommendation Card)**: Khi người dùng mở modal đồng bộ hoặc cài đặt lúc chưa đăng nhập, hiển thị thẻ khuyến nghị nổi bật, giải thích lợi ích bảo vệ dữ liệu kèm nút **"Đăng nhập bằng Google"** kích hoạt ngay lập tức.
 
 ---
 
-## 2. Kế hoạch sửa đổi chi tiết
+### 1. Overview & Core Concept
 
-### Bước 1: Loại bỏ toàn bộ code và logic liên quan đến Audit Logs
-- Trong `driveSyncService.ts`:
-  - Loại bỏ trường `auditLog` khỏi `SheetConfigMetadata` và các hàm lưu trạng thái.
-  - Xóa bỏ việc đọc, ghi, hoặc lưu trữ Audit Logs trong tab `__CONFIG__` hoặc LocalStorage.
-  - Tinh gọn payload ghi Sheet về dải ô `__CONFIG__!A1:B10`.
-
-### Bước 2: Chuẩn hóa hàm ghi `saveMasterSyncStateToGoogleSheet`
-- Ghi ma trận 10 hàng x 2 cột (`__CONFIG__!A1:B10`) lên Google Sheet qua Sheets API v4.
-- Tự động tạo tab `__CONFIG__` (ẩn) qua request `addSheet` nếu gặp mã `HTTP 400` do tab chưa tồn tại, sau đó thử ghi lại ngay lập tức.
-
-### Bước 3: Chuẩn hóa hàm đọc `readMasterSyncStateFromGoogleSheet`
-- Đọc dải ô `__CONFIG__!A1:B20` bằng Google Sheets API v4.
-- Duyệt qua các hàng, đưa vào `kvMap` và giải mã JSON của `__METADATA_JSON__` và `Members JSON`.
-- Giữ cơ chế tương thích ngược (Backward Compatibility): Nếu tệp cũ có tab `Config` (dải `A:C` và `E1:F10`), hàm vẫn tự động đọc bình thường để không làm gián đoạn các bảng tính đã tạo trước đây.
-
-### Bước 4: Sửa lỗi truy vấn quét file trên Google Drive
-- Áp dụng phương thức truy vấn chuẩn từ `listRealGoogleDriveFiles` trong `/googleDriveService.ts`:
-  - `url.searchParams.set('q', "trashed = false and mimeType = 'application/vnd.google-apps.spreadsheet'");`
-  - `url.searchParams.set('spaces', 'drive');`
-  - `url.searchParams.set('orderBy', 'modifiedTime desc');`
-  - Loại bỏ hoàn toàn các cờ xung đột như `includeItemsFromAllDrives: 'true'` khi tìm kiếm để không bị Google Drive API từ chối với lỗi `HTTP 400 Bad Request`.
-
-### Bước 5: Tự động phát hiện và liên kết khi User B đăng nhập (`autoDiscoverSharedSpreadsheets` & `App.tsx`)
-- Khi User B đăng nhập Google:
-  1. Quét danh sách Google Sheet khả dụng qua Drive API v3.
-  2. Với từng file, gọi `readMasterSyncStateFromGoogleSheet`.
-  3. Kiểm tra điều kiện:
-     - `status === 'active'`
-     - Email của User B trùng với `adminEmail` HOẶC nằm trong `members` với vai trò `ADMIN`, `EDITOR` hoặc `VIEWER`.
-  4. Nếu tìm thấy File A:
-     - Tự động gán `spreadsheetInfo` trỏ về File A.
-     - Lưu thông tin file vào LocalStorage (`library_spreadsheet_info_v2`).
-     - Cập nhật vai trò người dùng trong ứng dụng (ví dụ: `EDITOR`).
-     - Kích hoạt đồng bộ 2 chiều `syncBooksTwoWay` nạp ngay toàn bộ sách từ File A về máy.
-     - Hiển thị Toast thông báo: *"Đã tự động kết nối với Tủ sách gia đình (Quyền Chỉnh sửa)"*.
-
-### Bước 6: Quản lý thành viên & Hủy liên kết (Unlink)
-- `addFamilyMember`: Thêm thành viên vào mảng `members`, ghi lên ô B9 `Members JSON` của tab `__CONFIG__`, đồng thời gọi Drive API cấp quyền `writer` (nếu là `EDITOR`) hoặc `reader` (nếu là `VIEWER`).
-- `removeFamilyMember`: Cập nhật lại mảng `members` trên tab `__CONFIG__` và gọi Drive API `DELETE /permissions/{id}`.
-- `setMasterSyncUnlinked`: Khi Admin hủy liên kết, ghi `status: 'unlinked'`, `lastAction: 'unlink'` lên Google Sheet và thu hồi toàn bộ quyền Drive của thành viên. Khi thiết bị thành viên phát hiện `status === 'unlinked'`, tự động ngắt kết nối và bảo vệ dữ liệu.
+- **Mục tiêu**: Người dùng luôn có trải nghiệm 0-giây khi mở ứng dụng trên điện thoại (đọc/ghi từ LocalStorage nhanh nhất). Đồng thời, việc kết nối đám mây Google Drive diễn ra tự nhiên, không rào cản, có khuyến nghị rõ ràng để tránh mất mát dữ liệu khi đổi thiết bị.
+- **Đối tượng**: Người dùng cá nhân và gia đình sử dụng trên điện thoại (PWA/APK qua Capacitor), thường xuyên ở nơi mạng chập chờn hoặc không có mạng nhưng muốn dữ liệu được bảo vệ an toàn.
+- **Giá trị cốt lõi**:
+  - Không bao giờ bị chặn bởi thông báo "Bạn đang ở chế độ ngoại tuyến hãy bật trực tuyến trong cấu hình".
+  - Một chạm đăng nhập Google Drive ngay tại màn hình đồng bộ.
+  - Bộ nhớ LocalStorage được bảo vệ, tự dọn dẹp rác, bền bỉ và không bao giờ bị sập bộ nhớ.
 
 ---
 
-## 3. Kế hoạch kiểm tra & Xác minh (Verification Plan)
+### 2. User Experience & Visual Design
 
-1. **Kiểm tra cú pháp & biên dịch**: Chạy `compile_applet` để xác minh toàn bộ mã nguồn TypeScript build thành công 0 lỗi.
-2. **Kiểm tra tab `__CONFIG__`**: Đảm bảo dải ô `A1:B10` không còn bất kỳ trường audit logs nào, dữ liệu ghi ngắn gọn, chính xác.
-3. **Kiểm tra luồng Auto-Discovery**: Đảm bảo truy vấn Drive API hoạt động mượt mà và tự động nhận diện quyền Editor của User B.
+#### Luồng trải nghiệm người dùng (User Flows)
+1. **Khi chưa đăng nhập Google (Local Guest / Offline-First)**:
+   - Mở ứng dụng: Toàn bộ danh mục sách, thống kê, tìm kiếm hiển thị tức thì từ LocalStorage.
+   - Bấm nút **Đồng bộ Google Drive** trên thanh điều hướng hoặc menu:
+     - Không còn hộp thoại vàng cảnh báo cụt ngủn như ảnh chụp màn hình.
+     - Thay vào đó là **Khối Khuyến Nghị Đăng Nhập (Google Cloud Backup Card)**:
+       - Huy hiệu: `Khuyên dùng • Bảo vệ dữ liệu`
+       - Tiêu đề: `Đăng nhập Google để sao lưu & đồng bộ`
+       - Nội dung: `Sao lưu tự động lên Google Drive giúp bạn không bị mất kho sách khi đổi điện thoại, xóa dữ liệu hoặc cài lại ứng dụng.`
+       - Nút CTA chính: **"Đăng nhập với Google"** (kèm icon Google nhiều màu chính hãng).
+       - Các tính năng ngoại tuyến phụ vẫn khả dụng bên dưới: Nhập từ file Excel/CSV, Xuất file Excel.
+   - Bấm "Đăng nhập với Google": Mở trực tiếp luồng đăng nhập Google qua Capacitor Google Auth hoặc Web Popup. Đăng nhập xong lập tức chuyển sang giao diện quản lý Google Sheet.
+
+2. **Khi đã đăng nhập Google (Connected & Syncing)**:
+   - Hiển thị tài khoản Google (avatar, tên, email) và tệp Sheet đang liên kết.
+   - Tự động xả hàng đợi biến động ngoại tuyến (`Pending Mutation Queue`) lên Google Drive ngầm.
+   - Trạng thái phản hồi tinh tế: icon xoay nhẹ nhàng khi đồng bộ, chuyển sang tick xanh ngọc khi hoàn tất.
+
+#### Visual Hierarchy & Styling (Phong cách hiện đại, thanh thoát)
+- **Thẻ khuyến nghị Google**: Nền gradient trắng ngà - xanh biển nhạt (`bg-gradient-to-br from-sky-50/80 via-white to-amber-50/40`), viền `border-sky-200/80`, góc bo `rounded-2xl`, bóng đổ `shadow-2xs`.
+- **Nút CTA Google**: Nền trắng nổi bật trên nền xám nhẹ, viền `border-slate-200`, chữ `text-slate-800 font-bold`, hiệu ứng nhấn `active:scale-[0.98]`.
+- **Huy hiệu trạng thái**: Loại bỏ chữ "OFFLINE" màu vàng dễ gây hiểu lầm là app bị lỗi; thay bằng nhãn `Lưu trên máy` hoặc `Đã bảo vệ đám mây`.
+
+---
+
+### 3. Key Product Decisions & Trade-Offs
+
+- **Quyết định 1: Tối ưu LocalStorage thay vì di chuyển sang cơ sở dữ liệu khác**:
+  - *Lý do*: Theo đúng chỉ định của người dùng. LocalStorage cho tốc độ đọc/ghi đồng bộ tức thì, không phát sinh chi phí asynchronous overhead, tương thích 100% Android WebView của Capacitor.
+  - *Giải pháp tối ưu*:
+    - Bọc cơ chế safe-write có bắt `QuotaExceededError`.
+    - Dọn dẹp cache không cần thiết (các bản nháp scan cũ, hình ảnh base64 tạm thời).
+    - Chuẩn hóa schema các cuốn sách, loại bỏ các thuộc tính undefined/null trước khi JSON stringify.
+- **Quyết định 2: Hủy bỏ ranh giới giả tạo giữa "Chế độ Ngoại tuyến" và "Chế độ Trực tuyến"**:
+  - *Hiện tại*: Ứng dụng bắt người dùng chọn 1 trong 2 chế độ từ đầu hoặc bắt vào Cài đặt để bật gạt công tắc.
+  - *Mô hình Sổ Tiết Kiệm*: App luôn chạy Local-First. Trực tuyến chỉ là một tầng dịch vụ cộng thêm (Sync Layer). Nếu chưa đăng nhập, mời đăng nhập bằng nút bấm trực tiếp. Nếu đã đăng nhập, tự động đồng bộ khi có mạng.
+- **Quyết định 3: Rà soát và loại bỏ `isOffline` cũ trong `AuthUser`**:
+  - Loại bỏ hoàn toàn trường thừa `isOffline?: boolean` trong types và services; trạng thái người dùng chỉ đơn giản là `currentUser !== null` (đã đăng nhập) hoặc `currentUser === null` (chưa đăng nhập/khách).
+
+---
+
+### 4. Technical Architecture & Data Strategy
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 Giao diện Người dùng (React UI)             │
+│   ┌───────────────────────┐     ┌───────────────────────┐   │
+│   │ DataSyncModal.tsx     │     │ SettingsModal.tsx     │   │
+│   │ [Thẻ Khuyến nghị Login]│     │ [Google Account Card] │   │
+│   │ [Nút Đăng nhập Google]│     │ [Xóa/Dọn dẹp Storage] │   │
+│   └───────────┬───────────┘     └───────────┬───────────┘   │
+└───────────────┼─────────────────────────────┼───────────────┘
+                │                             │
+                ▼                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│             Tầng Quản lý Đồng bộ & Xác thực (Services)      │
+│   - googleAuthService.ts: Đăng nhập Google 1-chạm           │
+│   - driveSyncService.ts: Đồng bộ 2 chiều Sheets             │
+└───────────────┬─────────────────────────────┬───────────────┘
+                │                             │
+                ▼                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│             Tầng Lưu Trữ Tối Ưu (localBooksStorage.ts)       │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  • safeSaveLocalBooks: Try/Catch QuotaExceededError │   │
+│   │  • Prune redundant fields & sanitize book objects    │   │
+│   │  • Auto-drain mutation queue on sync success        │   │
+│   │  • LocalStorage: local_books_cache_v2               │   │
+│   └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Các thành phần chính sẽ được cập nhật:
+1. `src/utils/localBooksStorage.ts`:
+   - Bổ sung hàm `safeSaveLocalBooks` chống crash khi đầy dung lượng.
+   - Tối ưu cấu trúc bản ghi sách trước khi lưu.
+   - Thêm tiện ích xóa dọn dẹp mutation queue rác.
+2. `src/components/DataSyncModal.tsx`:
+   - Thay thế toàn bộ khối cảnh báo vàng ở dòng 901-906 bằng Thẻ Khuyến nghị Đăng nhập Google chuẩn mô hình Sổ Tiết Kiệm.
+   - Thêm nút Đăng nhập Google trực tiếp nhận hàm `onGoogleSignIn`.
+   - Cập nhật header modal: thay huy hiệu "OFFLINE" bằng huy hiệu thân thiện hơn.
+3. `src/App.tsx`:
+   - Kết nối prop `onGoogleSignIn` trực tiếp vào `DataSyncModal`.
+   - Loại bỏ các logic ép chuyển đổi "offline mode" cồng kềnh, đưa app về chế độ Local-First tự nhiên.
+4. `src/types.ts` & `src/services/googleAuthService.ts`:
+   - Loại bỏ thuộc tính dư thừa `isOffline` trong `AuthUser`.

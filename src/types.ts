@@ -33,7 +33,6 @@ export interface AuthUser {
   name: string;
   photoURL?: string;
   userRole: UserRole;
-  isOffline?: boolean;
 }
 
 export interface Settings {
