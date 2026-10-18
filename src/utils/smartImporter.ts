@@ -98,21 +98,11 @@ export function detectColumnMappingFromHeaders(headers: string[]): ColumnMapping
   let aiNormalizedIdx = findBestMatch(SYNONYMS.aiNormalized);
 
   // Fallbacks thông minh theo vị trí cột mặc định nếu không có header khớp
-  if (titleIdx === -1 && normHeaders.length > 1) {
-    titleIdx = 1; // Thường là cột B nếu cột A là STT/ID
-  } else if (titleIdx === -1 && normHeaders.length > 0) {
-    titleIdx = 0;
-  }
-
-  if (authorIdx === -1 && normHeaders.length > 2) {
-    authorIdx = (titleIdx === 0) ? 1 : 2;
-  }
-  if (categoryIdx === -1 && normHeaders.length > 3) {
-    categoryIdx = (authorIdx === 1) ? 2 : 3;
-  }
-  if (publisherIdx === -1 && normHeaders.length > 4) {
-    publisherIdx = 4;
-  }
+  // Dữ liệu kiểu không có header (dòng 1 đã là sách)
+  if (titleIdx === -1) titleIdx = 0;
+  if (authorIdx === -1) authorIdx = 1;
+  if (categoryIdx === -1) categoryIdx = 2; // Mặc định nếu không có, sẽ để trống sau
+  if (publisherIdx === -1) publisherIdx = 3; // Mặc định nếu không có, sẽ để trống sau
 
   return {
     titleIdx,
@@ -622,7 +612,7 @@ export async function importFromExcelBuffer(
             const ws = wb.Sheets[sheetName];
             if (ws) {
               const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-              if (rows.length > rawData.length) rawData = rows;
+              rawData = [...rawData, ...rows];
             }
           }
         }
@@ -672,7 +662,7 @@ export async function importFromExcelBuffer(
             const ws = wb.Sheets[sheetName];
             if (ws) {
               const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-              if (rows.length > rawData.length) rawData = rows;
+              rawData = [...rawData, ...rows];
             }
           }
         }
