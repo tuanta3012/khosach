@@ -400,24 +400,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         onChunkComplete,
         stopSignal: stopNormalizingRef,
         categories: settings.categoriesList,
-        withSources: true,
+        withSources: false,
       });
-      const sourceWarning = sourceLookupWarningsRef.current.size > 0
-        ? ' Một số lượt tra cứu nguồn thất bại; các đề xuất đó không có nguồn để đối chiếu.'
-        : '';
 
       if (res.normalized.length > 0 && res.failedChunks.length > 0) {
         const failedBookCount = res.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0);
-        showToast(`Đã hiệu chỉnh ${currentProcessed} cuốn; ${failedBookCount} cuốn chưa xử lý và có thể chạy lại thủ công.${sourceWarning}`, 'warning');
+        showToast(`Đã hiệu chỉnh ${currentProcessed} cuốn; ${failedBookCount} cuốn chưa xử lý và có thể chạy lại thủ công.`, 'warning');
       } else if (currentProcessed > 0 && res.success) {
-        showToast(`Đã hoàn tất hiệu chỉnh ${currentProcessed} cuốn sách!${sourceWarning}`, sourceWarning ? 'warning' : 'success');
+        showToast(`Đã hoàn tất hiệu chỉnh ${currentProcessed} cuốn sách!`, 'success');
       } else if (res.stopped && currentProcessed > 0) {
-        showToast(`Đã dừng sau khi hiệu chỉnh ${currentProcessed} cuốn sách.${sourceWarning}`, 'info');
+        showToast(`Đã dừng sau khi hiệu chỉnh ${currentProcessed} cuốn sách.`, 'info');
       } else if (!stopNormalizingRef.current) {
         const failure = res.failedChunks[0]?.message;
         showToast(failure
-          ? `Không thể hiệu chỉnh ${res.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0)} cuốn: ${failure}.${sourceWarning}`
-          : `Không có sách nào được chuẩn hóa. Vui lòng kiểm tra lại API Key hoặc hạn ngạch!${sourceWarning}`, 'warning');
+          ? `Không thể hiệu chỉnh ${res.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0)} cuốn: ${failure}.`
+          : 'Không có sách nào được chuẩn hóa. Vui lòng kiểm tra lại API Key hoặc hạn ngạch!', 'warning');
       }
     } catch (err: any) {
       console.error('Lỗi khi chuẩn hóa lô:', err);

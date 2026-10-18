@@ -476,7 +476,8 @@ function checkSafetyBlockReason(response: any): void {
   }
 }
 
-let autoModelTurn = 0;
+// Bộ đếm lượt xoay tua model độc lập theo từng API Key (đảm bảo mỗi Key đều luân phiên xen kẽ 3.5 & 3.1)
+const keyModelTurnMap = new Map<string, number>();
 
 /**
  * THỰC THI CUỘC GỌI API GEMINI VỚI AUTO FAILOVER & XOAY VÒNG MULTI-KEYS / DUAL-MODELS
@@ -495,21 +496,6 @@ export async function executeWithFailover(
 
   let lastError: unknown = null;
   const selectedModel = overridePreferredModel || getStoredSelectedModel();
-  
-  // Khi ở chế độ 'auto', tự động xoay tua xen kẽ (Interleaving) giữa 3.5 Flash-Lite và 3.1 Flash-Lite
-  // để kích hoạt đồng thời 2 kênh RPM (15 + 15 = 30 RPM) và 2 kênh RPD (500 + 500 = 1000 RPD) trên mỗi Key!
-  let modelsToTry: GeminiModelId[];
-  if (selectedModel === 'auto') {
-    const turn = autoModelTurn++;
-    const primary = FAILOVER_CHAIN[turn % FAILOVER_CHAIN.length];
-    const secondary = FAILOVER_CHAIN.find((m) => m !== primary) || FAILOVER_CHAIN[0];
-    modelsToTry = [primary, secondary];
-  } else if (overridePreferredModel) {
-    const primary = overridePreferredModel as GeminiModelId;
-    modelsToTry = [primary, ...FAILOVER_CHAIN.filter((m) => m !== primary)];
-  } else {
-    modelsToTry = [selectedModel as GeminiModelId];
-  }
 
   const attemptedKeys = new Set<string>();
 
@@ -529,6 +515,22 @@ export async function executeWithFailover(
     attemptedKeys.add(key);
     const keyState = refreshPersistedRpdState(key);
     const ai = new GoogleGenAI({ apiKey: key });
+
+    // Xác định thứ tự model thử nghiệm cho RIÊNG API Key này (Interleaving xoay tua độc lập theo từng Key)
+    // Đảm bảo Key 1 và Key 2 đều luân phiên xen kẽ 3.5 và 3.1 độc lập, không bị khoá chặt vào 1 model duy nhất
+    let modelsToTry: GeminiModelId[];
+    if (selectedModel === 'auto') {
+      const turn = keyModelTurnMap.get(key) || 0;
+      keyModelTurnMap.set(key, turn + 1);
+      const primary = FAILOVER_CHAIN[turn % FAILOVER_CHAIN.length];
+      const secondary = FAILOVER_CHAIN.find((m) => m !== primary) || FAILOVER_CHAIN[0];
+      modelsToTry = [primary, secondary];
+    } else if (overridePreferredModel) {
+      const primary = overridePreferredModel as GeminiModelId;
+      modelsToTry = [primary, ...FAILOVER_CHAIN.filter((m) => m !== primary)];
+    } else {
+      modelsToTry = [selectedModel as GeminiModelId];
+    }
 
     // Lọc bỏ những model đã hết 500 RPD trong ngày đối với Key này
     const availableModels = modelsToTry.filter((m) => !isChannelRpdExhausted(key, m));
@@ -820,9 +822,10 @@ export async function scanImages(
   notifyProgress('Bắt đầu phân tích ảnh gáy sách...');
 
   const runWorker = async (workerIndex: number) => {
-    // Khởi động lệch pha 2.0 giây giữa các worker để tạo nhịp thở đều đặn và tránh xung đột
+    // Khởi động lệch pha giữa các worker: 1000ms khi có 2+ keys (nhịp 60 RPM), 2000ms khi 1 key (nhịp 30 RPM)
+    const staggerDelayMs = keys.length > 1 ? 1000 : 2000;
     if (workerIndex > 0) {
-      await new Promise((resolve) => setTimeout(resolve, workerIndex * 2000));
+      await new Promise((resolve) => setTimeout(resolve, workerIndex * staggerDelayMs));
     }
 
     while (currentBatchIndex < imageBatches.length) {
@@ -1211,9 +1214,12 @@ export async function batchNormalize(
   };
 
   const runWorker = async (workerIndex: number) => {
-    // Khởi động lệch pha 2.0 giây giữa các worker để tạo nhịp thở đều đặn và luân phiên model
+    // Khởi động lệch pha giữa các worker:
+    // - 2+ keys (4 kênh): giãn cách 1000ms tạo nhịp 60 RPM đều đặn luân phiên cả 2 key
+    // - 1 key (2 kênh 3.5 & 3.1): giãn cách 2000ms tạo nhịp 30 RPM chuẩn xác
+    const staggerDelayMs = keys.length > 1 ? 1000 : 2000;
     if (workerIndex > 0) {
-      await new Promise((resolve) => setTimeout(resolve, workerIndex * 2000));
+      await new Promise((resolve) => setTimeout(resolve, workerIndex * staggerDelayMs));
     }
 
     while (activeIndex < chunks.length) {
