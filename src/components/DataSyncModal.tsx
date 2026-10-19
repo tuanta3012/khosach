@@ -25,6 +25,7 @@ import {
   getKnownSpreadsheets
 } from '../services/driveSyncService';
 import { getLocalStorageHealth } from '../utils/localBooksStorage';
+import { getStoredGeminiApiKeys } from '../services/geminiService';
 
 interface DataSyncModalProps {
   isOpen: boolean;
@@ -245,6 +246,9 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
         : await importer.importFromExcelBuffer(buffer, books, file.name);
       setScanResult(result);
       setStagingItems(result.items);
+      if (result.isAiAssisted) {
+        showToast('✨ Gemini AI đã đọc hiểu cấu trúc cột và cập nhật danh sách!', 'success');
+      }
     } catch (err: any) {
       showToast(`Lỗi đọc file: ${err.message || String(err)}`, 'error');
     } finally {
@@ -383,7 +387,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
     setIsProcessing(true);
     try {
       const recordsToSave: BookRecord[] = selectedItems.map((item, idx) => ({
-        id: `imp_${Date.now()}_${idx}`,
+        id: item.bookId && !books.some(b => b.id === item.bookId) ? item.bookId : `imp_${Date.now()}_${idx}`,
         title: item.title,
         author: item.author,
         category: item.category,
@@ -550,7 +554,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
               </div>
 
               {/* Items List */}
-              <div className="space-y-1.5 max-h-[44vh] overflow-y-auto pr-0.5">
+              <div className="space-y-1.5 max-h-[58vh] overflow-y-auto pr-0.5">
                 <div className="flex items-center justify-between px-1.5 text-[10px] text-slate-400 font-bold">
                   <button
                     onClick={handleToggleSelectAll}
@@ -658,9 +662,18 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                           )}
                         </button>
                         <div className="min-w-0 flex-1">
-                          <div className="font-bold text-xs text-slate-900 truncate">{item.title}</div>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-bold text-xs text-slate-900 truncate">{item.title}</span>
+                            {item.sheetName && (scanResult.sheetSummaries?.length || 0) > 1 && (
+                              <span className="text-[9px] bg-sky-100 text-sky-800 px-1.5 py-0.2 rounded font-semibold shrink-0">
+                                {item.sheetName}
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[10px] text-slate-400 truncate">
                             {item.author || 'Chưa rõ'} • {item.category || 'Chung'}
+                            {item.publisher ? ` • ${item.publisher}` : ''}
+                            {item.bookId ? ` • #${item.bookId}` : ''}
                           </div>
                         </div>
                       </div>
