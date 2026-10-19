@@ -50,6 +50,11 @@ import {
 } from '../services/driveSyncService';
 import { getAccessToken } from '../services/googleAuthService';
 import { saveAllLocalBooks } from '../utils/localBooksStorage';
+import {
+  recordApprovedProposalsAndHotReload,
+  recordKeptDuplicatesAndHotReload,
+  flushSessionContributionsToCloud,
+} from '../services/curationLearningService';
 
 export interface TitleAuthorProposal {
   bookId: string;
@@ -437,6 +442,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const proposals = pendingReviewAccumulatorRef.current;
     if (proposals.length > 0) {
       setReviewProposals([...proposals]);
+    } else {
+      flushSessionContributionsToCloud().catch(() => {});
     }
   };
 
@@ -497,6 +504,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       await onBatchUpdateBooks(updatedList);
       showToast(`Đã áp dụng tên & tác giả cho ${selectedOnes.length} cuốn!`, 'success');
+
+      // Tự động đúc kết quy tắc, lưu kép LocalStorage + Sheet Config để nạp nóng cho lượt AI tiếp theo
+      getAccessToken().then((token) => {
+        recordApprovedProposalsAndHotReload(selectedOnes, {
+          accessToken: token || undefined,
+          spreadsheetId: spreadsheetInfo?.id || undefined,
+        });
+        // Gửi đóng góp Cloud Firestore khi hoàn thành phiên duyệt
+        flushSessionContributionsToCloud().catch(() => {});
+      }).catch(() => {
+        recordApprovedProposalsAndHotReload(selectedOnes);
+        flushSessionContributionsToCloud().catch(() => {});
+      });
+
       setReviewProposals(null);
       setPendingReviewCount(0);
       pendingReviewAccumulatorRef.current = [];
@@ -512,6 +533,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setPendingReviewCount(0);
     pendingReviewAccumulatorRef.current = [];
     showToast('Đã giữ nguyên tên sách & tác giả gốc.', 'info');
+    flushSessionContributionsToCloud().catch(() => {});
   };
 
   const handleResetAiStatus = async () => {
@@ -581,6 +603,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         // Nếu người dùng chọn giữ từ 2 cuốn trở lên trong nhóm này:
         // Đánh dấu các cặp trong nhóm này là KHÔNG TRÙNG LẶP để không bao giờ bị lọc lại
         if (keptBooks.length > 1) {
+          getAccessToken().then((token) => {
+            recordKeptDuplicatesAndHotReload(keptBooks, {
+              accessToken: token || undefined,
+              spreadsheetId: spreadsheetInfo?.id || undefined,
+            });
+          }).catch(() => {
+            recordKeptDuplicatesAndHotReload(keptBooks);
+          });
+
           for (let i = 0; i < keptBooks.length; i++) {
             for (let j = i + 1; j < keptBooks.length; j++) {
               const sigs = getBookPairSignatures(keptBooks[i], keptBooks[j]);
@@ -615,6 +646,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           console.warn('[SettingsModal] syncIgnoredDuplicatePairsWithDrive silent error:', syncErr);
         }
       }
+
+      // Đóng góp quy tắc lên Cloud Firestore khi hoàn tất xử lý danh sách trùng
+      flushSessionContributionsToCloud().catch(() => {});
 
       if (idsToDelete.size === 0) {
         showToast('Đã giữ lại tất cả sách và đánh dấu không phải trùng lặp!', 'success');

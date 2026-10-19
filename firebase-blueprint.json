@@ -24,6 +24,17 @@
         "categoriesList": { "type": "array" },
         "updatedAt": { "type": "string" }
       }
+    },
+    "ConsensusRulesRegistry": {
+      "title": "ConsensusRulesRegistry",
+      "description": "Bảng quy tắc đồng thuận cộng đồng tinh gọn cho chuẩn hóa và dọn dẹp sách",
+      "type": "object",
+      "properties": {
+        "rules": { "type": "array" },
+        "totalRules": { "type": "number" },
+        "version": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      }
     }
   },
   "firestore": {
@@ -34,6 +45,10 @@
     "/settings/{settingId}": {
       "schema": "LibrarySettings",
       "description": "Cấu hình kho sách"
+    },
+    "/community_knowledge/{docId}": {
+      "schema": "ConsensusRulesRegistry",
+      "description": "Bảng nguyên tắc quy tắc cộng đồng tinh gọn"
     }
   }
 }

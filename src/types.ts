@@ -183,3 +183,26 @@ export interface GoogleGisTokenResponse {
   error?: string;
   error_description?: string;
 }
+
+export type RuleType = 
+  | 'VOLUME_DISAMBIGUATION'
+  | 'AUTHOR_PREFIX_STRIP'
+  | 'AUTHOR_EDITORIAL_STRIP'
+  | 'TITLE_NORMALIZATION'
+  | 'SUBTITLE_PRESERVE'
+  | 'CATEGORY_KEYWORD_MAP';
+
+export interface ConsensusRule {
+  id: string;
+  type: RuleType;
+  title: string;
+  description: string;
+  targetField: 'title' | 'author' | 'category' | 'publisher' | 'pair';
+  pattern: string;
+  action: 'STRIP' | 'REPLACE' | 'MARK_DISTINCT' | 'SET_CATEGORY' | 'TITLE_CASE' | 'PRESERVE';
+  value?: string;
+  source: 'COMMUNITY' | 'USER_LOCAL';
+  voteCount: number;
+  confidenceRate: number;
+  updatedAt: number;
+}

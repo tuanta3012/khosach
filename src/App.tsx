@@ -59,6 +59,7 @@ import {
 } from './services/driveSyncService';
 import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
 import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
+import { syncStartupCloudRulesOnce } from './services/curationLearningService';
 
 export default function App() {
   const { showToast } = useToast();
@@ -96,6 +97,13 @@ export default function App() {
         console.warn('[CleanSlate] Lỗi khởi tạo lần đầu:', e);
       }
     })();
+  }, []);
+
+  // Tự động kiểm tra và cập nhật quy tắc đồng thuận từ Cloud Firestore đúng 1 lần duy nhất khi mở app
+  useEffect(() => {
+    syncStartupCloudRulesOnce().catch((err) => {
+      console.warn('[CurationLearning] Startup cloud sync silent warning:', err);
+    });
   }, []);
 
   // User Auth & Google Spreadsheet Info
