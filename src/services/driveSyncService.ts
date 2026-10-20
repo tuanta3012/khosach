@@ -1159,7 +1159,12 @@ export async function saveBooksToGoogleSheet(
     ]),
   ];
 
-  // Xóa vùng dữ liệu cũ trước để tránh rác
+  // 1. Đảm bảo các tab (Khosach và __CONFIG__) tồn tại và được định dạng chuẩn
+  await ensureSpreadsheetTabs(accessToken, spreadsheetId, '').catch((err) => {
+    console.warn('[DriveSync] ensureSpreadsheetTabs trước khi lưu gặp cảnh báo:', err);
+  });
+
+  // 2. Xóa vùng dữ liệu cũ trước để tránh rác
   await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A:G:clear`, {
     method: 'POST',
     headers: {
@@ -1168,15 +1173,24 @@ export async function saveBooksToGoogleSheet(
     },
   }).catch(() => {});
 
-  // Ghi toàn bộ dữ liệu mới
-  const writeUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1?valueInputOption=USER_ENTERED`;
-  const writeResp = await fetch(writeUrl, {
-    method: 'PUT',
+  // 3. Ghi toàn bộ dữ liệu mới bằng values:batchUpdate chuẩn xác với đầy đủ ValueRange
+  const batchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`;
+  const writeResp = await fetch(batchUrl, {
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ values: rows }),
+    body: JSON.stringify({
+      valueInputOption: 'USER_ENTERED',
+      data: [
+        {
+          range: `${KHOSACH_SHEET_TITLE}!A1:G${rows.length}`,
+          majorDimension: 'ROWS',
+          values: rows,
+        },
+      ],
+    }),
   });
 
   if (!writeResp.ok) {
@@ -1184,8 +1198,10 @@ export async function saveBooksToGoogleSheet(
     if (writeResp.status === 403) {
       throw new Error('READ_ONLY_SCOPE_OR_PERMISSION');
     }
+    console.error(`[DriveSync] Lỗi lưu sách lên Google Sheet (${writeResp.status}):`, errJson);
     throw new Error(errJson?.error?.message || `Không thể lưu sách lên Google Sheet (${writeResp.status})`);
   }
+  console.info(`[DriveSync] Đã lưu thành công ${books.length} cuốn sách lên tab "${KHOSACH_SHEET_TITLE}"`);
 }
 
 /**
@@ -1765,12 +1781,12 @@ export async function syncBooksTwoWay(
     const existing = mergedMap.get(lBook.id);
 
     if (!remoteIds.has(lBook.id)) {
-      // Sách này có ở local nhưng KHÔNG còn trên Google Drive (đã bị xóa trực tiếp trên Drive!)
+      // Sách này có ở local nhưng KHÔNG còn trên Google Drive
       const hasCreateMutation = pendingMutations.some((m) => m.bookId === lBook.id && m.type === 'CREATE');
       const hasDeleteMutation = pendingMutations.some((m) => m.bookId === lBook.id && m.type === 'DELETE');
 
-      if (hasCreateMutation) {
-        // Vẫn giữ lại vì là sách mới tạo offline chưa kịp push lên Drive
+      if (hasCreateMutation || remoteBooks.length === 0) {
+        // Vẫn giữ lại vì là sách mới tạo offline chưa kịp push lên Drive hoặc Sheet vừa liên kết chưa có dữ liệu sách
         mergedMap.set(lBook.id, lBook);
         localChangesMade = true;
       } else if (hasDeleteMutation) {

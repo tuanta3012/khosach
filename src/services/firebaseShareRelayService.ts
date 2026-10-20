@@ -56,12 +56,47 @@ export async function publishAssignedFile(
     };
 
     await setDoc(docRef, data, { merge: true });
-    console.info(`[ShareRelay] Đã phát hành liên kết file ${fileId} cho ${memberEmail} lên Firestore`);
+    console.info(`[ShareRelay] Đã phát hành liên kết file ${fileId} cho ${memberEmail} lên Firestore (key: ${emailKey})`);
     return true;
   } catch (err) {
-    console.warn('[ShareRelay] Ghi liên kết file lên Firestore thất bại (không ảnh hưởng quyền Drive):', err);
+    console.error('[ShareRelay] Ghi liên kết file lên Firestore thất bại:', err);
     return false;
   }
+}
+
+/**
+ * Admin phát hành liên kết file cho toàn bộ danh sách thành viên hiện tại
+ */
+export async function publishAssignedFilesForMembers(
+  members: Array<{ email: string; role: string }>,
+  fileId: string,
+  fileName: string,
+  adminEmail: string
+): Promise<number> {
+  if (!fileId || !Array.isArray(members) || members.length === 0) return 0;
+  const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+  let count = 0;
+
+  for (const m of members) {
+    const cleanMemberEmail = (m.email || '').trim().toLowerCase();
+    if (!cleanMemberEmail || cleanMemberEmail === cleanAdmin || m.role === 'Owner') {
+      continue;
+    }
+    const role: 'Editor' | 'Viewer' = m.role === 'Editor' ? 'Editor' : 'Viewer';
+    const success = await publishAssignedFile(
+      cleanMemberEmail,
+      fileId,
+      fileName,
+      adminEmail,
+      role
+    );
+    if (success) count++;
+  }
+
+  if (count > 0) {
+    console.info(`[ShareRelay] Đã tự động phát hành liên kết file cho ${count} thành viên trong workspace.`);
+  }
+  return count;
 }
 
 /**
@@ -77,19 +112,22 @@ export async function consumeAssignedFileForMember(
     const emailKey = sanitizeEmailKey(memberEmail);
     if (!emailKey) return null;
 
+    console.info(`[ShareRelay] Đang kiểm tra liên kết chuyển tiếp Firestore cho ${memberEmail} (key: ${emailKey})...`);
     const docRef = doc(db, 'assigned_shares', emailKey);
     const snap = await getDoc(docRef);
 
     if (!snap.exists()) {
+      console.info(`[ShareRelay] Không có bản ghi chuyển tiếp chờ nhận cho key: ${emailKey}`);
       return null;
     }
 
     const data = snap.data() as AssignedShareRecord;
     if (!data || !data.assignedFileId) {
+      console.warn(`[ShareRelay] Bản ghi ${emailKey} không hợp lệ hoặc thiếu assignedFileId`);
       return null;
     }
 
-    console.info(`[ShareRelay] Nhận được assignedFileId cho ${memberEmail}: ${data.assignedFileId}`);
+    console.info(`[ShareRelay] NHẬN ĐƯỢC assignedFileId cho ${memberEmail}: ${data.assignedFileId} (Admin: ${data.adminEmail || 'Unknown'})`);
 
     // Dọn dẹp bản ghi tức thì trên Firestore theo đúng yêu cầu
     try {
@@ -101,7 +139,7 @@ export async function consumeAssignedFileForMember(
 
     return data;
   } catch (err) {
-    console.warn('[ShareRelay] Lỗi kiểm tra liên kết chuyển tiếp từ Firestore:', err);
+    console.error('[ShareRelay] Lỗi kiểm tra liên kết chuyển tiếp từ Firestore:', err);
     return null;
   }
 }
@@ -115,6 +153,7 @@ export async function removeAssignedFileForMember(memberEmail: string): Promise<
     if (!emailKey) return;
     const docRef = doc(db, 'assigned_shares', emailKey);
     await deleteDoc(docRef);
+    console.info(`[ShareRelay] Đã xóa bản ghi gán file cho ${memberEmail}`);
   } catch (err) {
     console.warn('[ShareRelay] Lỗi khi xóa bản ghi gán file:', err);
   }

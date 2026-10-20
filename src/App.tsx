@@ -48,6 +48,7 @@ import {
   autoDiscoverSharedSpreadsheets,
   updateSheetConfigStatus,
   fetchSheetConfigMetadata,
+  fetchFamilyMembers,
   unlinkWorkspace,
   SpreadsheetInfo,
   verifySpreadsheetWriteAccess,
@@ -60,7 +61,10 @@ import {
 import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
 import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
 import { syncStartupCloudRulesOnce } from './services/curationLearningService';
-import { consumeAssignedFileForMember } from './services/firebaseShareRelayService';
+import { 
+  consumeAssignedFileForMember, 
+  publishAssignedFilesForMembers 
+} from './services/firebaseShareRelayService';
 
 export default function App() {
   const { showToast } = useToast();
@@ -387,11 +391,27 @@ export default function App() {
           activeRole
         );
 
-        // 3. Nếu là ADMIN (Owner), chạy kiểm toán và dọn dẹp quyền vật lý rác trên Google Drive
+        // 3. Nếu là ADMIN (Owner), chạy kiểm toán và dọn dẹp quyền vật lý rác trên Google Drive & đồng bộ relay Firestore
         if (activeRole === 'ADMIN') {
           synchronizeDrivePermissionsWithJsonMembers(token, sheetInfo.id, currentUser?.email || '')
             .then(() => console.log('[Sync] Đã tự động dọn dẹp và kiểm toán quyền truy cập Drive thành công.'))
             .catch((err) => console.warn('[Sync] Kiểm toán quyền Drive thất bại:', err));
+
+          // Tự động đảm bảo tất cả thành viên trong Workspace có bản ghi relay trên Firestore (Zero-UI)
+          if (currentUser?.email) {
+            fetchFamilyMembers(token, sheetInfo.id)
+              .then((members) => {
+                if (members && members.length > 0) {
+                  publishAssignedFilesForMembers(
+                    members,
+                    sheetInfo.id,
+                    sheetInfo.name || 'Kho Sách',
+                    currentUser.email
+                  ).catch((rErr) => console.warn('[Sync] Tự động phát hành relay thất bại:', rErr));
+                }
+              })
+              .catch(() => {});
+          }
         }
 
         // 3b. Tự động đồng bộ 2 chiều Gemini API Key của Admin/Editor với Sheet Config
@@ -599,6 +619,39 @@ export default function App() {
       cleanup();
     };
   }, [appMode, spreadsheetInfo?.id, books, syncWithGoogleDrive]);
+
+  // Tự động kiểm tra liên kết chuyển tiếp Firestore (Zero-UI) định kỳ nếu tài khoản đang Online nhưng chưa liên kết file
+  useEffect(() => {
+    if (appMode !== 'online' || spreadsheetInfo?.id || !currentUser?.email) return;
+
+    let isPolling = false;
+    const pollRelay = async () => {
+      if (isPolling) return;
+      isPolling = true;
+      try {
+        const token = await getAccessToken();
+        if (token && currentUser?.email) {
+          await checkAndApplyAssignedShareRelay(currentUser.email, token);
+        }
+      } catch (err) {
+        console.warn('[ShareRelay] Polling background relay error:', err);
+      } finally {
+        isPolling = false;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void pollRelay();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    const intervalTimer = setInterval(pollRelay, 10_000);
+    void pollRelay();
+
+    return () => {
+      clearInterval(intervalTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [appMode, spreadsheetInfo?.id, currentUser?.email, checkAndApplyAssignedShareRelay]);
 
   // 3. Tự động kiểm tra bản cập nhật mới khi mở ứng dụng (sau 1.5 giây, chỉ áp dụng cho bản APK)
   useEffect(() => {
@@ -891,7 +944,14 @@ export default function App() {
     setBooks(updatedBooks);
     showToast('Đã lưu sách thành công!', 'success');
     if (appMode === 'online') {
-      syncWithGoogleDrive(updatedBooks).catch(() => {});
+      syncWithGoogleDrive(updatedBooks)
+        .then(() => {
+          console.info('[SaveBook] Sách đã được lưu và đồng bộ lên Google Drive thành công.');
+        })
+        .catch((err) => {
+          console.warn('[SaveBook] Lỗi đẩy sách lên Google Drive:', err);
+          showToast(`⚠️ Sách đã lưu vào máy nhưng chưa lên Google Drive: ${err.message || String(err)}`, 'warning');
+        });
     }
   };
 
@@ -1149,8 +1209,23 @@ export default function App() {
             localStorage.removeItem('unlinked_spreadsheet_explicitly');
             // Cập nhật trạng thái active lên tab Config ẩn của Google Sheet
             await updateSheetConfigStatus(token, sheet.id, 'active', currentUser?.email || '');
-            showToast(`Đã liên kết với Google Sheet: "${sheet.name}"`, 'success');
             await syncWithGoogleDrive(books);
+
+            // Tự động phát hành relay cho toàn bộ thành viên trong file vừa liên kết (Zero-UI)
+            if (currentUser?.email) {
+              fetchFamilyMembers(token, sheet.id)
+                .then((members) => {
+                  if (members && members.length > 0) {
+                    publishAssignedFilesForMembers(
+                      members,
+                      sheet.id,
+                      sheet.name || 'Kho Sách',
+                      currentUser.email
+                    ).catch(() => {});
+                  }
+                })
+                .catch(() => {});
+            }
           } catch (err: any) {
             showToast(`Lỗi liên kết: ${err.message || String(err)}`, 'error');
           } finally {

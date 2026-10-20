@@ -16,7 +16,11 @@ import {
 import { getAccessToken } from '../services/googleAuthService';
 import { useToast } from '../context/ToastContext';
 import { AuthUser } from '../types';
-import { publishAssignedFile, removeAssignedFileForMember } from '../services/firebaseShareRelayService';
+import { 
+  publishAssignedFile, 
+  publishAssignedFilesForMembers, 
+  removeAssignedFileForMember 
+} from '../services/firebaseShareRelayService';
 
 interface FamilyShareModalProps {
   isOpen: boolean;
@@ -57,7 +61,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
     return null;
   };
 
-  const loadMembers = async () => {
+  const loadMembers = async (isManualRefresh = false) => {
     setIsLoading(true);
     try {
       const sheetId = await resolveSheetId();
@@ -66,6 +70,23 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       if (!token) return;
       const list = await fetchFamilyMembers(token, sheetId);
       setMembers(list);
+
+      // Tự động phát hành/làm mới liên kết chuyển tiếp Firestore cho tất cả thành viên hiện có (Zero-UI)
+      if (currentUser?.email && list.length > 0) {
+        publishAssignedFilesForMembers(
+          list,
+          sheetId,
+          spreadsheetInfo?.name || 'Kho Sách',
+          currentUser.email
+        ).then((count) => {
+          if (count > 0) {
+            console.info(`[FamilyShare] Đã làm mới relay liên kết Firestore cho ${count} thành viên.`);
+            if (isManualRefresh) {
+              showToast(`Đã đồng bộ liên kết tự động cho ${count} thành viên!`, 'info');
+            }
+          }
+        }).catch((err) => console.warn('[FamilyShare] Tự động đồng bộ relay thất bại:', err));
+      }
     } catch (err: any) {
       console.warn('[FamilyShare] Tải danh sách thành viên thất bại:', err);
     } finally {
@@ -108,13 +129,18 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       await addFamilyMember(token, sheetId, email, roleInput);
 
       // Tự động cấu hình liên kết ngầm lên Firebase Firestore để máy thành viên tự động nhận file khi đăng nhập (Zero-UI)
-      publishAssignedFile(
-        email,
-        sheetId,
-        spreadsheetInfo?.name || 'Kho Sách',
-        currentUser?.email || '',
-        roleInput
-      ).catch((err) => console.warn('[FamilyShare] Ghi Firestore relay ngầm gặp lỗi (quyền Drive vẫn thành công):', err));
+      try {
+        await publishAssignedFile(
+          email,
+          sheetId,
+          spreadsheetInfo?.name || 'Kho Sách',
+          currentUser?.email || '',
+          roleInput
+        );
+        console.info(`[FamilyShare] Đã cấu hình relay thành công cho ${email}`);
+      } catch (relayErr) {
+        console.warn('[FamilyShare] Ghi Firestore relay ngầm gặp lỗi (quyền Drive vẫn thành công):', relayErr);
+      }
 
       showToast(`✅ Đã cấp quyền ${roleInput === 'Editor' ? 'Được sửa' : 'Chỉ xem'} cho ${email}!`, 'success');
       setEmailInput('');
@@ -320,12 +346,13 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
               </div>
               <button
                 type="button"
-                onClick={loadMembers}
+                onClick={() => loadMembers(true)}
                 disabled={isLoading}
                 className="text-slate-500 hover:text-slate-800 p-1 rounded-lg hover:bg-slate-100 transition flex items-center gap-1 text-[11px] cursor-pointer"
+                title="Tải lại danh sách và đồng bộ liên kết ngầm cho thành viên"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-                <span>Làm mới</span>
+                <span>Làm mới & Bắn liên kết</span>
               </button>
             </div>
 
