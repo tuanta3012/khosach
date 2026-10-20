@@ -986,17 +986,27 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isProcessing}
-                    className="h-10 px-2.5 bg-[#10B981] hover:bg-[#059669] text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer disabled:opacity-40"
+                    className="h-10 px-2.5 bg-[#10B981] hover:bg-[#059669] text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer disabled:opacity-80"
                   >
-                    <Upload className="w-3.5 h-3.5 shrink-0" />
-                    <span className="truncate">Nhập từ file</span>
+                    {isProcessing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                        <span className="truncate">Đang xử lý...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">Nhập từ file</span>
+                      </>
+                    )}
                   </button>
 
                   {/* Xuất file Excel */}
                   <button
                     type="button"
                     onClick={handleExportExcel}
-                    className="h-10 px-2.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer"
+                    disabled={isProcessing}
+                    className="h-10 px-2.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer disabled:opacity-50"
                   >
                     <Download className="w-3.5 h-3.5 text-slate-600 shrink-0" />
                     <span className="truncate">Xuất file Excel</span>
