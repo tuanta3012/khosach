@@ -964,13 +964,15 @@ export default function App() {
     const updatedBooks = deleteLocalBook(id);
     setBooks(updatedBooks);
     showToast('Đã xóa cuốn sách khỏi kho!', 'info');
-    if (appMode === 'online' && spreadsheetInfo?.id) {
-      const token = await getAccessToken();
-      if (token) {
-        saveBooksToGoogleSheet(token, spreadsheetInfo.id, updatedBooks).catch((err) => {
-          console.warn('[DeleteBook] Lỗi cập nhật Google Sheet:', err);
+    if (appMode === 'online') {
+      syncWithGoogleDrive(updatedBooks)
+        .then(() => {
+          console.info('[DeleteBook] Sách đã được xóa và đồng bộ 2 chiều với Google Drive.');
+        })
+        .catch((err) => {
+          console.warn('[DeleteBook] Lỗi đồng bộ 2 chiều lên Google Drive:', err);
+          showToast(`⚠️ Đã xóa trên máy nhưng đồng bộ Drive lỗi: ${err.message || String(err)}`, 'warning');
         });
-      }
     }
   };
 
@@ -982,13 +984,14 @@ export default function App() {
     }
     const saved = batchUpsertLocalBooks(updatedBooksList);
     setBooks(saved);
-    if (appMode === 'online' && spreadsheetInfo?.id) {
-      const token = await getAccessToken();
-      if (token) {
-        saveBooksToGoogleSheet(token, spreadsheetInfo.id, saved).catch((err) => {
-          console.warn('[BatchUpdate] Lỗi cập nhật Google Sheet:', err);
+    if (appMode === 'online') {
+      syncWithGoogleDrive(saved)
+        .then(() => {
+          console.info('[BatchUpdate] Sách đã được cập nhật và đồng bộ 2 chiều với Google Drive.');
+        })
+        .catch((err) => {
+          console.warn('[BatchUpdate] Lỗi đồng bộ 2 chiều lên Google Drive:', err);
         });
-      }
     }
   };
 
@@ -1000,16 +1003,14 @@ export default function App() {
     }
     const saved = batchDeleteLocalBooks(idsToDelete);
     setBooks(saved);
-    if (appMode === 'online' && spreadsheetInfo?.id) {
-      const token = await getAccessToken();
-      if (token) {
-        try {
-          await saveBooksToGoogleSheet(token, spreadsheetInfo.id, saved);
-          console.log(`[BatchDelete] Đã lưu danh sách sách đã dọn lên Google Drive (${saved.length} cuốn).`);
-        } catch (err) {
-          console.warn('[BatchDelete] Lỗi đồng bộ xóa lên Google Drive:', err);
-        }
-      }
+    if (appMode === 'online') {
+      syncWithGoogleDrive(saved)
+        .then(() => {
+          console.info('[BatchDelete] Sách đã được dọn dẹp và đồng bộ 2 chiều với Google Drive.');
+        })
+        .catch((err) => {
+          console.warn('[BatchDelete] Lỗi đồng bộ 2 chiều lên Google Drive:', err);
+        });
     }
   };
 
