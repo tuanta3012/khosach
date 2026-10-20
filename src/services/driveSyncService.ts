@@ -696,20 +696,23 @@ export async function saveMasterSyncStateToGoogleSheet(
     const linkedIso = state.linkedTimestamp || nowIso;
     const linkedVi = state.linkedLocalTimeVi || formatVietnameseFullDate(linkedIso);
 
-    const members = (state.members || []).map((m) => ({ ...m }));
+    const members = (state.members || []).map((m) => ({
+      email: m.email,
+      role: m.role,
+      addedAt: m.addedAt,
+    }));
+
     const userApiKeys: Record<string, string[]> = {
       ...(state.userApiKeys || {}),
       ...(state.customSettings?.userApiKeys || {}),
     };
 
-    // Đảm bảo đồng bộ 2 chiều giữa members.apiKeys và userApiKeys
-    for (const m of members) {
-      const email = m.email.trim().toLowerCase();
+    for (const m of (state.members || [])) {
+      const email = (m.email || '').trim().toLowerCase();
       if (m.apiKeys && Array.isArray(m.apiKeys) && m.apiKeys.length > 0) {
         userApiKeys[email] = m.apiKeys;
-      } else if (userApiKeys[email] && userApiKeys[email].length > 0) {
-        m.apiKeys = userApiKeys[email];
-        m.apiKey = userApiKeys[email][0] || '';
+      } else if (m.apiKey && typeof m.apiKey === 'string' && m.apiKey.trim()) {
+        userApiKeys[email] = [m.apiKey.trim()];
       }
     }
 
@@ -726,16 +729,13 @@ export async function saveMasterSyncStateToGoogleSheet(
       linkedLocalTimeVi: linkedVi,
       updatedAt: nowIso,
       updatedAtVi: nowVi,
-      userApiKeys,
     });
 
     const customSettingsPayload = JSON.stringify({
       ignoredDuplicatePairs: state.ignoredDuplicatePairs || [],
       customSettings: state.customSettings || {},
-      userApiKeys,
     });
 
-    // Ma trận chuẩn hàng x 2 cột A1:B11 (Bao gồm User API Keys cho Admin & Editor)
     const values: (string | number)[][] = [
       ['__METADATA_JSON__', coreMetadataPayload],
       ['Vault Name', state.activeFileName || 'Kho Sách Gia Đình'],
@@ -1819,8 +1819,28 @@ export async function syncBooksTwoWay(
 
   const finalMergedList = Array.from(mergedMap.values());
 
-  // 3. Nếu phát sinh thay đổi, ghi đè cập nhật lại lên Master Database trên Google Drive
-  if (localChangesMade || finalMergedList.length !== remoteBooks.length) {
+  const hasActualContentDifference = (listA: BookRecord[], listB: BookRecord[]): boolean => {
+    if (listA.length !== listB.length) return true;
+    const mapB = new Map(listB.map((b) => [b.id, b]));
+    for (const a of listA) {
+      const b = mapB.get(a.id);
+      if (!b) return true;
+      if (
+        (a.title || '').trim() !== (b.title || '').trim() ||
+        (a.author || '').trim() !== (b.author || '').trim() ||
+        (a.category || '').trim() !== (b.category || '').trim() ||
+        (a.publisher || '').trim() !== (b.publisher || '').trim()
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const isContentChanged = localChangesMade || finalMergedList.length !== remoteBooks.length || hasActualContentDifference(finalMergedList, remoteBooks);
+
+  // 3. Nếu phát sinh thay đổi thực sự, ghi đè cập nhật lại lên Master Database trên Google Drive
+  if (isContentChanged) {
     await saveBooksToGoogleSheet(accessToken, spreadsheetId, finalMergedList);
     // Sau khi lưu lên Google Sheet thành công, dọn dẹp các mutation đã áp dụng
     if (appliedMutationIds.length > 0) {
@@ -1835,7 +1855,7 @@ export async function syncBooksTwoWay(
     mergedBooks: finalMergedList,
     cloudCount: remoteBooks.length,
     localCount: localBooks.length,
-    hasChanges: true, // Luôn đồng nhất local khớp tuyệt đối với Master Database
+    hasChanges: true,
   };
 }
 

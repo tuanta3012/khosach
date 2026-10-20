@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
-import { BookRecord, LibrarySettings, AuthUser } from './types';
+import { BookRecord, LibrarySettings, AuthUser, UserRole } from './types';
 import {
   loadLocalBooks,
   saveAllLocalBooks,
@@ -1199,17 +1199,23 @@ export default function App() {
           }
           setIsSyncingDrive(true);
           try {
-            const hasWriteAccess = await verifySpreadsheetWriteAccess(token, sheet.id, currentUser?.email || '');
-            if (!hasWriteAccess) {
-              showToast(`⚠️ File "${sheet.name}" không tương thích để Đồng bộ 2 chiều (Chỉ có quyền đọc). Hãy tạo file mới hoặc liên kết file do App tạo!`, 'error');
-              return;
-            }
+            const userEmail = currentUser?.email || '';
+            const role: UserRole = await determineCurrentUserRole(token, sheet.id, userEmail).catch(() => 'VIEWER');
+
             setSpreadsheetInfo(sheet);
             localStorage.setItem('library_spreadsheet_info_v2', JSON.stringify(sheet));
             localStorage.removeItem('unlinked_spreadsheet_explicitly');
-            // Cập nhật trạng thái active lên tab Config ẩn của Google Sheet
-            await updateSheetConfigStatus(token, sheet.id, 'active', currentUser?.email || '');
+
+            // Cập nhật trạng thái active lên tab Config ẩn của Google Sheet nếu không phải viewer
+            if (role !== 'VIEWER') {
+              await updateSheetConfigStatus(token, sheet.id, 'active', userEmail).catch(() => {});
+            }
+
+            setCurrentUser((prev) => (prev ? { ...prev, userRole: role } : null));
             await syncWithGoogleDrive(books);
+
+            const roleLabel = role === 'ADMIN' ? 'Quản trị viên' : role === 'EDITOR' ? 'Quyền Chỉnh sửa' : 'Quyền Xem';
+            showToast(`✨ Đã tự động liên kết với "${sheet.name}" (${roleLabel})`, 'success');
 
             // Tự động phát hành relay cho toàn bộ thành viên trong file vừa liên kết (Zero-UI)
             if (currentUser?.email) {

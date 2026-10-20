@@ -130,16 +130,19 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
 
       // Tự động cấu hình liên kết ngầm lên Firebase Firestore để máy thành viên tự động nhận file khi đăng nhập (Zero-UI)
       try {
-        await publishAssignedFile(
-          email,
-          sheetId,
-          spreadsheetInfo?.name || 'Kho Sách',
-          currentUser?.email || '',
-          roleInput
-        );
+        await Promise.race([
+          publishAssignedFile(
+            email,
+            sheetId,
+            spreadsheetInfo?.name || 'Kho Sách',
+            currentUser?.email || '',
+            roleInput
+          ),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout relay')), 6000)),
+        ]);
         console.info(`[FamilyShare] Đã cấu hình relay thành công cho ${email}`);
       } catch (relayErr) {
-        console.warn('[FamilyShare] Ghi Firestore relay ngầm gặp lỗi (quyền Drive vẫn thành công):', relayErr);
+        console.warn('[FamilyShare] Ghi Firestore relay ngầm gặp lỗi hoặc timeout (quyền Drive vẫn thành công):', relayErr);
       }
 
       showToast(`✅ Đã cấp quyền ${roleInput === 'Editor' ? 'Được sửa' : 'Chỉ xem'} cho ${email}!`, 'success');

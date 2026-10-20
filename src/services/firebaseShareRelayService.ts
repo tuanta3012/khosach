@@ -58,8 +58,18 @@ export async function publishAssignedFile(
     await setDoc(docRef, data, { merge: true });
     console.info(`[ShareRelay] Đã phát hành liên kết file ${fileId} cho ${memberEmail} lên Firestore (key: ${emailKey})`);
     return true;
-  } catch (err) {
-    console.error('[ShareRelay] Ghi liên kết file lên Firestore thất bại:', err);
+  } catch (err: any) {
+    const isOffline =
+      err?.code === 'unavailable' ||
+      err?.code === 'failed-precondition' ||
+      /offline|unavailable|network|failed|internet/i.test(err?.message || '') ||
+      (typeof navigator !== 'undefined' && !navigator.onLine);
+
+    if (isOffline) {
+      console.info('[ShareRelay] Thiết bị đang ngoại tuyến, không thể ghi liên kết file lên Firestore.');
+    } else {
+      console.warn('[ShareRelay] Ghi liên kết file lên Firestore thất bại:', err?.message || err);
+    }
     return false;
   }
 }
@@ -138,8 +148,18 @@ export async function consumeAssignedFileForMember(
     }
 
     return data;
-  } catch (err) {
-    console.error('[ShareRelay] Lỗi kiểm tra liên kết chuyển tiếp từ Firestore:', err);
+  } catch (err: any) {
+    const isOffline =
+      err?.code === 'unavailable' ||
+      err?.code === 'failed-precondition' ||
+      /offline|unavailable|network|failed|internet/i.test(err?.message || '') ||
+      (typeof navigator !== 'undefined' && !navigator.onLine);
+
+    if (isOffline) {
+      console.info('[ShareRelay] Thiết bị đang ngoại tuyến hoặc Firestore client offline, bỏ qua kiểm tra relay tạm thời.');
+    } else {
+      console.warn('[ShareRelay] Lỗi kiểm tra liên kết chuyển tiếp từ Firestore:', err?.message || err);
+    }
     return null;
   }
 }
