@@ -1238,14 +1238,17 @@ export async function addFamilyMember(
   email: string,
   role: 'Editor' | 'Viewer'
 ): Promise<void> {
-  const cleanEmail = email.trim().toLowerCase();
-  if (!cleanEmail || !cleanEmail.includes('@')) {
-    throw new Error('Địa chỉ email Gmail không hợp lệ.');
+  let cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) {
+    throw new Error('Vui lòng nhập email hoặc username.');
+  }
+  if (!cleanEmail.includes('@')) {
+    cleanEmail = `${cleanEmail}@gmail.com`;
   }
 
   // 1. Cấp quyền trên Google Drive API
   const driveRole = role === 'Editor' ? 'writer' : 'reader';
-  const permissionUrl = `https://www.googleapis.com/drive/v3/files/${spreadsheetId}/permissions?sendNotificationEmail=true`;
+  const permissionUrl = `https://www.googleapis.com/drive/v3/files/${spreadsheetId}/permissions?sendNotificationEmail=false`;
   const permPayload = {
     role: driveRole,
     type: 'user',
