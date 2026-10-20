@@ -1,6 +1,6 @@
 {
-  "summary": "Cập nhật kế hoạch tuân thủ tuyệt đối yêu cầu:\n- TOÀN BỘ HỆ THỐNG CHẠY NGẦM TỰ ĐỘNG 100% (Zero-UI / Headless Background Execution).\n- Không phát sinh thêm bất kỳ màn hình, modal, tab hay nút bấm giao diện nào.\n- Tự động móc nối ngầm vào các luồng xử lý và sự kiện duyệt sẵn có của ứng dụng (SettingsModal, fuzzyMatcher, geminiService, driveSyncService).\n- Tự động lưu kép LocalStorage + Sheet Config, tự động nạp tiếp vào lượt AI kế tiếp, tự động đóng góp Firestore khi hoàn thành và tự động check Cloud 1 lần lúc mở app.",
-  "updatedAt": "2026-10-19T17:52:06.700377910Z",
+  "summary": "Cập nhật kế hoạch triển khai: Toàn bộ cải tiến hoạt động ngầm 100% (Zero UI), không thêm giao diện hay nút bấm mới. Thành viên chỉ cần đăng nhập là app tự động liên kết tệp và đồng bộ dữ liệu ngay lập tức mà không phải thao tác bất kỳ điều gì.",
+  "updatedAt": "2026-10-20T11:48:25.607677494Z",
   "requestFeedback": true,
   "userFacing": true
 }

@@ -448,10 +448,10 @@ export function evaluateDraftItem(
   let badgeType: StagingBadgeType = 'NEW';
 
   // 1. Kiểm tra trùng lặp với kho sách hiện tại
-  if (dupCheck.isDuplicate && dupCheck.score >= 85) {
+  if (dupCheck.isDuplicate && dupCheck.score >= 75) {
     badgeType = 'DUP';
     alertReason = `Trùng với kho sách hiện có (${dupCheck.score}%): "${dupCheck.matchedBook?.title}"`;
-  } else if (dupCheck.score >= 60) {
+  } else if (dupCheck.score >= 55) {
     badgeType = 'SUSPICIOUS';
     alertReason = `Nghi vấn trùng (${dupCheck.score}%) với "${dupCheck.matchedBook?.title}"`;
   } else {
@@ -470,7 +470,7 @@ export function evaluateDraftItem(
   }
 
   return {
-    isDuplicate: dupCheck.isDuplicate && dupCheck.score >= 85,
+    isDuplicate: dupCheck.isDuplicate && dupCheck.score >= 75,
     duplicateMatchTitle: dupCheck.matchedBook ? `${dupCheck.matchedBook.title} (${dupCheck.matchedBook.author || 'Khuyết danh'})` : undefined,
     confidence: dupCheck.score,
     badgeType,

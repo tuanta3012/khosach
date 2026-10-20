@@ -16,6 +16,7 @@ import {
 import { getAccessToken } from '../services/googleAuthService';
 import { useToast } from '../context/ToastContext';
 import { AuthUser } from '../types';
+import { publishAssignedFile, removeAssignedFileForMember } from '../services/firebaseShareRelayService';
 
 interface FamilyShareModalProps {
   isOpen: boolean;
@@ -105,6 +106,16 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
       await addFamilyMember(token, sheetId, email, roleInput);
+
+      // Tự động cấu hình liên kết ngầm lên Firebase Firestore để máy thành viên tự động nhận file khi đăng nhập (Zero-UI)
+      publishAssignedFile(
+        email,
+        sheetId,
+        spreadsheetInfo?.name || 'Kho Sách',
+        currentUser?.email || '',
+        roleInput
+      ).catch((err) => console.warn('[FamilyShare] Ghi Firestore relay ngầm gặp lỗi (quyền Drive vẫn thành công):', err));
+
       showToast(`✅ Đã cấp quyền ${roleInput === 'Editor' ? 'Được sửa' : 'Chỉ xem'} cho ${email}!`, 'success');
       setEmailInput('');
       await loadMembers();
@@ -124,6 +135,16 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
       await updateFamilyMemberRole(token, sheetId, email, newRole);
+
+      // Cập nhật lại vai trò lên Firestore relay nếu bản ghi còn chờ
+      publishAssignedFile(
+        email,
+        sheetId,
+        spreadsheetInfo?.name || 'Kho Sách',
+        currentUser?.email || '',
+        newRole
+      ).catch(() => {});
+
       showToast(`Đã chuyển quyền của ${email} sang "${newRole === 'Editor' ? 'Được sửa' : 'Chỉ xem'}"!`, 'success');
       await loadMembers();
     } catch (err: any) {
@@ -142,6 +163,10 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
       await removeFamilyMember(token, sheetId, email);
+
+      // Dọn dẹp bản ghi gán trên Firestore (nếu có)
+      removeAssignedFileForMember(email).catch(() => {});
+
       showToast(`Đã gỡ quyền truy cập của ${email}!`, 'success');
       await loadMembers();
     } catch (err: any) {

@@ -60,6 +60,7 @@ import {
 import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
 import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
 import { syncStartupCloudRulesOnce } from './services/curationLearningService';
+import { consumeAssignedFileForMember } from './services/firebaseShareRelayService';
 
 export default function App() {
   const { showToast } = useToast();
@@ -158,6 +159,54 @@ export default function App() {
     }
   }, [books]);
 
+  // Tự động kiểm tra và tiêu thụ liên kết tệp ngầm từ Firebase Firestore (Zero-UI)
+  const checkAndApplyAssignedShareRelay = useCallback(
+    async (userEmail: string, token: string): Promise<SpreadsheetInfo | null> => {
+      try {
+        const assigned = await consumeAssignedFileForMember(userEmail);
+        if (assigned && assigned.assignedFileId) {
+          console.info(`[ShareRelay] Phát hiện liên kết file do Admin chia sẻ (${assigned.adminEmail}): ${assigned.assignedFileId}`);
+          const relaySheet: SpreadsheetInfo = {
+            id: assigned.assignedFileId,
+            name: assigned.assignedFileName || 'Kho Sách - Gia đình',
+            webViewLink: `https://docs.google.com/spreadsheets/d/${assigned.assignedFileId}/edit`,
+          };
+          setSpreadsheetInfo(relaySheet);
+          saveKnownSpreadsheet(relaySheet);
+          try {
+            localStorage.setItem('library_spreadsheet_info_v2', JSON.stringify(relaySheet));
+            localStorage.removeItem('unlinked_spreadsheet_explicitly');
+            localStorage.removeItem('explicitly_unlinked');
+          } catch {}
+
+          const fallbackRole = assigned.role === 'Editor' ? ('EDITOR' as const) : ('VIEWER' as const);
+          const role = await determineCurrentUserRole(token, relaySheet.id, userEmail).catch(() => fallbackRole);
+          setCurrentUser((prev) => (prev ? { ...prev, userRole: role } : null));
+
+          // Nạp dữ liệu sách từ file được chia sẻ về máy ngay lập tức
+          const localBooks = loadLocalBooks();
+          await syncBooksTwoWay(localBooks, token, relaySheet.id, role)
+            .then((syncRes) => {
+              if (syncRes.hasChanges || localBooks.length === 0) {
+                saveAllLocalBooks(syncRes.mergedBooks);
+                setBooks(syncRes.mergedBooks);
+                setLastDriveSyncTimestamp();
+              }
+            })
+            .catch((e) => console.warn('[ShareRelay] Lỗi đồng bộ sau khi tự động liên kết file:', e));
+
+          const roleLabel = role === 'ADMIN' ? 'Quản trị viên' : role === 'EDITOR' ? 'Quyền Chỉnh sửa' : 'Quyền Xem';
+          showToast(`✨ Đã tự động liên kết với "${relaySheet.name}" (${roleLabel})`, 'success');
+          return relaySheet;
+        }
+      } catch (relayErr) {
+        console.warn('[ShareRelay] Kiểm tra file gán tự động gặp lỗi (vẫn giữ local an toàn):', relayErr);
+      }
+      return null;
+    },
+    [showToast]
+  );
+
   // Khởi tạo Auth listener
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -192,6 +241,13 @@ export default function App() {
 
             if (user.email) {
               try {
+                // Ưu tiên 1: Tự động kiểm tra liên kết chuyển tiếp từ Firebase Firestore (Admin share - Zero-UI)
+                const relaySheet = await checkAndApplyAssignedShareRelay(user.email, token);
+                if (relaySheet) {
+                  return;
+                }
+
+                // Ưu tiên 2: Quét tự động thông thường trên Drive nếu không có file gán mới
                 const discovered = await autoDiscoverSharedSpreadsheets(token, user.email);
                 if (discovered.length > 0) {
                   const activeSheet = discovered[0];
@@ -635,22 +691,27 @@ export default function App() {
               }
             }
 
-            // Auto-Discovery: Luôn tự động tìm kiếm và liên kết với file active của tài khoản trên Drive
+            // Ưu tiên 1: Tự động kiểm tra liên kết chuyển tiếp từ Firebase Firestore (Admin share - Zero-UI)
             if (loggedInUser.email) {
+              const relaySheet = await checkAndApplyAssignedShareRelay(loggedInUser.email, token);
+              if (relaySheet) {
+                currentSheet = relaySheet;
+              }
+            }
+
+            // Ưu tiên 2: Quét tự động trên Drive nếu máy chưa có liên kết từ relay
+            if (!currentSheet && loggedInUser.email) {
               console.log('[AutoDiscover] Đang tìm kiếm file active trên Drive...');
               const discovered = await autoDiscoverSharedSpreadsheets(token, loggedInUser.email);
               if (discovered.length > 0) {
                 const activeSheet = discovered[0];
-                // Nếu chưa có sheet hoặc sheet hiện tại khác với sheet active trên Drive và máy chưa có dữ liệu sách
-                if (!currentSheet || currentSheet.id !== activeSheet.id) {
-                  currentSheet = activeSheet;
-                  setSpreadsheetInfo(currentSheet);
-                  try {
-                    localStorage.setItem('library_spreadsheet_info_v2', JSON.stringify(currentSheet));
-                    localStorage.removeItem('unlinked_spreadsheet_explicitly');
-                  } catch {}
-                  console.log(`[AutoDiscover] Đã tự động kết nối về file active: "${currentSheet.name}" (${currentSheet.id})`);
-                }
+                currentSheet = activeSheet;
+                setSpreadsheetInfo(currentSheet);
+                try {
+                  localStorage.setItem('library_spreadsheet_info_v2', JSON.stringify(currentSheet));
+                  localStorage.removeItem('unlinked_spreadsheet_explicitly');
+                } catch {}
+                console.log(`[AutoDiscover] Đã tự động kết nối về file active: "${currentSheet.name}" (${currentSheet.id})`);
               }
             }
 

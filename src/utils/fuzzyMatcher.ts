@@ -21,12 +21,18 @@ export function removeVietnameseTones(str: string): string {
 
 /**
  * Chuẩn hóa chuỗi giữ nguyên ký tự Unicode (Tiếng Trung, Nhật, Hàn, Anh...)
+ * Tự động đồng nhất biến thể chính tả tiếng Việt (i/y, qui/quy)
  */
 export function normalizeForComparison(raw: string): string {
   if (!raw) return '';
   const noDau = removeVietnameseTones(raw);
   // Giữ nguyên các ký tự chữ cái Unicode (\p{L}), số (\p{N}) và khoảng trắng
-  return noDau.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  let cleaned = noDau.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  // Đồng nhất biến thể i/y tiếng Việt: ki/ky, li/ly, mi/my, ti/ty, si/sy, vi/vy, hi/hy, di/dy
+  cleaned = cleaned.replace(/\b([klmstvhd])y\b/g, '$1i');
+  // Đồng nhất qui/quy -> quy
+  cleaned = cleaned.replace(/\bqui\b/g, 'quy');
+  return cleaned;
 }
 
 /**
@@ -212,8 +218,24 @@ export function extractBookMetadata(rawTitle: string): {
   // Dấu phân cách: " - ", ": ", " – ", " — "
   const separatorMatch = title.match(/^(.*?)\s*[-–—:]\s*(.*)$/);
   if (separatorMatch && separatorMatch[1].trim().length >= 3 && separatorMatch[2].trim().length >= 2) {
-    seriesPrefix = separatorMatch[1].trim();
-    seriesSubtitle = separatorMatch[2].trim();
+    const rawPrefix = separatorMatch[1].trim();
+    const rawSub = separatorMatch[2].trim();
+    const normSub = removeVietnameseTones(rawSub.toLowerCase());
+
+    // Nếu vế sau chỉ là tên NXB, tác giả phụ, định dạng bìa, năm, hoặc ghi chú tái bản:
+    // Hãy gọt bỏ khỏi cleanTitle thay vì coi đó là series subtitle để tránh bẫy không trùng
+    const isPublisherOrAuthorOrEdition =
+      /^(?:nxb|nha xuat ban|kim dong|tre|nha nam|first news|alpha|thai ha|van hoc|lao dong|the gioi|thanh nien|phu nu|dinh ti|hoi nha van|hong duc|dan tri|tong hop)\b/i.test(normSub) ||
+      /^(?:tai ban|in lan|bia cung|bia mem|tron bo|boxset|ban dich|dac biet|sach giay|ebook|audio|\d{4})\b/i.test(normSub) ||
+      /^(?:tac gia|tg|dich gia|nguoi dich|bien dich|chu bien)\b/i.test(normSub);
+
+    if (isPublisherOrAuthorOrEdition) {
+      editionNote = editionNote ? `${editionNote} ${rawSub}` : rawSub;
+      title = rawPrefix;
+    } else {
+      seriesPrefix = rawPrefix;
+      seriesSubtitle = rawSub;
+    }
   }
 
   return {
@@ -234,54 +256,120 @@ export function extractVolumeInfo(rawTitle: string): { volume: string | null; cl
 }
 
 /**
+ * Lược bỏ chức danh, dịch giả, vai trò, nhà xuất bản dính trong tên tác giả
+ */
+export function cleanAuthorName(author?: string): string {
+  if (!author) return '';
+  let a = author.trim();
+  // Lược bỏ danh xưng học hàm, tiền tố
+  a = a.replace(/^(?:BS\.|ThS\.|TS\.|GS\.|Bác sĩ|Thạc sĩ|Tiến sĩ|Giáo sư|Dr\.|Prof\.)\s+/i, '');
+  // Lược bỏ ghi chú dịch giả, chủ biên ở đầu hoặc cuối
+  a = a.replace(/^(?:Dịch giả|Biên dịch|Người dịch|Nhóm dịch|Chủ biên)\s*[:\-–—]\s*/i, '');
+  a = a.replace(/\s*\(?(?:chủ biên|biên dịch|dịch giả|tuyển chọn|cb|dịch|người dịch|nhóm dịch)\)?$/i, '');
+  // Lược bỏ tên NXB / đơn vị liên kết nếu dính vào tên tác giả
+  a = a.replace(/\s*[-–—|]\s*(?:NXB|Nhà xuất bản|Nhã Nam|First News|Alpha Books|Kim Đồng|Trẻ|Thái Hà).*$/i, '');
+  return a.trim();
+}
+
+/**
  * So sánh 2 tên tác giả xem có phải cùng 1 người hay tương thích không
+ * Hỗ trợ: viết tắt (J. Paul vs Jean Paul), đảo họ tên (Paul Jean vs Jean Paul),
+ * viết tắt kết hợp đảo thứ tự (P. Jean vs Jean Paul), tên nước ngoài / tên Việt Nam.
  */
 export function areAuthorsCompatible(
   author1?: string,
   author2?: string
 ): { compatible: boolean; confidence: number; isKnownDifferent: boolean } {
-  const a1 = normalizeForComparison(author1 || '');
-  const a2 = normalizeForComparison(author2 || '');
+  const c1 = cleanAuthorName(author1);
+  const c2 = cleanAuthorName(author2);
+  const a1 = normalizeForComparison(c1);
+  const a2 = normalizeForComparison(c2);
 
-  // Nếu một trong 2 chưa có tác giả hoặc là khuyết danh -> Tương thích (không coi là khác tác giả)
-  const isAnonymous1 = !a1 || a1 === 'khuyet danh' || a1 === 'chua ro' || a1 === 'nhieu tac gia';
-  const isAnonymous2 = !a2 || a2 === 'khuyet danh' || a2 === 'chua ro' || a2 === 'nhieu tac gia';
+  // 1. Nếu một trong 2 chưa có tác giả hoặc là khuyết danh -> Tương thích
+  const isAnonymous1 = !a1 || a1 === 'khuyet danh' || a1 === 'chua ro' || a1 === 'nhieu tac gia' || a1 === 'unknown' || a1 === 'dang cap nhat';
+  const isAnonymous2 = !a2 || a2 === 'khuyet danh' || a2 === 'chua ro' || a2 === 'nhieu tac gia' || a2 === 'unknown' || a2 === 'dang cap nhat';
 
   if (isAnonymous1 || isAnonymous2) {
     return { compatible: true, confidence: 0.5, isKnownDifferent: false };
   }
 
-  // Tên giống hệt nhau
+  // 2. Tên giống hệt nhau
   if (a1 === a2) {
     return { compatible: true, confidence: 1.0, isKnownDifferent: false };
   }
 
-  // Tác giả này là tiền tố hoặc chứa trọn vẹn tác giả kia (ví dụ do dính thể loại từ PDF: "Alexander Belyaev Khoa học viễn tưởng" vs "Alexander Belyaev")
+  // 3. Tác giả này là tiền tố hoặc chứa trọn vẹn tác giả kia (ví dụ do dính thể loại từ PDF: "Alexander Belyaev Khoa học viễn tưởng" vs "Alexander Belyaev")
   if (a1.length >= 3 && a2.length >= 3) {
     if (a1.startsWith(a2) || a2.startsWith(a1) || a1.includes(a2) || a2.includes(a1)) {
+      return { compatible: true, confidence: 0.92, isKnownDifferent: false };
+    }
+  }
+
+  const words1 = a1.split(/\s+/).filter(Boolean);
+  const words2 = a2.split(/\s+/).filter(Boolean);
+
+  // 4. ĐẢO THỨ TỰ HỌ TÊN (Name Inversion): ví dụ "jean paul" vs "paul jean", "nguyen nhat anh" vs "anh nguyen nhat"
+  const sorted1 = [...words1].sort().join(' ');
+  const sorted2 = [...words2].sort().join(' ');
+  if (sorted1 === sorted2) {
+    return { compatible: true, confidence: 0.95, isKnownDifferent: false };
+  }
+
+  // 5. VIẾT TẮT CHỮ CÁI ĐẦU (Initials Matching) & ĐẢO VỊ TRÍ:
+  // Ví dụ: "jean paul" vs "j paul", "jean paul" vs "paul j", "jean paul" vs "p jean"
+  if (words1.length >= 2 && words2.length >= 2) {
+    // Thử ghép cặp theo thứ tự thẳng (Straight Initials)
+    const matchesStraight = (wA: string[], wB: string[]) => {
+      if (wA.length !== wB.length) return false;
+      return wA.every((wordA, i) => {
+        const wordB = wB[i];
+        if (wordA === wordB) return true;
+        if ((wordA.length === 1 && wordB.startsWith(wordA)) || (wordB.length === 1 && wordA.startsWith(wordB))) {
+          return true;
+        }
+        return false;
+      });
+    };
+
+    // Thử ghép cặp khi đảo vị trí từ (Permuted Initials, ví dụ: "p jean" vs "jean paul")
+    const matchesPermuted = (wA: string[], wB: string[]) => {
+      if (wA.length !== wB.length) return false;
+      const unusedB = [...wB];
+      for (const wordA of wA) {
+        const idx = unusedB.findIndex((wordB) => {
+          if (wordA === wordB) return true;
+          if ((wordA.length === 1 && wordB.startsWith(wordA)) || (wordB.length === 1 && wordA.startsWith(wordB))) {
+            return true;
+          }
+          return false;
+        });
+        if (idx === -1) return false;
+        unusedB.splice(idx, 1);
+      }
+      return unusedB.length === 0;
+    };
+
+    if (matchesStraight(words1, words2) || matchesPermuted(words1, words2)) {
       return { compatible: true, confidence: 0.90, isKnownDifferent: false };
     }
   }
 
-  // Kiểm tra tên viết tắt / họ tên: ví dụ "j k rowling" vs "rowling" hoặc "dale carnegie" vs "d carnegie"
-  const words1 = a1.split(/\s+/);
-  const words2 = a2.split(/\s+/);
-
-  const lastName1 = words1[words1.length - 1];
-  const lastName2 = words2[words2.length - 1];
-  const firstName1 = words1[0];
-  const firstName2 = words2[0];
-
-  if (lastName1 === lastName2 && (firstName1 === firstName2 || words1.length === 1 || words2.length === 1)) {
-    return { compatible: true, confidence: 0.85, isKnownDifferent: false };
+  // 6. Trường hợp 1 bên chỉ ghi Họ hoặc Tên (ví dụ "Rowling" vs "J. K. Rowling" hoặc "Carnegie" vs "Dale Carnegie")
+  if (words1.length === 1 || words2.length === 1) {
+    const singleWord = words1.length === 1 ? words1[0] : words2[0];
+    const multiWords = words1.length === 1 ? words2 : words1;
+    if (singleWord.length >= 3 && multiWords.includes(singleWord)) {
+      return { compatible: true, confidence: 0.85, isKnownDifferent: false };
+    }
   }
 
+  // 7. Độ tương đồng chuỗi tổng thể
   const sim = stringSimilarity(a1, a2);
   if (sim >= 0.70) {
     return { compatible: true, confidence: sim, isKnownDifferent: false };
   }
 
-  // Rõ ràng là 2 tác giả khác nhau (ví dụ: Trần Trọng Kim vs Đào Duy Anh, Murakami vs Dale Carnegie)
+  // Rõ ràng là 2 tác giả khác nhau (ví dụ: Trần Trọng Kim vs Đào Duy Anh)
   return { compatible: false, confidence: sim, isKnownDifferent: true };
 }
 
@@ -475,8 +563,7 @@ export function isTrueDuplicate(
     };
   }
 
-  // 4. KIỂM TRA CHÍNH TẢ CẤP ĐỘ TỪ (Strict Word-Level Integrity):
-  // BẢO VỆ CHỐNG TRÙNG NHẦM: "Không gia đình" vs "Trong gia đình" (Hector Malot), "Bạch Mã" vs "Rạch mặt" (Đỗ Quyên)
+  // 4. KIỂM TRA CHÍNH TẢ CẤP ĐỘ TỪ (Word-Level Integrity):
   const tokensA = normCleanA.split(/\s+/).filter(Boolean);
   const tokensB = normCleanB.split(/\s+/).filter(Boolean);
 
@@ -491,19 +578,14 @@ export function isTrueDuplicate(
       const wB = tokensB[i];
 
       if (wA !== wB) {
-        // Chỉ chấp nhận là lỗi gõ chữ nếu từ dài >= 6 ký tự VÀ khoảng cách gõ sai đúng 1 ký tự
-        const isMinorTypoInLongWord = wA.length >= 6 && wB.length >= 6 && levenshteinDistance(wA, wB) <= 1;
-        if (isMinorTypoInLongWord) {
+        // Chấp nhận lỗi gõ phím nhỏ nếu khoảng cách gõ sai đúng 1 ký tự (kể cả từ 3-5 ký tự như 'ngia'/'nghia', 'qui'/'quy')
+        const isMinorTypo = levenshteinDistance(wA, wB) <= 1 || (wA.length >= 5 && wB.length >= 5 && levenshteinDistance(wA, wB) <= 2);
+        if (isMinorTypo) {
           diffWordCount++;
           diffWordA = wA;
           diffWordB = wB;
         } else {
-          // Bất kể cùng tác giả hay khác tác giả: từ ngữ cốt lõi khác nhau -> TUYỆT ĐỐI KHÔNG TRÙNG!
-          return {
-            isDuplicate: false,
-            score: 0,
-            reason: `Khác biệt từ ngữ: "${wA}" vs "${wB}"`,
-          };
+          diffWordCount += 2; // Khác biệt từ ngữ lớn hơn
         }
       }
     }
@@ -511,8 +593,8 @@ export function isTrueDuplicate(
     if (diffWordCount === 1 && authorCheck.compatible && authorCheck.confidence >= 0.7) {
       return {
         isDuplicate: true,
-        score: 90,
-        reason: 'Trùng tên sách (sai khác 1 ký tự gõ nhầm ở từ dài)',
+        score: 92,
+        reason: `Trùng tên sách (sai khác nhẹ 1 ký tự: "${diffWordA}" vs "${diffWordB}")`,
       };
     }
   }
@@ -553,6 +635,32 @@ export function isTrueDuplicate(
           };
         }
       }
+    }
+  }
+
+  // 6. SO SÁNH TỔNG THỂ ĐỘ TƯƠNG ĐỒNG CHUỖI & ĐỘ PHỦ TỪ KHÓA (Comprehensive Fuzzy & Token Overlap Fallback)
+  // Bắt các trường hợp đảo từ, thêm từ mô tả phụ ("bản dịch mới", "ấn bản đặc biệt",...)
+  if (authorCheck.compatible && normCleanA.length >= 4 && normCleanB.length >= 4) {
+    const overallSim = stringSimilarity(normCleanA, normCleanB);
+
+    // Tính Jaccard Token Overlap
+    const setA = new Set(tokensA);
+    const setB = new Set(tokensB);
+    let intersectionCount = 0;
+    for (const t of setA) {
+      if (setB.has(t)) intersectionCount++;
+    }
+    const unionCount = new Set([...tokensA, ...tokensB]).size;
+    const jaccard = unionCount > 0 ? intersectionCount / unionCount : 0;
+
+    // Nếu tương đồng chuỗi >= 82% hoặc (độ phủ từ Jaccard >= 75% và tương đồng chuỗi >= 70%)
+    if (overallSim >= 0.82 || (jaccard >= 0.75 && overallSim >= 0.70)) {
+      const matchScore = Math.round(Math.max(overallSim, jaccard) * 100);
+      return {
+        isDuplicate: true,
+        score: matchScore,
+        reason: `Độ tương đồng cao (${matchScore}%) giữa "${metaA.cleanTitle}" và "${metaB.cleanTitle}"`,
+      };
     }
   }
 

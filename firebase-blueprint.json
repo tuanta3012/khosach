@@ -35,6 +35,21 @@
         "version": { "type": "string" },
         "updatedAt": { "type": "number" }
       }
+    },
+    "AssignedShare": {
+      "title": "AssignedShare",
+      "description": "Bản ghi chuyển tiếp liên kết tệp Google Drive do Admin chia sẻ cho thành viên",
+      "type": "object",
+      "properties": {
+        "assignedFileId": { "type": "string" },
+        "assignedFileName": { "type": "string" },
+        "adminEmail": { "type": "string" },
+        "memberEmail": { "type": "string" },
+        "role": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["assignedFileId", "memberEmail"]
     }
   },
   "firestore": {
@@ -49,6 +64,10 @@
     "/community_knowledge/{docId}": {
       "schema": "ConsensusRulesRegistry",
       "description": "Bảng nguyên tắc quy tắc cộng đồng tinh gọn"
+    },
+    "/assigned_shares/{shareId}": {
+      "schema": "AssignedShare",
+      "description": "Bản ghi chuyển tiếp tệp gán tự động cho thành viên"
     }
   }
 }
