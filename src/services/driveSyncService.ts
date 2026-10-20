@@ -1082,10 +1082,14 @@ export async function fetchBooksFromGoogleSheet(
   accessToken: string,
   spreadsheetId: string
 ): Promise<BookRecord[]> {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A:G`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A:G?_t=${Date.now()}`;
 
   const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      Pragma: 'no-cache',
+    },
   });
 
   if (!resp.ok) {
@@ -1754,10 +1758,30 @@ export async function syncBooksTwoWay(
     }
   }
 
-  // 2b. Đối chiếu bổ sung các sách local hiện tại với remote theo timestamp
+  // 2b. Đối chiếu bổ sung các sách local hiện tại với remote theo timestamp và kiểm tra xóa từ Drive
+  const remoteIds = new Set(remoteBooks.map((b) => b.id).filter(Boolean));
   for (const lBook of localBooks) {
     if (!lBook.id) continue;
     const existing = mergedMap.get(lBook.id);
+
+    if (!remoteIds.has(lBook.id)) {
+      // Sách này có ở local nhưng KHÔNG còn trên Google Drive (đã bị xóa trực tiếp trên Drive!)
+      const hasCreateMutation = pendingMutations.some((m) => m.bookId === lBook.id && m.type === 'CREATE');
+      const hasDeleteMutation = pendingMutations.some((m) => m.bookId === lBook.id && m.type === 'DELETE');
+
+      if (hasCreateMutation) {
+        // Vẫn giữ lại vì là sách mới tạo offline chưa kịp push lên Drive
+        mergedMap.set(lBook.id, lBook);
+        localChangesMade = true;
+      } else if (hasDeleteMutation) {
+        // Đã có lệnh xóa, giữ nguyên trạng thái xóa
+      } else {
+        // Đã bị xóa trên Drive -> Xóa ở local (không add vào mergedMap, để đồng bộ tuyệt đối theo Master Drive)
+        localChangesMade = true;
+      }
+      continue;
+    }
+
     if (!existing) {
       // Sách mới tạo ở local chưa có trên Drive (và chưa bị DELETE trong queue)
       mergedMap.set(lBook.id, lBook);

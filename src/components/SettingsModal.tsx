@@ -23,6 +23,7 @@ import {
   ArrowUpCircle,
   ChevronDown,
   ChevronUp,
+  Pencil,
 } from 'lucide-react';
 import { LibrarySettings, BookRecord, AuthUser, BookSource } from '../types';
 import { useToast } from '../context/ToastContext';
@@ -68,6 +69,7 @@ export interface TitleAuthorProposal {
   publisher?: string;
   sources: BookSource[];
   selected: boolean;
+  isEditing?: boolean;
 }
 
 interface SettingsModalProps {
@@ -469,6 +471,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     });
   };
 
+  const handleUpdateProposalTitle = (index: number, newTitle: string) => {
+    setReviewProposals((prev) => {
+      if (!prev) return null;
+      const copy = [...prev];
+      copy[index] = { ...copy[index], proposedTitle: newTitle, titleChanged: true };
+      return copy;
+    });
+  };
+
+  const handleUpdateProposalAuthor = (index: number, newAuthor: string) => {
+    setReviewProposals((prev) => {
+      if (!prev) return null;
+      const copy = [...prev];
+      copy[index] = { ...copy[index], proposedAuthor: newAuthor, authorChanged: true };
+      return copy;
+    });
+  };
+
+  const toggleProposalEditing = (index: number) => {
+    setReviewProposals((prev) => {
+      if (!prev) return null;
+      const copy = [...prev];
+      copy[index] = { ...copy[index], isEditing: !copy[index].isEditing };
+      return copy;
+    });
+  };
+
   const toggleSelectAllProposals = () => {
     setReviewProposals((prev) => {
       if (!prev) return null;
@@ -756,15 +785,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {reviewProposals.map((proposal, idx) => (
                 <div
                   key={proposal.bookId}
-                  onClick={() => toggleProposalSelect(idx)}
-                  className={`p-3 rounded-2xl border transition-all cursor-pointer select-none space-y-2 ${
+                  className={`p-3 rounded-2xl border transition-all select-none space-y-2.5 ${
                     proposal.selected
                       ? 'bg-purple-50/70 border-purple-300 shadow-2xs'
-                      : 'bg-white border-slate-200 opacity-70 hover:opacity-100'
+                      : 'bg-white border-slate-200 opacity-80 hover:opacity-100'
                   }`}
                 >
                   <div className="flex items-start gap-2.5">
-                    <div className="pt-0.5 shrink-0">
+                    <div
+                      onClick={() => toggleProposalSelect(idx)}
+                      className="pt-0.5 shrink-0 cursor-pointer"
+                    >
                       {proposal.selected ? (
                         <CheckSquare className="w-4.5 h-4.5 text-[#653f96]" />
                       ) : (
@@ -772,37 +803,83 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       )}
                     </div>
 
-                    <div className="flex-1 min-w-0 space-y-1 text-xs">
+                    <div className="flex-1 min-w-0 space-y-2 text-xs">
+                      {/* Header: Nút Bật/Tắt Sửa */}
+                      <div className="flex items-center justify-end pb-1.5 border-b border-purple-100/60">
+                        <button
+                          type="button"
+                          onClick={() => toggleProposalEditing(idx)}
+                          className={`px-2 py-1 rounded-xl text-[10.5px] font-bold transition flex items-center gap-1 shrink-0 cursor-pointer ${
+                            proposal.isEditing
+                              ? 'bg-[#653f96] text-white shadow-xs'
+                              : 'bg-slate-100 hover:bg-purple-100 text-slate-600 hover:text-[#653f96]'
+                          }`}
+                        >
+                          <Pencil className="w-3 h-3" />
+                          <span>{proposal.isEditing ? 'Xong' : 'Sửa'}</span>
+                        </button>
+                      </div>
+
+                      {/* Tên sách */}
                       <div>
                         <div className="text-[10px] font-bold text-slate-400 uppercase">Tên sách:</div>
-                        {proposal.titleChanged ? (
-                          <div className="space-y-0.5">
-                            <div className="text-slate-500 line-through text-[11px]">{proposal.originalTitle}</div>
-                            <div className="text-[#653f96] font-bold flex items-center gap-1">
-                              <ArrowRight className="w-3 h-3 text-[#653f96] shrink-0" />
-                              <span>{proposal.proposedTitle}</span>
+                        {proposal.isEditing ? (
+                          <div className="mt-1">
+                            <input
+                              type="text"
+                              value={proposal.proposedTitle}
+                              onChange={(e) => handleUpdateProposalTitle(idx, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-full px-2.5 py-1 text-xs font-bold text-[#653f96] bg-white border border-purple-300 focus:border-[#653f96] rounded-xl focus:outline-none transition"
+                              placeholder="Nhập tên sách hiệu chỉnh..."
+                            />
+                          </div>
+                        ) : proposal.titleChanged ? (
+                          <div className="space-y-1">
+                            <div className="text-slate-500 line-through text-[11px] whitespace-normal break-words">{proposal.originalTitle}</div>
+                            <div className="text-[#653f96] font-bold flex items-start gap-1">
+                              <ArrowRight className="w-3 h-3 text-[#653f96] shrink-0 mt-0.5" />
+                              <span className="whitespace-normal break-words">{proposal.proposedTitle}</span>
                             </div>
                           </div>
                         ) : (
-                          <div className="text-slate-800 font-semibold">{proposal.originalTitle}</div>
+                          <div className="text-slate-800 font-semibold whitespace-normal break-words">{proposal.originalTitle}</div>
                         )}
                       </div>
 
-                      {proposal.authorChanged && (
-                        <div className="pt-1 border-t border-purple-100">
+                      {/* Tác giả */}
+                      {(proposal.authorChanged || proposal.originalAuthor || proposal.isEditing) && (
+                        <div className="pt-1.5 border-t border-purple-100/60">
                           <div className="text-[10px] font-bold text-slate-400 uppercase">Tác giả:</div>
-                          <div className="space-y-0.5">
-                            <div className="text-slate-500 line-through text-[11px]">{proposal.originalAuthor || 'Chưa rõ'}</div>
-                            <div className="text-[#653f96] font-bold flex items-center gap-1">
-                              <ArrowRight className="w-3 h-3 text-[#653f96] shrink-0" />
-                              <span>{proposal.proposedAuthor}</span>
+                          {proposal.isEditing ? (
+                            <div className="mt-1">
+                              <input
+                                type="text"
+                                value={proposal.proposedAuthor}
+                                onChange={(e) => handleUpdateProposalAuthor(idx, e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full px-2.5 py-1 text-xs font-bold text-[#653f96] bg-white border border-purple-300 focus:border-[#653f96] rounded-xl focus:outline-none transition"
+                                placeholder="Nhập tên tác giả hiệu chỉnh..."
+                              />
                             </div>
-                          </div>
+                          ) : proposal.authorChanged ? (
+                            <div className="space-y-1">
+                              <div className="text-slate-500 line-through text-[11px] whitespace-normal break-words">{proposal.originalAuthor || 'Chưa rõ'}</div>
+                              <div className="text-[#653f96] font-bold flex items-start gap-1">
+                                <ArrowRight className="w-3 h-3 text-[#653f96] shrink-0 mt-0.5" />
+                                <span className="whitespace-normal break-words">{proposal.proposedAuthor}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-slate-800 font-semibold whitespace-normal break-words">{proposal.originalAuthor || 'Chưa rõ'}</div>
+                          )}
                         </div>
                       )}
-                      {proposal.sources.length > 0 && (
-                        <div className="pt-1 border-t border-purple-100">
-                          <div className="text-[10px] font-bold text-slate-400 uppercase">Nguồn tra cứu (đối chiếu trước khi áp dụng):</div>
+
+                      {/* Nguồn tra cứu */}
+                      {proposal.sources.length > 0 && !proposal.isEditing && (
+                        <div className="pt-1.5 border-t border-purple-100/60">
+                          <div className="text-[10px] font-bold text-slate-400 uppercase">Nguồn tra cứu đối chiếu:</div>
                           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
                             {proposal.sources.slice(0, 3).map((source) => (
                               <a
@@ -896,15 +973,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
                               </div>
                             </div>
-                            <div className="min-w-0 flex-1 flex items-baseline justify-between gap-2">
-                              <span className="font-bold text-slate-800 text-xs sm:text-[13px] truncate leading-tight">
+                            <div className="min-w-0 flex-1">
+                              <span className="font-bold text-slate-800 text-xs sm:text-[13px] whitespace-normal break-words leading-relaxed">
                                 {book.title}
                               </span>
-                              {book.author && (
-                                <span className="text-slate-400 text-[10.5px] shrink-0 truncate max-w-[130px] leading-tight">
-                                  {book.author}
-                                </span>
-                              )}
                             </div>
                           </div>
                         );
