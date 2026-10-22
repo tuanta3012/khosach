@@ -147,6 +147,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
           if (onSelectSpreadsheet) {
             await onSelectSpreadsheet(null);
           }
+        } else if (status.name && status.name !== spreadsheetInfo.name && onSelectSpreadsheet) {
+          await onSelectSpreadsheet({ ...spreadsheetInfo, name: status.name });
         }
       } catch (err) {
         console.warn('[DataSyncModal] verify current sheet error:', err);
@@ -293,6 +295,8 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
           }
           showToast(`⚠️ File "${spreadsheetInfo.name}" đã bị xóa trên Google Drive. Đã hủy liên kết!`, 'error');
           return;
+        } else if (status.name && status.name !== spreadsheetInfo.name && onSelectSpreadsheet) {
+          await onSelectSpreadsheet({ ...spreadsheetInfo, name: status.name });
         }
       }
 
@@ -320,9 +324,6 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       setShowCreateInput(false);
       setShowSheetSelector(false); // Quay lại trang đồng bộ chính ngay để người dùng thấy trạng thái liên kết
       setDriveSheets((prev) => [newSheet, ...prev.filter((s) => s.id !== newSheet.id)]);
-      if (onSelectSpreadsheet) {
-        await onSelectSpreadsheet(newSheet);
-      }
       showToast(`Đã tạo và liên kết thành công kho sách: ${newSheet.name}`, 'success');
     } catch (err: any) {
       showToast(`Lỗi tạo file mới: ${err.message || String(err)}`, 'error');

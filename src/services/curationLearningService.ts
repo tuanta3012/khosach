@@ -5,9 +5,9 @@ import { BookRecord, ConsensusRule, RuleType } from '../types';
 import { canonicalizeVolume, removeVietnameseTones } from '../utils/fuzzyMatcher';
 import { saveMasterSyncStateToGoogleSheet, readMasterSyncStateFromGoogleSheet } from './driveSyncService';
 
-// Khởi tạo an toàn Firebase Firestore
+// Khởi tạo an toàn Firebase Firestore với database ID đã cấu hình
 const getFirebaseApp = () => (getApps().length > 0 ? getApp() : initializeApp(firebaseConfig));
-const db = getFirestore(getFirebaseApp());
+const db = getFirestore(getFirebaseApp(), 'ai-studio-khosach-0ef0f956-9e92-4b96-aab6-0adefe2a1acc');
 
 export const LEARNED_RULES_STORAGE_KEY = 'library_learned_rules_v1';
 export const CLOUD_COMMUNITY_DOC_PATH = 'community_knowledge/consensus_rules_v1';

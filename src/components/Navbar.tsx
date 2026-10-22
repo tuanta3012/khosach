@@ -31,6 +31,7 @@ export interface NavbarProps {
   onOpenFamilyShare?: () => void;
   appMode?: 'offline' | 'online';
   isSyncingDrive?: boolean;
+  hasLinkedSpreadsheet?: boolean;
   spreadsheetInfo?: { id?: string; name?: string } | null;
   pendingAiCount?: number;
   onSwitchToCloud?: () => Promise<void>;
@@ -50,6 +51,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenFamilyShare,
   appMode = 'offline',
   isSyncingDrive = false,
+  hasLinkedSpreadsheet = true,
   spreadsheetInfo,
   pendingAiCount = 0,
   onSwitchToCloud,
@@ -149,6 +151,18 @@ export const Navbar: React.FC<NavbarProps> = ({
 
                 {/* Storage Mode Status Indicator */}
                 {appMode === 'online' ? (
+                  /* Trạng thái Online nhưng chưa liên kết file: Chấm vàng + Chữ "Chưa liên kết" */
+                  !hasLinkedSpreadsheet ? (
+                    <button
+                      type="button"
+                      onClick={onOpenModeModal}
+                      className="text-[9.5px] sm:text-xs text-amber-100 flex items-center gap-1 font-bold hover:text-white transition text-left"
+                      title="Chế độ trực tuyến nhưng chưa liên kết file dữ liệu"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#F59E0B] shadow-xs shadow-amber-400/50 animate-pulse" />
+                      <span>Chưa liên kết</span>
+                    </button>
+                  ) : (
                   /* Trạng thái Online: Chấm xanh ngọc + chữ "Online" tinh gọn */
                   <button
                     type="button"
@@ -173,6 +187,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         : 'Online'}
                     </span>
                   </button>
+                  )
                 ) : (
                   /* Trạng thái Offline: Chấm xám + chữ "Offline" tinh gọn */
                   <button

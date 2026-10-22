@@ -56,6 +56,7 @@ import {
   recordKeptDuplicatesAndHotReload,
   flushSessionContributionsToCloud,
 } from '../services/curationLearningService';
+import { downloadLogs } from '../utils/logger';
 
 export interface TitleAuthorProposal {
   bookId: string;
@@ -1378,16 +1379,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </span>
               </div>
 
-              {onCheckUpdates && (
+              <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={onCheckUpdates}
-                  className="px-3.5 py-2 text-xs font-bold text-white bg-[#0284C7] hover:bg-[#0369a1] rounded-xl transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95"
+                  onClick={downloadLogs}
+                  className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95"
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Cập nhật</span>
+                  <span>Tải log</span>
                 </button>
-              )}
+                {onCheckUpdates && (
+                  <button
+                    type="button"
+                    onClick={onCheckUpdates}
+                    className="px-3.5 py-2 text-xs font-bold text-white bg-[#0284C7] hover:bg-[#0369a1] rounded-xl transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Cập nhật</span>
+                  </button>
+                )}
+              </div>
+
             </div>
 
             </div>

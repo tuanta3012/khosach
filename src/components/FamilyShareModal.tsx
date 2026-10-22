@@ -11,7 +11,8 @@ import {
   removeFamilyMember, 
   SpreadsheetInfo,
   getKnownSpreadsheets,
-  autoDiscoverSharedSpreadsheets
+  autoDiscoverSharedSpreadsheets,
+  checkSpreadsheetStatusOnDrive,
 } from '../services/driveSyncService';
 import { getAccessToken } from '../services/googleAuthService';
 import { useToast } from '../context/ToastContext';
@@ -71,16 +72,19 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       const list = await fetchFamilyMembers(token, sheetId);
       setMembers(list);
 
+      const driveStatus = await checkSpreadsheetStatusOnDrive(token, sheetId).catch(() => null);
+      const liveTitle = driveStatus?.name || spreadsheetInfo?.name || 'Kho Sách';
+
       // Tự động phát hành/làm mới liên kết chuyển tiếp Firestore cho tất cả thành viên hiện có (Zero-UI)
       if (currentUser?.email && list.length > 0) {
         publishAssignedFilesForMembers(
           list,
           sheetId,
-          spreadsheetInfo?.name || 'Kho Sách',
+          liveTitle,
           currentUser.email
         ).then((count) => {
           if (count > 0) {
-            console.info(`[FamilyShare] Đã làm mới relay liên kết Firestore cho ${count} thành viên.`);
+            console.info(`[FamilyShare] Đã làm mới relay liên kết Firestore cho ${count} thành viên (File: ${liveTitle}).`);
             if (isManualRefresh) {
               showToast(`Đã đồng bộ liên kết tự động cho ${count} thành viên!`, 'info');
             }
@@ -128,19 +132,22 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
 
       await addFamilyMember(token, sheetId, email, roleInput);
 
+      const driveStatus = await checkSpreadsheetStatusOnDrive(token, sheetId).catch(() => null);
+      const liveTitle = driveStatus?.name || spreadsheetInfo?.name || 'Kho Sách';
+
       // Tự động cấu hình liên kết ngầm lên Firebase Firestore để máy thành viên tự động nhận file khi đăng nhập (Zero-UI)
       try {
         await Promise.race([
           publishAssignedFile(
             email,
             sheetId,
-            spreadsheetInfo?.name || 'Kho Sách',
+            liveTitle,
             currentUser?.email || '',
             roleInput
           ),
           new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout relay')), 6000)),
         ]);
-        console.info(`[FamilyShare] Đã cấu hình relay thành công cho ${email}`);
+        console.info(`[FamilyShare] Đã cấu hình relay thành công cho ${email} (File: ${liveTitle})`);
       } catch (relayErr) {
         console.warn('[FamilyShare] Ghi Firestore relay ngầm gặp lỗi hoặc timeout (quyền Drive vẫn thành công):', relayErr);
       }
@@ -165,11 +172,14 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
 
       await updateFamilyMemberRole(token, sheetId, email, newRole);
 
+      const driveStatus = await checkSpreadsheetStatusOnDrive(token, sheetId).catch(() => null);
+      const liveTitle = driveStatus?.name || spreadsheetInfo?.name || 'Kho Sách';
+
       // Cập nhật lại vai trò lên Firestore relay nếu bản ghi còn chờ
       publishAssignedFile(
         email,
         sheetId,
-        spreadsheetInfo?.name || 'Kho Sách',
+        liveTitle,
         currentUser?.email || '',
         newRole
       ).catch(() => {});

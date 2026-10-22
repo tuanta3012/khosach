@@ -21,8 +21,9 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
-// Cấp quyền Google Drive (Chỉ dùng non-sensitive scope: drive.file)
+// Cấp quyền Google Drive & Google Sheets
 provider.addScope('https://www.googleapis.com/auth/drive.file');
+provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 // Loại bỏ prompt: 'select_account' để trình duyệt tự động đăng nhập ngầm không làm phiền người dùng nếu đã cấp quyền rồi
 
 // Khóa lưu trữ trong hệ thống
@@ -48,6 +49,7 @@ if (Capacitor.isNativePlatform()) {
       'profile',
       'email',
       'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/spreadsheets',
     ],
     grantOfflineAccess: true,
   });
@@ -232,17 +234,23 @@ export const getAccessToken = async (forceRefresh = false): Promise<string | nul
     return refreshedToken;
   }
 
-  // Nếu trên Web và token đã hết hạn: Xóa token cũ để tránh gửi credentials rác làm vỡ giao diện
-  if (!isGoogleTokenValid()) {
-    console.log('[GoogleAuth] Token đã hết hạn và không thể gia hạn ngầm.');
-    clearExpiredGoogleSession();
-    return null;
-  }
-
   // Thử khôi phục từ Preferences nếu có
   await restoreGoogleAuthSession();
   if (isGoogleTokenValid()) {
     return cachedAccessToken || localStorage.getItem(TOKEN_KEY);
+  }
+
+  // Fallback an toàn: nếu token vẫn còn trong storage và chưa bị chủ động logout, giữ lại để thử gọi API
+  const existingToken = cachedAccessToken || localStorage.getItem(TOKEN_KEY);
+  if (existingToken && !forceRefresh) {
+    return existingToken;
+  }
+
+  // Nếu trên Web và token đã hết hạn hoàn toàn: Xóa token cũ
+  if (!isGoogleTokenValid()) {
+    console.log('[GoogleAuth] Token đã hết hạn và không thể gia hạn ngầm.');
+    clearExpiredGoogleSession();
+    return null;
   }
 
   return null;
@@ -299,6 +307,30 @@ export const initAuth = (
       }
       if (onAuthSuccess) onAuthSuccess(user, token);
     } else {
+      // Trong môi trường Web preview hoặc GIS, user trong Firebase Auth có thể là null
+      // nhưng phiên Google vẫn hợp lệ trong localStorage hoặc Preferences.
+      const storedUserStr = localStorage.getItem('library_user_v2');
+      const token = await getAccessToken();
+      if (token && storedUserStr) {
+        try {
+          const parsed = JSON.parse(storedUserStr);
+          if (parsed?.email) {
+            console.log('[GoogleAuth] Duy trì phiên Google hợp lệ từ cache (Web/Native):', parsed.email);
+            if (onAuthSuccess) {
+              onAuthSuccess(
+                {
+                  email: parsed.email,
+                  displayName: parsed.name,
+                  photoURL: parsed.photoURL,
+                } as any,
+                token
+              );
+            }
+            return;
+          }
+        } catch {}
+      }
+
       cachedAccessToken = null;
       if (onAuthFailure) onAuthFailure();
     }
@@ -319,7 +351,7 @@ export async function silentSignInGoogleGIS(userEmail: string): Promise<string |
     try {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: GOOGLE_CLIENT_ID,
-        scope: 'email profile https://www.googleapis.com/auth/drive.file',
+        scope: 'email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets',
         prompt: 'none',
         login_hint: userEmail,
         callback: (tokenResponse: any) => {
@@ -392,7 +424,7 @@ export async function signInWithGoogleGIS(): Promise<{
   return new Promise((resolve, reject) => {
     const client = google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
-      scope: 'email profile https://www.googleapis.com/auth/drive.file',
+      scope: 'email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets',
       callback: async (tokenResponse: any) => {
         if (tokenResponse.error) {
           if (tokenResponse.error === 'popup_closed_by_user') {
