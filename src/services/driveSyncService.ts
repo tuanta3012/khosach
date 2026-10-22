@@ -2000,42 +2000,43 @@ export async function determineCurrentUserRole(
       return 'ADMIN';
     }
 
-    // Kiểm tra quyền ghi thực tế trước khi kết luận bị chặn bởi WORKSPACE_UNLINKED
-    let canWrite = false;
-    try {
-      const testWrite = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/__CONFIG__!D1?valueInputOption=USER_ENTERED`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ values: [['check']] }),
-      });
-      canWrite = testWrite.ok;
-    } catch {}
-
-    // Nếu người dùng có quyền ghi trên Sheet (Owner/Editor thực tế trên Google Drive), cho phép họ quản trị và tái kích hoạt file
-    if (canWrite) {
-      return 'ADMIN';
-    }
-
-    // 2. Nếu không có quyền ghi và workspace đã bị Admin hủy liên kết
-    if (metadata.status === 'unlinked' || metadata.lastAction === 'unlink') {
-      throw new Error('WORKSPACE_UNLINKED');
-    }
-
-    // 3. Kiểm tra danh sách thành viên trong cấu hình
+    // 2. Kiểm tra danh sách thành viên trong cấu hình
     const matched = members.find((member) => member.email.trim().toLowerCase() === cleanEmail);
     if (matched?.role === 'Owner') return 'ADMIN';
     if (matched?.role === 'Editor') return 'EDITOR';
     if (matched?.role === 'Viewer') return 'VIEWER';
+
+    // Nếu workspace đã bị Admin hủy liên kết
+    if (metadata.status === 'unlinked' || metadata.lastAction === 'unlink') {
+      throw new Error('WORKSPACE_UNLINKED');
+    }
   }
 
-  // Fallback: Kiểm tra quyền ghi thực tế trên Sheet nếu chưa có config
+  // 3. Fallback kiểm tra quyền thực tế trên Google Drive API (xem user có quyền writer hay owner không)
+  try {
+    const permResp = await fetch(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}/permissions?fields=permissions(emailAddress,role)&supportsAllDrives=true`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (permResp.ok) {
+      const pData = await permResp.json();
+      const userPerm = (pData.permissions || []).find(
+        (p: any) => (p.emailAddress || '').trim().toLowerCase() === cleanEmail
+      );
+      if (userPerm) {
+        if (userPerm.role === 'owner') return 'ADMIN';
+        if (userPerm.role === 'writer') return 'EDITOR';
+      }
+    }
+  } catch {}
+
+  // 4. Fallback kiểm tra quyền ghi thực tế trên Sheet
   try {
     const testWrite = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/__CONFIG__!D1?valueInputOption=USER_ENTERED`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ values: [['check']] }),
     });
-    if (testWrite.ok) return 'ADMIN';
+    if (testWrite.ok) return 'EDITOR';
   } catch {}
 
   return 'VIEWER';
