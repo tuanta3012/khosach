@@ -747,13 +747,21 @@ export async function saveMasterSyncStateToGoogleSheet(
 
     // Defensive: Nếu không truyền danh sách thành viên hoặc mảng rỗng nhưng trên sheet đã có thành viên,
     // đọc lại từ sheet để bảo toàn (trừ khi hành động là xóa hẳn hoặc hủy liên kết)
+    let existing: { metadata: SheetConfigMetadata; members: FamilyMember[] } | null = null;
+    try {
+      existing = await readMasterSyncStateFromGoogleSheet(accessToken, fileId);
+    } catch {}
+
     let finalMembers = state.members;
     let resolvedAdminEmail = (state.adminEmail || '').trim().toLowerCase();
     let resolvedFileName = (state.activeFileName || '').trim();
 
+    if (existing?.metadata?.adminEmail) {
+      resolvedAdminEmail = existing.metadata.adminEmail.trim().toLowerCase();
+    }
+
     if (!finalMembers || (Array.isArray(finalMembers) && finalMembers.length === 0) || !resolvedAdminEmail || !resolvedFileName || resolvedFileName === 'Kho Sách Gia Đình') {
       try {
-        const existing = await readMasterSyncStateFromGoogleSheet(accessToken, fileId);
         if ((!finalMembers || (Array.isArray(finalMembers) && finalMembers.length === 0)) && existing?.members && existing.members.length > 0) {
           if (state.lastAction !== 'unlink' && state.lastAction !== 'switch') {
             finalMembers = existing.members;
@@ -817,9 +825,12 @@ export async function saveMasterSyncStateToGoogleSheet(
       updatedAtVi: nowVi,
     });
 
+    const cleanCustomSettings = { ...(state.customSettings || {}) };
+    delete cleanCustomSettings.userApiKeys;
+
     const customSettingsPayload = JSON.stringify({
       ignoredDuplicatePairs: state.ignoredDuplicatePairs || [],
-      customSettings: state.customSettings || {},
+      customSettings: cleanCustomSettings,
     });
 
     const values: (string | number)[][] = [
@@ -1621,14 +1632,14 @@ export async function saveUserApiKeyToSheetConfig(
       [cleanEmail]: cleanKeys,
     };
 
+    const cleanCustomSettings = { ...(state.metadata.customSettings || {}) };
+    delete cleanCustomSettings.userApiKeys;
+
     const saveSuccess = await saveMasterSyncStateToGoogleSheet(accessToken, spreadsheetId, {
       ...state.metadata,
       members: existingMembers,
       userApiKeys,
-      customSettings: {
-        ...(state.metadata.customSettings || {}),
-        userApiKeys,
-      },
+      customSettings: cleanCustomSettings,
       updatedAt: nowIso,
     });
 
