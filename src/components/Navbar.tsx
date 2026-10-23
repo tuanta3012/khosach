@@ -160,7 +160,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       title="Chế độ trực tuyến nhưng chưa liên kết file dữ liệu"
                     >
                       <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[#F59E0B] shadow-xs shadow-amber-400/50 animate-pulse" />
-                      <span>Chưa liên kết</span>
+                      <span>Chưa liên kết dữ liệu</span>
                     </button>
                   ) : (
                   /* Trạng thái Online: Chấm xanh ngọc + chữ "Online" tinh gọn */

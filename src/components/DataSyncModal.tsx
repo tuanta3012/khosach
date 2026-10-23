@@ -860,18 +860,25 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                 <div className="bg-white border border-slate-200/80 rounded-2xl p-3 shadow-2xs space-y-2.5">
                   
                   {/* Top Row: Icon + Sheet Name + Đồng bộ button */}
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <div className="p-1.5 bg-teal-50 border border-teal-100 rounded-xl text-[#1b6b5b] shrink-0">
-                        <FileSpreadsheet className="w-4.5 h-4.5" />
+                  <div className="flex items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className={`p-2 rounded-xl shrink-0 ${spreadsheetInfo ? 'bg-teal-50 border border-teal-100 text-[#1b6b5b]' : 'bg-amber-50 border border-amber-200 text-amber-700'}`}>
+                        <FileSpreadsheet className="w-5 h-5" />
                       </div>
-                      <span className="text-xs sm:text-sm font-black text-slate-900 truncate">
-                        {spreadsheetInfo ? spreadsheetInfo.name : 'Chưa liên kết'}
-                      </span>
+                      <div className="min-w-0 flex-1">
+                        <span className="text-xs sm:text-sm font-black text-slate-900 block leading-tight">
+                          {spreadsheetInfo ? spreadsheetInfo.name : 'Chưa liên kết dữ liệu'}
+                        </span>
+                        {!spreadsheetInfo && (
+                          <span className="text-[10px] sm:text-[11px] text-slate-500 block pt-0.5 font-medium leading-tight">
+                            Kết nối Google Sheet để sao lưu & đồng bộ
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-1 shrink-0">
-                      {onSyncDriveNow && (
+                    {spreadsheetInfo && onSyncDriveNow && (
+                      <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
                           onClick={handleSyncNow}
@@ -885,28 +892,23 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                           )}
                           <span>Đồng bộ</span>
                         </button>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Middle Row: Sync status & Last update timestamp */}
-                  <div className="flex items-center justify-between text-[11px] pt-0.5">
-                    {spreadsheetInfo ? (
+                  {/* Middle Row: Sync status & Last update timestamp (Chỉ hiển thị khi đã liên kết file) */}
+                  {spreadsheetInfo && (
+                    <div className="flex items-center justify-between text-[11px] pt-0.5">
                       <div className="flex items-center gap-1 text-[#1b6b5b] font-bold">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                         <span>Đồng bộ 2 chiều</span>
                       </div>
-                    ) : (
-                      <div className="flex items-center gap-1 text-amber-600 font-semibold">
-                        <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                        <span>Chưa liên kết file</span>
-                      </div>
-                    )}
 
-                    <span className="text-[10px] text-slate-500 font-mono">
-                      {spreadsheetInfo && lastSyncTime ? `Cập nhật: ${lastSyncTime}` : 'Chưa đồng bộ'}
-                    </span>
-                  </div>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {lastSyncTime ? `Cập nhật: ${lastSyncTime}` : 'Đã kết nối'}
+                      </span>
+                    </div>
+                  )}
 
                   {/* Bottom Row: Đổi file / Hủy liên kết buttons */}
                   <div className="pt-2 border-t border-slate-100 space-y-2">
@@ -920,7 +922,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                         className="flex-1 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
                       >
                         <ExternalLink className="w-3.5 h-3.5 text-slate-500 rotate-45" />
-                        <span className="truncate">Đổi file liên kết</span>
+                        <span className="truncate">Tạo, đổi file liên kết</span>
                       </button>
                       {spreadsheetInfo && onSelectSpreadsheet && canUnlinkWorkspace && onUnlinkWorkspace && (
                         <button
@@ -1010,7 +1012,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
                     className="h-10 px-2.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-3xs cursor-pointer disabled:opacity-50"
                   >
                     <Download className="w-3.5 h-3.5 text-slate-600 shrink-0" />
-                    <span className="truncate">Xuất file Excel</span>
+                    <span className="truncate">Xuất Excel</span>
                   </button>
                 </div>
 
