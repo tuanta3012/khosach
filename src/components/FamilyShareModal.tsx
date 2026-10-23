@@ -220,6 +220,11 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
     return email.charAt(0).toUpperCase();
   };
 
+  const cleanCurrentEmail = (currentUser?.email || '').trim().toLowerCase();
+  const myMemberRecord = members.find((m) => m.email.trim().toLowerCase() === cleanCurrentEmail);
+  const myRole = myMemberRecord?.role || (currentUser?.userRole === 'ADMIN' ? 'Owner' : currentUser?.userRole === 'EDITOR' ? 'Editor' : 'Viewer');
+  const canManageMembers = myRole === 'Owner' || myRole === 'Editor';
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60">
       <div 
@@ -261,96 +266,104 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
         {/* Content Body - Light Theme (Scrollable inside) */}
         <div className="flex-1 overflow-y-auto p-2.5 space-y-2 bg-slate-50/60">
           
-          {/* Block 1: Tài khoản hiện tại (Admin Card) */}
+          {/* Block 1: Tài khoản hiện tại */}
           <div className="p-2 bg-white rounded-xl border border-slate-200/90 shadow-3xs flex items-center justify-between gap-2">
             <div className="min-w-0">
               <span className="text-xs text-slate-500 font-medium truncate block">
                 Tài khoản: <strong className="text-slate-900 font-semibold">{currentUser?.email || 'Chưa đăng nhập'}</strong>
               </span>
             </div>
-            <div className="flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 rounded-lg text-xs font-bold shrink-0 border border-amber-200 shadow-2xs">
-              <span>👑 Admin</span>
+            <div className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold shrink-0 border shadow-2xs ${
+              myRole === 'Owner'
+                ? 'bg-amber-100 text-amber-800 border-amber-200'
+                : myRole === 'Editor'
+                ? 'bg-orange-100 text-orange-800 border-orange-200'
+                : 'bg-emerald-100 text-emerald-800 border-emerald-200'
+            }`}>
+              <span>{myRole === 'Owner' ? '👑 Quản trị viên' : myRole === 'Editor' ? '✏️ Quyền Sửa' : '👁️ Chỉ Xem'}</span>
             </div>
           </div>
 
-          {/* Block 2: Thêm thành viên mới (Add Member Card) */}
-          <form onSubmit={handleAddMember} autoComplete="off" className="bg-white p-2.5 rounded-xl border border-slate-200/90 shadow-3xs space-y-2">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-              <UserPlus className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Thêm thành viên</span>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="relative">
-                <Mail className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  name="x_f2"
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  data-form-type="other"
-                  readOnly
-                  onFocus={(e) => e.target.removeAttribute('readonly')}
-                  placeholder="Nhập email..."
-                  value={emailInput}
-                  onChange={(e) => setEmailInput(e.target.value)}
-                  className="w-full pl-8 pr-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#9e5628] focus:bg-white transition font-mono"
-                  required
-                />
+          {/* Block 2: Thêm thành viên mới (Chỉ hiển thị khi có quyền Quản trị hoặc Sửa) */}
+          {canManageMembers && (
+            <form onSubmit={handleAddMember} autoComplete="off" className="bg-white p-2.5 rounded-xl border border-slate-200/90 shadow-3xs space-y-2">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                <UserPlus className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Thêm thành viên</span>
               </div>
-            </div>
 
-            {/* Segmented Toggle Control */}
-            <div className="grid grid-cols-2 gap-1.5">
+              <div className="space-y-1.5">
+                <div className="relative">
+                  <Mail className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    name="x_f2"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    data-1p-ignore="true"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    readOnly
+                    onFocus={(e) => e.target.removeAttribute('readonly')}
+                    placeholder="Nhập email..."
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                    className="w-full pl-8 pr-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#9e5628] focus:bg-white transition font-mono"
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Segmented Toggle Control */}
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setRoleInput('Viewer')}
+                  className={`h-8 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border cursor-pointer ${
+                    roleInput === 'Viewer'
+                      ? 'bg-[#10B981] text-white border-[#10B981] shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <span>👁️</span>
+                  <span>Chỉ xem</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setRoleInput('Editor')}
+                  className={`h-8 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border cursor-pointer ${
+                    roleInput === 'Editor'
+                      ? 'bg-[#EA580C] text-white border-[#EA580C] shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <span>✏️</span>
+                  <span>Được sửa</span>
+                </button>
+              </div>
+
+              {/* Action Button */}
               <button
-                type="button"
-                onClick={() => setRoleInput('Viewer')}
-                className={`h-8 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border cursor-pointer ${
-                  roleInput === 'Viewer'
-                    ? 'bg-[#10B981] text-white border-[#10B981] shadow-xs'
-                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full h-8.5 bg-[#EA580C] hover:bg-[#c2410c] disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-xs cursor-pointer"
               >
-                <span>👁️</span>
-                <span>Chỉ xem</span>
+                {isSubmitting ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <>
+                    <UserPlus className="w-3.5 h-3.5 text-amber-200" />
+                    <span>Thêm</span>
+                  </>
+                )}
               </button>
+            </form>
+          )}
 
-              <button
-                type="button"
-                onClick={() => setRoleInput('Editor')}
-                className={`h-8 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border cursor-pointer ${
-                  roleInput === 'Editor'
-                    ? 'bg-[#EA580C] text-white border-[#EA580C] shadow-xs'
-                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <span>✏️</span>
-                <span>Được sửa</span>
-              </button>
-            </div>
-
-            {/* Action Button */}
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full h-8.5 bg-[#EA580C] hover:bg-[#c2410c] disabled:opacity-50 text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 shadow-xs cursor-pointer"
-            >
-              {isSubmitting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <>
-                  <UserPlus className="w-3.5 h-3.5 text-amber-200" />
-                  <span>Thêm</span>
-                </>
-              )}
-            </button>
-          </form>
-
-          {/* Block 3: Danh sách thành viên (Member List Card) */}
+          {/* Block 3: Danh sách thành viên (Hiển thị đầy đủ mọi thành viên) */}
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs font-bold text-slate-800 px-1">
               <div className="flex items-center gap-1.5">
@@ -374,23 +387,19 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                 <Loader2 className="w-5 h-5 animate-spin text-[#9e5628]" />
                 <span>Đang tải thành viên...</span>
               </div>
-            ) : (() => {
-              const otherMembers = members.filter(m => {
-                const isOwner = m.role === 'Owner';
-                const isSelf = currentUser?.email && m.email.toLowerCase() === currentUser.email.toLowerCase();
-                return !isOwner && !isSelf;
-              });
-
-              return otherMembers.length === 0 ? (
-                <div className="py-6 text-center text-slate-500 text-xs bg-white rounded-2xl border border-slate-200">
-                  Chưa có thành viên nào khác được thêm.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {otherMembers.map((m, idx) => {
-                    const isOwner = m.role === 'Owner';
-                    const isSelf = currentUser?.email && m.email.toLowerCase() === currentUser.email.toLowerCase();
-                    const displayName = m.email.split('@')[0];
+            ) : members.length === 0 ? (
+              <div className="py-6 text-center text-slate-500 text-xs bg-white rounded-2xl border border-slate-200">
+                Chưa có danh sách thành viên trong cấu hình.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {[...members].sort((a, b) => {
+                  const score = (r: string) => (r === 'Owner' ? 3 : r === 'Editor' ? 2 : 1);
+                  return score(b.role) - score(a.role);
+                }).map((m, idx) => {
+                  const isOwner = m.role === 'Owner';
+                  const isSelf = cleanCurrentEmail && m.email.trim().toLowerCase() === cleanCurrentEmail;
+                  const displayName = m.email.split('@')[0];
 
                   return (
                     <div
@@ -407,7 +416,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                               {displayName}
                             </span>
                             {isSelf && (
-                              <span className="text-[10px] font-bold bg-slate-100 border border-slate-200 text-slate-600 px-1.5 py-0.5 rounded-md">
+                              <span className="text-[10px] font-bold bg-sky-50 border border-sky-200 text-sky-700 px-1.5 py-0.5 rounded-md">
                                 Bạn
                               </span>
                             )}
@@ -428,7 +437,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                           <div className="flex items-center gap-1 px-2.5 py-1 bg-amber-100 border border-amber-200 rounded-xl text-amber-800 text-xs font-bold shadow-2xs">
                             <span>👑 Admin</span>
                           </div>
-                        ) : (
+                        ) : canManageMembers && !isSelf ? (
                           <div className="flex items-center gap-1.5">
                             <button
                               type="button"
@@ -451,21 +460,27 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                               )}
                             </button>
 
-                            {!isSelf && (
-                              <button
-                                type="button"
-                                disabled={!!isRemovingEmail || !!updatingRoleEmail}
-                                onClick={() => handleRemoveMember(m.email)}
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
-                                title="Xóa thành viên"
-                              >
-                                {isRemovingEmail === m.email ? (
-                                  <Loader2 className="w-4 h-4 animate-spin text-rose-600" />
-                                ) : (
-                                  <Trash2 className="w-4 h-4" />
-                                )}
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              disabled={!!isRemovingEmail || !!updatingRoleEmail}
+                              onClick={() => handleRemoveMember(m.email)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
+                              title="Xóa thành viên"
+                            >
+                              {isRemovingEmail === m.email ? (
+                                <Loader2 className="w-4 h-4 animate-spin text-rose-600" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold border shadow-3xs ${
+                            m.role === 'Editor'
+                              ? 'bg-amber-50 text-amber-900 border-amber-200'
+                              : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                          }`}>
+                            <span>{m.role === 'Editor' ? '✏️ Được sửa' : '👁️ Chỉ xem'}</span>
                           </div>
                         )}
                       </div>
@@ -473,8 +488,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                   );
                 })}
               </div>
-            );
-          })()}
+            )}
           </div>
         </div>
 

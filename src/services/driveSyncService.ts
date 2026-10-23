@@ -760,22 +760,57 @@ export async function saveMasterSyncStateToGoogleSheet(
       resolvedAdminEmail = existing.metadata.adminEmail.trim().toLowerCase();
     }
 
-    if (!finalMembers || (Array.isArray(finalMembers) && finalMembers.length === 0) || !resolvedAdminEmail || !resolvedFileName || resolvedFileName === 'Kho Sách Gia Đình') {
-      try {
-        if ((!finalMembers || (Array.isArray(finalMembers) && finalMembers.length === 0)) && existing?.members && existing.members.length > 0) {
-          if (state.lastAction !== 'unlink' && state.lastAction !== 'switch') {
-            finalMembers = existing.members;
+    // BẢO VỆ TUYỆT ĐỐI DANH SÁCH THÀNH VIÊN (ZERO-ACCIDENTAL-WIPE):
+    if (!finalMembers || (Array.isArray(finalMembers) && finalMembers.length === 0)) {
+      if (existing?.members && existing.members.length > 0) {
+        if (state.lastAction !== 'unlink' && state.lastAction !== 'switch') {
+          finalMembers = existing.members;
+        }
+      } else {
+        // Fallback đọc trực tiếp ô B9 (Members JSON) từ Google Sheet
+        try {
+          const b9Resp = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${fileId}/values/${encodeURIComponent(MASTER_CONFIG_SHEET_TITLE + '!B9')}`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          if (b9Resp.ok) {
+            const b9Data = await b9Resp.json();
+            const rawB9 = b9Data?.values?.[0]?.[0];
+            if (typeof rawB9 === 'string' && rawB9.trim().startsWith('[')) {
+              const parsedB9 = JSON.parse(rawB9);
+              if (Array.isArray(parsedB9) && parsedB9.length > 0) {
+                finalMembers = parsedB9;
+              }
+            }
           }
-        }
-        if (!resolvedAdminEmail && existing?.metadata?.adminEmail) {
-          resolvedAdminEmail = existing.metadata.adminEmail.trim().toLowerCase();
-        }
-        if ((!resolvedFileName || resolvedFileName === 'Kho Sách Gia Đình') && existing?.metadata?.activeFileName && existing.metadata.activeFileName !== 'Kho Sách Gia Đình') {
-          resolvedFileName = existing.metadata.activeFileName;
-        }
-      } catch (e) {
-        finalMembers = finalMembers || [];
+        } catch {}
       }
+    }
+
+    // Bảo vệ Owner/Admin gốc luôn có mặt trong danh sách thành viên
+    if (resolvedAdminEmail && finalMembers && Array.isArray(finalMembers)) {
+      if (!finalMembers.some((m) => m.email.trim().toLowerCase() === resolvedAdminEmail)) {
+        finalMembers.unshift({
+          email: resolvedAdminEmail,
+          role: 'Owner',
+          addedAt: nowIso,
+        });
+      }
+    }
+
+    if ((!finalMembers || finalMembers.length === 0) && resolvedAdminEmail) {
+      finalMembers = [{
+        email: resolvedAdminEmail,
+        role: 'Owner',
+        addedAt: nowIso,
+      }];
+    }
+
+    if (!resolvedAdminEmail && existing?.metadata?.adminEmail) {
+      resolvedAdminEmail = existing.metadata.adminEmail.trim().toLowerCase();
+    }
+    if ((!resolvedFileName || resolvedFileName === 'Kho Sách Gia Đình') && existing?.metadata?.activeFileName && existing.metadata.activeFileName !== 'Kho Sách Gia Đình') {
+      resolvedFileName = existing.metadata.activeFileName;
     }
 
     // Tự động đối chiếu tên thật trực tiếp từ Google Drive / Sheets API để không bao giờ bị gán nhầm tên mặc định
@@ -2436,7 +2471,7 @@ export interface AutoDiscoverResult {
   role?: UserRole;
   taggedSheets: SpreadsheetInfo[];
   allCandidates: SpreadsheetInfo[];
-  source: 'firestore_relay' | 'drive_app_properties' | 'cached' | 'none';
+  source: 'firestore_relay' | 'drive_app_properties' | 'cached' | 'known_spreadsheets' | 'none';
 }
 
 /**
@@ -2505,12 +2540,11 @@ export async function autoDiscoverCentralVault(
             localStorage.removeItem('explicitly_unlinked');
           } catch {}
           
-          // Xóa bản ghi relay trên Firestore CHỈ SAU KHI đã liên kết thành công trên máy
+          // Dọn sạch bản ghi relay trên Firestore sau khi thành viên đã nhận và liên kết file thành công
           await removeAssignedFileForMember(cleanEmail).catch((err) => {
             log.warn('[AutoDiscover] Không thể dọn dẹp bản ghi relay trên Firestore:', err);
           });
-
-          log.info(`[AutoDiscover] Đã tự động liên kết thành công qua Firestore Relay: ${matched.name} (${matched.id})`);
+          log.info(`[AutoDiscover] Đã tự động liên kết thành công qua Firestore Relay & dọn sạch bản ghi: ${matched.name} (${matched.id})`);
           
           return {
             matchedSheet: matched,
@@ -2525,6 +2559,55 @@ export async function autoDiscoverCentralVault(
       }
     } catch (relayErr) {
       log.warn('[AutoDiscover] Lỗi kiểm tra Firestore Relay ngầm:', relayErr);
+    }
+  }
+
+  // BƯỚC 1b: Kiểm tra danh bạ các file đã biết cục bộ trên thiết bị (Known Spreadsheets)
+  if (cleanEmail) {
+    const known = getKnownSpreadsheets();
+    for (const kSheet of known) {
+      if (!kSheet.id) continue;
+      try {
+        const driveStatus = await checkSpreadsheetStatusOnDrive(accessToken, kSheet.id);
+        if (driveStatus.exists && !driveStatus.trashed) {
+          const syncState = await readMasterSyncStateFromGoogleSheet(accessToken, kSheet.id);
+          if (syncState && syncState.metadata && syncState.metadata.status !== 'unlinked') {
+            const adminEmail = (syncState.metadata.adminEmail || '').trim().toLowerCase();
+            const isAdmin = adminEmail === cleanEmail;
+            const members = syncState.members || [];
+            const matchedMember = members.find((m) => m.email.trim().toLowerCase() === cleanEmail);
+            const isMember = !!matchedMember;
+
+            if (isAdmin || isMember) {
+              const role: UserRole = isAdmin ? 'ADMIN' : (matchedMember?.role === 'Editor' ? 'EDITOR' : 'VIEWER');
+              const resolvedName =
+                (driveStatus.name && driveStatus.name !== 'Kho Sách Gia Đình' ? driveStatus.name : null) ||
+                (syncState.metadata.activeFileName && syncState.metadata.activeFileName !== 'Kho Sách Gia Đình' ? syncState.metadata.activeFileName : null) ||
+                driveStatus.name ||
+                kSheet.name ||
+                'Kho Sách Gia Đình';
+
+              const matched: SpreadsheetInfo = {
+                id: kSheet.id,
+                name: resolvedName,
+                webViewLink: kSheet.webViewLink || `https://docs.google.com/spreadsheets/d/${kSheet.id}/edit`,
+              };
+
+              tagSpreadsheetAsAppCreated(accessToken, matched.id).catch(() => {});
+              saveKnownSpreadsheet(matched);
+              log.info(`[AutoDiscover] Đã tự động kết nối lại qua danh bạ file đã biết (Known Spreadsheets): ${matched.name} (${matched.id})`);
+
+              return {
+                matchedSheet: matched,
+                role,
+                taggedSheets: [matched],
+                allCandidates: [matched],
+                source: 'known_spreadsheets',
+              };
+            }
+          }
+        }
+      } catch {}
     }
   }
 

@@ -257,6 +257,17 @@ export default function App() {
     [showToast]
   );
 
+  const getCachedUserRole = (): UserRole => {
+    try {
+      const saved = localStorage.getItem('library_user_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.userRole) return parsed.userRole;
+      }
+    } catch {}
+    return 'VIEWER';
+  };
+
   // Khởi tạo Auth listener
   useEffect(() => {
     const unsubscribe = initAuth(
@@ -265,7 +276,7 @@ export default function App() {
           email: user.email || '',
           name: user.displayName || 'Người dùng Google',
           photoURL: user.photoURL || undefined,
-          userRole: 'ADMIN',
+          userRole: getCachedUserRole(),
         };
         setCurrentUser(u);
 
@@ -777,7 +788,7 @@ export default function App() {
               email: res.user.email || '',
               name: res.user.displayName || 'Người dùng Google',
               photoURL: res.user.photoURL,
-              userRole: 'ADMIN',
+              userRole: getCachedUserRole(),
             };
             setCurrentUser(loggedInUser);
             try {
@@ -855,7 +866,7 @@ export default function App() {
               email: info.email || '',
               name: info.name || 'Người dùng Google',
               photoURL: info.picture,
-              userRole: 'ADMIN',
+              userRole: getCachedUserRole(),
             };
             setCurrentUser(u);
             try {
@@ -1221,11 +1232,6 @@ export default function App() {
 
             // Gắn nhãn com.khosach.app lên Google Drive
             tagSpreadsheetAsAppCreated(token, sheet.id).catch(() => {});
-
-            // Cập nhật trạng thái active lên tab Config ẩn của Google Sheet nếu không phải viewer
-            if (role !== 'VIEWER') {
-              await updateSheetConfigStatus(token, sheet.id, 'active', userEmail).catch(() => {});
-            }
 
             setCurrentUser((prev) => (prev ? { ...prev, userRole: role } : null));
             await syncWithGoogleDrive(books);
