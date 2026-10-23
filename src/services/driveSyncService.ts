@@ -1584,12 +1584,6 @@ export async function saveUserApiKeyToSheetConfig(
   const cleanEmail = (userEmail || '').trim().toLowerCase();
   if (!accessToken || !spreadsheetId || !cleanEmail) return false;
 
-  // Bảo vệ phân quyền: Chỉ thành viên có vai trò Admin hoặc Editor mới được lưu API Key vào Sheet Config
-  if (userRole === 'VIEWER') {
-    console.warn(`[DriveSync] Từ chối lưu API Key vào Sheet Config: Người dùng ${cleanEmail} có vai trò VIEWER`);
-    return false;
-  }
-
   try {
     const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
     if (!state) {
@@ -1601,22 +1595,15 @@ export async function saveUserApiKeyToSheetConfig(
     const existingMembers = state.members ? state.members.map((m) => ({ ...m })) : [];
     let matchedMember = existingMembers.find((m) => m.email.trim().toLowerCase() === cleanEmail);
 
-    // Kiểm tra xem member trong sheet có phải là Viewer hay không
-    if (matchedMember && matchedMember.role === 'Viewer') {
-      console.warn(`[DriveSync] Không thể lưu API Key: Member ${cleanEmail} được cấu hình là Viewer trong Sheet`);
-      return false;
-    }
-
     const nowIso = new Date().toISOString();
     if (matchedMember) {
       matchedMember.apiKeys = cleanKeys;
       matchedMember.apiKey = cleanKeys[0] || '';
       matchedMember.apiKeyUpdatedAt = nowIso;
     } else {
-      // Nếu user là Admin (Owner) hoặc Editor nhưng chưa có trong danh sách members
       const role = (userRole === 'ADMIN' || state.metadata.adminEmail?.trim().toLowerCase() === cleanEmail)
         ? 'Owner'
-        : 'Editor';
+        : (userRole === 'EDITOR' ? 'Editor' : 'Viewer');
       matchedMember = {
         email: cleanEmail,
         role,
@@ -1761,11 +1748,6 @@ export async function syncUserApiKeyWithSheetConfig(
 }> {
   const cleanEmail = (userEmail || '').trim().toLowerCase();
   if (!accessToken || !spreadsheetId || !cleanEmail) {
-    return { syncedKeys: localKeys, hasUpdatedLocal: false, hasUpdatedRemote: false };
-  }
-
-  // Chỉ Admin và Editor mới được lưu và đồng bộ API key trong sheet config
-  if (userRole === 'VIEWER') {
     return { syncedKeys: localKeys, hasUpdatedLocal: false, hasUpdatedRemote: false };
   }
 
@@ -2661,18 +2643,7 @@ export async function autoDiscoverCentralVault(
       try {
         role = await determineCurrentUserRole(accessToken, fallbackSheet.id, userEmail);
       } catch {
-        try {
-          const members = await fetchFamilyMembers(accessToken, fallbackSheet.id);
-          if (!members.some((m) => m.email.toLowerCase() === cleanEmail)) {
-            members.push({ email: cleanEmail, role: 'Viewer', addedAt: new Date().toISOString() });
-            const syncState = await readMasterSyncStateFromGoogleSheet(accessToken, fallbackSheet.id);
-            await saveMasterSyncStateToGoogleSheet(accessToken, fallbackSheet.id, {
-              ...(syncState?.metadata || { activeFileId: fallbackSheet.id, adminEmail: '' }),
-              members,
-              updatedAt: new Date().toISOString(),
-            });
-          }
-        } catch {}
+        role = 'VIEWER';
       }
 
       return {
