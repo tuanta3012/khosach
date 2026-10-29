@@ -1,0 +1,208 @@
+/**
+ * Core types for Vietnamese Personal Library Manager (Kho Sách Cá Nhân)
+ * Gọn nhẹ, chỉ giữ các trường cốt lõi: Tên sách, Tác giả, Thể loại, Nhà xuất bản.
+ */
+
+export interface BookRecord {
+  id: string; // Unique Book ID or UUID
+  title: string; // Tên sách (Bắt buộc)
+  author: string; // Tác giả (Bắt buộc)
+  category?: string; // Thể loại (Văn học, Lịch sử, Kinh tế, Y học...)
+  publisher?: string; // Nhà xuất bản
+  created_at?: number; // Epoch Timestamp (ms)
+  updated_at?: number; // Epoch Timestamp (ms)
+  is_ai_normalized?: boolean; // Đã chuẩn hóa bằng AI chưa
+}
+
+export interface DraftBookItem {
+  tempId: string;
+  title: string;
+  author: string;
+  category?: string;
+  publisher?: string;
+  isDuplicate?: boolean;
+  duplicateMatchTitle?: string;
+  confidence?: number;
+  enriched?: boolean;
+}
+
+export type UserRole = 'ADMIN' | 'EDITOR' | 'VIEWER';
+
+export interface AuthUser {
+  email: string;
+  name: string;
+  photoURL?: string;
+  userRole: UserRole;
+}
+
+export interface Settings {
+  autoEnrichEnabled?: boolean;
+  driveBackupFolder?: string;
+  driveSyncUrl?: string;
+  driveTargetFileUrl?: string;
+  autoSyncDrive?: boolean;
+  lastBackupTime?: string;
+  categoriesList?: string[];
+  autoNormalizeEnabled?: boolean;
+  geminiApiKeys: string[];
+  selectedModel?: string;
+}
+
+export interface LibrarySettings {
+  autoEnrichEnabled: boolean;
+  driveBackupFolder?: string;
+  driveSyncUrl?: string; // Google Apps Script Web App URL cho đồng bộ 2 chiều
+  driveTargetFileUrl?: string; // Link file Google Sheet đồng bộ chung
+  autoSyncDrive?: boolean; // Tự động đẩy dữ liệu sạch lên Drive khi có thay đổi
+  lastBackupTime?: string;
+  categoriesList: string[];
+  autoNormalizeEnabled?: boolean;
+  geminiApiKeys?: string[];
+  selectedModel?: string;
+}
+
+export interface DriveBackupPayload {
+  version: string;
+  exportedAt: string;
+  totalBooks: number;
+  books: BookRecord[];
+}
+
+export type GeminiModelId = 
+  | 'auto' 
+  | 'gemini-3.5-flash-lite' 
+  | 'gemini-3.1-flash-lite';
+
+export interface GeminiModelInfo {
+  id: GeminiModelId;
+  name: string;
+  desc: string;
+}
+
+export interface ScannedBookItem {
+  title: string;
+  author: string;
+  publisher?: string;
+  category?: string;
+  is_ai_normalized?: boolean;
+}
+
+export interface ScanImagesResult {
+  success: boolean;
+  count: number;
+  books: ScannedBookItem[];
+  failedImages?: string[];
+}
+
+export interface ScanImagesProgressInfo {
+  processedImages: number;
+  totalImages: number;
+  detectedBooksCount: number;
+  currentMessage?: string;
+}
+
+export type ScanImagesProgressCallback = (progress: ScanImagesProgressInfo) => void;
+
+export interface ScanImagesOptions {
+  preferredModel?: string;
+  onProgress?: ScanImagesProgressCallback;
+  stopSignal?: { current: boolean };
+  categories?: string[];
+}
+
+export interface BookEnrichmentResult {
+  success: boolean;
+  sources?: BookSource[];
+  sourceWarning?: string;
+  error?: string;
+  enriched?: {
+    title: string;
+    author: string;
+    publisher?: string;
+    publish_year?: number;
+    category?: string;
+    summary?: string;
+  };
+}
+
+export interface BookSource {
+  provider: 'Google Books' | 'Open Library';
+  title: string;
+  url: string;
+  authors: string[];
+  publisher?: string;
+  publishedDate?: string;
+  description?: string;
+}
+
+export interface NormalizedBookItem {
+  id: string;
+  title: string;
+  author: string;
+  publisher: string;
+  category: string;
+  is_ai_normalized: boolean;
+  sources?: BookSource[];
+  sourceWarning?: string;
+}
+
+export interface KeyQuotaState {
+  key: string;
+  cooldownUntil: number;
+  backoffFactor: number;
+  isRpdExhausted: boolean;
+  rpdExhaustedDate: string;
+  apiCallTimestamps: number[];
+}
+
+export interface BatchNormalizeFailure {
+  chunkIndex: number;
+  bookIds: string[];
+  message: string;
+}
+
+export interface BatchNormalizeResult {
+  success: boolean;
+  normalized: NormalizedBookItem[];
+  failedChunks: BatchNormalizeFailure[];
+  stopped: boolean;
+}
+
+export interface KeyQuotaMetrics {
+  keyCount: number;
+  healthyKeyCount: number;
+  microBatchSize: number;
+  concurrency: number;
+  maxRpm: number;
+  maxRpd: number;
+}
+
+export interface GoogleGisTokenResponse {
+  access_token?: string;
+  expires_in?: string | number;
+  error?: string;
+  error_description?: string;
+}
+
+export type RuleType = 
+  | 'VOLUME_DISAMBIGUATION'
+  | 'AUTHOR_PREFIX_STRIP'
+  | 'AUTHOR_EDITORIAL_STRIP'
+  | 'TITLE_NORMALIZATION'
+  | 'SUBTITLE_PRESERVE'
+  | 'CATEGORY_KEYWORD_MAP';
+
+export interface ConsensusRule {
+  id: string;
+  type: RuleType;
+  title: string;
+  description: string;
+  targetField: 'title' | 'author' | 'category' | 'publisher' | 'pair';
+  pattern: string;
+  action: 'STRIP' | 'REPLACE' | 'MARK_DISTINCT' | 'SET_CATEGORY' | 'TITLE_CASE' | 'PRESERVE';
+  value?: string;
+  source: 'COMMUNITY' | 'USER_LOCAL';
+  voteCount: number;
+  confidenceRate: number;
+  updatedAt: number;
+}

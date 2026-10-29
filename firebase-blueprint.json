@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "BookRecord": {
+      "title": "BookRecord",
+      "description": "Bản ghi quản lý sách trong kho sách cá nhân (100% Text/Numeric: Tên sách, Tác giả, Thể loại, NXB)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "author": { "type": "string" },
+        "category": { "type": "string" },
+        "publisher": { "type": "string" },
+        "created_at": { "type": "number" },
+        "updated_at": { "type": "number" }
+      },
+      "required": ["id", "title", "author"]
+    },
+    "LibrarySettings": {
+      "title": "LibrarySettings",
+      "description": "Cấu hình chung của kho sách",
+      "type": "object",
+      "properties": {
+        "autoEnrichEnabled": { "type": "boolean" },
+        "categoriesList": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "ConsensusRulesRegistry": {
+      "title": "ConsensusRulesRegistry",
+      "description": "Bảng quy tắc đồng thuận cộng đồng tinh gọn cho chuẩn hóa và dọn dẹp sách",
+      "type": "object",
+      "properties": {
+        "rules": { "type": "array" },
+        "totalRules": { "type": "number" },
+        "version": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      }
+    },
+    "AssignedShare": {
+      "title": "AssignedShare",
+      "description": "Bản ghi chuyển tiếp liên kết tệp Google Drive do Admin chia sẻ cho thành viên",
+      "type": "object",
+      "properties": {
+        "assignedFileId": { "type": "string" },
+        "assignedFileName": { "type": "string" },
+        "adminEmail": { "type": "string" },
+        "memberEmail": { "type": "string" },
+        "role": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["assignedFileId", "memberEmail"]
+    }
+  },
+  "firestore": {
+    "/books/{bookId}": {
+      "schema": "BookRecord",
+      "description": "Danh mục sách trong kho sách"
+    },
+    "/settings/{settingId}": {
+      "schema": "LibrarySettings",
+      "description": "Cấu hình kho sách"
+    },
+    "/community_knowledge/{docId}": {
+      "schema": "ConsensusRulesRegistry",
+      "description": "Bảng nguyên tắc quy tắc cộng đồng tinh gọn"
+    },
+    "/assigned_shares/{shareId}": {
+      "schema": "AssignedShare",
+      "description": "Bản ghi chuyển tiếp tệp gán tự động cho thành viên"
+    }
+  }
+}
