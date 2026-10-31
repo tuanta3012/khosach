@@ -1,0 +1,542 @@
+TAI LIEU KHAO SAT MA NGUON VA CHUYEN GIAO KY THUAT
+Du an: Dich sach AI ver 1.1
+Muc dich: Tai lieu cho nhom phat trien nghien cuu va tich hop chuc nang vao app Capacitor/APK
+Pham vi khao sat: Ma Python, tai lieu huong dan, manifest, ghi chu phien ban va danh sach fixture trong workspace
+
+======================================================================
+1. TOM TAT DANH CHO NHOM TIEP NHAN
+======================================================================
+
+Day la ung dung desktop Windows viet bang Python va PySide6. Chuc nang chinh la chon
+nhieu file PDF/EPUB, phat hien mot so truong hop da la tieng Viet de bo qua, chuyen PDF
+digital sang EPUB bang Marker va Pandoc, sau do dich noi dung EPUB sang tieng Viet qua
+Gemini. File dau ra thuong nam canh file goc va co hau to "_vietnamese".
+
+Khong nen xem ma Python nay la mot module co the dong goi truc tiep vao APK:
+- Giao dien hien tai la Qt/PySide6, khong phai web UI.
+- Chuyen PDF dang goi cac executable Marker, Pandoc va co the can llama-server.
+- Luong PDF DOCX cu dung pdf2docx, python-docx, docx2pdf/LibreOffice, Tesseract,
+  OpenCV va Pillow.
+- Gemini client dang nam trong ung dung Python; dua API key vao APK se de bi trich xuat.
+- Chua co project Capacitor, package.json, API backend, schema job, migration hay test
+  tu dong trong snapshot duoc khao sat.
+
+Huong di de xuat: tach giao dien Capacitor khoi backend xu ly tai lieu. APK chon file,
+gui job qua API HTTPS, theo doi tien do, va tai EPUB/PDF dau ra. Backend quan ly Gemini,
+cache, tien trinh chuyen doi va file tam. Neu can xu ly hoan toan tren thiet bi, can
+thiet ke lai tung kha nang bang Android native/plugin va thu nghiem gioi han RAM, CPU,
+storage; khong the mang nguyen Marker/Pandoc/PySide6 vao WebView.
+
+Bao mat can xu ly truoc khi phat hanh: ma nguon hien tai co cac chuoi API key Gemini
+duoc khai bao truc tiep trong ai/runtime.py. Tai lieu nay khong sao chep gia tri key.
+Can coi cac key da lo la, thu hoi/rotate tren nha cung cap, loai khoi source history va
+chuyen sang secret manager/backend. Khong nhung key Gemini vao APK, JS bundle hay
+native resource.
+
+======================================================================
+2. PHAM VI VA CAC FILE DA KHAO SAT
+======================================================================
+
+Ma ung dung:
+- Dich_sach_AI_v1.1.py: entry point, ham nghiep vu va giao dien Qt.
+- ai/gemini_manager.py: quan ly key, quota, round-robin, cooldown, goi model.
+- ai/gemini_ocr.py: tien xu ly anh, OCR local/Tesseract, gate chon anh va OCR Gemini.
+- ai/gemini_translate.py: dong goi prompt, dich, phan tich nhan [P_i], retry, chia nho,
+  chay song song.
+- ai/runtime.py: cau hinh AI dung chung va cac singleton runtime.
+- app/runtime.py: Rich console, progress bar va logging.
+- cache/cache_io.py: fingerprint SHA-256, metadata cache, ghi cache an toan, chia batch.
+- convert/marker_pandoc_pipeline.py: Marker -> Markdown -> Pandoc EPUB, subprocess,
+  timeout, xu ly anh tai lieu va hop cac XHTML.
+- epub/markup.py: bao ve/kiem tra/khoi phuc markup HTML va parse map dich.
+- epub/workflow.py: trich van ban EPUB, dich chunk va muc luc, ghi EPUB dau ra.
+- pdf/document_tools.py: tien ich DOCX/PDF, xu ly font, anh, style, trang trong.
+- pdf/workflow.py: luong PDF digital -> DOCX -> dich -> PDF, co OCR anh tuy chon.
+
+Tai lieu va metadata:
+- Huong_dan_Dich_sach_AI_ver_1.1.txt
+- manifest.json
+- whats_new.txt
+- error.log (hien dang rong trong snapshot)
+
+Fixture mau:
+- Test_files/epub 01.epub
+- Test_files/pdf scan 01.pdf, pdf scan 02.pdf
+- Test_files/pdf text 01.pdf den pdf text 04.pdf
+
+Khong doc noi dung sach trong cac fixture; danh sach chi duoc dung de ghi nhan cac
+loai mau co mat. Cac file __pycache__ la bytecode sinh tu Python, khong phai source
+can chuyen doi.
+
+Ghi chu ve du lieu goc: mot so chuoi tieng Viet trong ma va tai lieu hien thi sai ma
+ky tu khi doc qua runtime hien tai. Can doi chieu byte encoding va hien thi thuc te
+truoc khi dung cac chuoi nay lam ban dich UX.
+
+======================================================================
+3. SO DO KHOI VA TRACH NHIEM
+======================================================================
+
+3.1. Entry point va giao dien
+
+Dich_sach_AI_v1.1.py:
+- Khoi tao QApplication va MainWindow.
+- Cung cap danh sach file PDF/EPUB da chon; cho phep them, xoa, xoa tat ca.
+- Chon mot trong bon van phong dich: y khoa/khoa hoc; van hoc; kinh doanh/ky nang/
+  the thao; tong hop. Moi cau hinh gom ten, prompt_style va temperature.
+- Chunk mac dinh 2000 "don vi" uoc tinh.
+- Giao dien hien thong tin tung sach, progress, thoi gian va log.
+- BookWorker chay trong QThread de tranh khoa UI; gui tin hieu ve UI.
+- Cac ham nghiep vu gom scan_books, is_pdf_scanned, is_vietnamese_text,
+  is_vietnamese_epub, _run_conversion_workflow, _process_books va _translate_epub.
+
+3.2. AI
+
+ai/runtime.py la diem ghep cac service AI:
+- Tao APIKeyManager va GeminiTranslateService singleton.
+- Goi translate_text_with_gemini va goi OCR anh theo lo.
+- Chia se key_manager cho EPUB va PDF.
+
+ai/gemini_manager.py:
+- Luu state theo tung key/model: request times, daily count, cooldown.
+- Chon key theo round-robin, gioi han RPM/RPD noi bo, doi khi het gioi han cua so
+  request.
+- Goi Google GenAI generate_content; thu lan luot model va key; tra (text, error).
+- Nhan dien quota/rate-limit de cooldown va retry.
+- RPM/RPD trong bo nho chi ton tai trong mot lan chay; khong phai bo dem quota chuan
+  cua nha cung cap va khong dong bo giua nhieu instance.
+
+ai/gemini_translate.py:
+- Tao prompt theo the loai/temperature, yeu cau ket qua co nhan [P_i].
+- Retry voi safety context khi lan dau khong co ket qua.
+- Batch dich EPUB duoc parse thanh map chi so -> chuoi dich.
+- Neu map khong hop le: thu lai, giu cac muc dung trong response partial, dich lai
+  muc thieu, hoac chia batch thanh nua.
+- Chay cac chunk song song; toi da 4 worker va thu hep theo so key.
+- Chunk nao con thieu ket qua thi fallback giu nguyen van ban goc cho doan thieu,
+  ghi canh bao va van ghi cache. Do do "job thanh cong" khong tu dong co nghia la
+  moi doan da duoc dich; can co trang thai loi/partial trong san pham moi.
+
+ai/gemini_ocr.py:
+- Tien xu ly anh bang Pillow, tuy chon OpenCV/Otsu, resize toi da canh 1600 px.
+- OCR local Tesseract voi cac PSM 6/11/4, tinh confidence va kiem tra dau hieu
+  tieng Viet.
+- Gate anh theo hinh hoc/diem anh va diem hinh anh co text; nguong chon anh 0.42.
+- Nguong confidence OCR mac dinh 48; batch Gemini mac dinh 3 anh.
+- OCR gate co cac ly do nhu anh nho/khong duoc chon, dependency thieu, khong co chu,
+  da la tieng Viet, confidence thap.
+- Module nay duoc goi boi pdf/workflow; luong PDF chinh tu giao dien khong goi OCR.
+
+3.3. EPUB
+
+epub/workflow.py::process_epub_file:
+1. Tao cache theo ten file EPUB va tao metadata fingerprint.
+2. Doc EPUB bang EbookLib; lay cac item document va parse HTML bang BeautifulSoup.
+3. Chon cac leaf block trong p/h1-h6/li/td/th/dt/dd co text; bo qua node cha neu
+   chua block con de tranh dich lap.
+4. Chia batch theo uoc tinh don vi, dich song song, ghi cache tung chunk.
+5. Nap map dich vao node; khoi phuc HTML markup da duoc thay bang token.
+6. Ghi lai noi dung XHTML.
+7. Dich title trong TOC theo batch toi da 40 entry; cap nhat link.title.
+8. Ghi <ten>_vietnamese.epub; xoa cache sau khi ghi thanh cong.
+
+epub/markup.py:
+- protect_epub_markup thay cac tag con bang __HTML_TAG_n__.
+- parse_translation_map yeu cau dung du nhan, khong trung chi so va bao toan token.
+- restore_epub_markup dua tag goc tro lai sau dich.
+- Neu token khong duoc tra ve, ham khoi phuc tra False; caller hien tai van khong
+  danh dau ro ket qua chunk thanh loi tai diem goi.
+
+Tham so enable_ocr trong process_epub_file khong duoc su dung trong than ham; workflow
+EPUB khong thuc hien OCR anh. OCR anh khong duoc bat boi luong giao dien chinh.
+
+3.4. PDF va chuyen doi
+
+Luong duoc giao dien goi (Dich_sach_AI_v1.1.py):
+- PDF duoc phan loai scan/digital bang PyMuPDF.
+- Neu PDF scan: bo qua.
+- Neu PDF digital: Marker chuyen PDF thanh Markdown; Pandoc chuyen Markdown thanh
+  EPUB3; EPUB duoc kiem tra co dau hieu tieng Viet; neu chua co thi chay EPUB workflow.
+- Intermediate EPUB co hau to _marker duoc doi ten thanh _vietnamese neu da la tieng
+  Viet, hoac bi xoa sau khi dich xong.
+- OCR Marker bi tat bang --disable_ocr; pipeline co buoc phuc hoi anh PDF bi bo sot va
+  ghep mot so hinh phuc tap thanh anh, nhung khong OCR chu trong anh.
+
+Marker/Pandoc trong convert/marker_pandoc_pipeline.py:
+- Tim executable tu PATH, thu muc tools, Python Scripts, .venv va mot so vi tri Windows.
+- Marker chay marker_single, mac dinh mode fast, disable multiprocessing, disable OCR,
+  tat PDF text reading order theo tham so hien tai.
+- Theo doi output subprocess, cap nhat tien do trang, timeout duoc tinh theo so trang
+  va kich thuoc PDF, gioi han 300-600 giay.
+- Xu ly Markdown: xoa synthetic title, chuan hoa khoang trang, copy tai nguyen anh.
+- Restore anh PDF khong duoc Marker tham chieu; render mot so hinh co overlay text/
+  vector thanh composite image.
+- Pandoc tao EPUB3 voi CSS co ban, resource-path va split-level 1.
+- Sau do hop cac XHTML content document vao luong doc lien tuc, cap nhat manifest/
+  spine/TOC va tao EPUB moi.
+- Cleanup Markdown, assets va thu muc output Marker khi thanh cong.
+
+Luong PDF rieng (pdf/workflow.py va pdf/document_tools.py):
+- process_pdf_text_file chuyen PDF text sang DOCX bang pdf2docx.
+- Don dep mot so style/bang/hinh, co the phuc hoi anh PDF.
+- Neu enable_ocr=True, loc anh qua OCR local roi gui anh dat dieu kien sang Gemini;
+  chen ban dich vao DOCX.
+- Gom cac paragraph, bo header/footer va chu da OCR, chia batch/dich, ghi text vao
+  DOCX, chuyen thanh PDF bang docx2pdf hoac LibreOffice fallback.
+- Co buoc xoa trang trong/trang chi co header-footer.
+- Dung cache pdf_text rieng.
+- Ham nay goi validate_runtime_environment() ngay dau, yeu cau stack OCR/EPUB/PDF
+  day du ke ca khi tuy chon OCR dang false.
+
+Quan trong: khong thay thay loi goi process_pdf_text_file hoac module pdf.workflow
+tu entry point UI. Day la luong rieng/legacy trong snapshot, khong phai luong PDF ma
+nguoi dung dang chay tu giao dien. Khong nham luong nay voi PDF -> EPUB chinh.
+
+3.5. Cache va logging
+
+cache/cache_io.py:
+- SHA-256 toan bo file theo block 1 MiB.
+- Cache metadata gom schema, source_sha256, max_units_per_chunk, ten genre, mode va
+  prompt_version.
+- Metadata khong khop thi bo qua cache cu.
+- JSON duoc ghi vao file .tmp, sau do replace de han che file cache bi hong.
+- Uoc tinh don vi: chu CJK va tu khong CJK co he so khac nhau; van ban Latin dung
+  so tu * 1.3.
+- create_batches cat khi vuot content_limit, nhung khong cat rieng theo so item.
+  Docstring de cap hard cap 75 item nhung implementation hien tai khong co gioi han
+  item 75; can xac minh va sua neu day la requirement.
+
+app/runtime.py:
+- Tao Rich console/progress bar.
+- Ghi warning/error vao error.log o root project hoac canh executable khi dong goi.
+- Ha log noisy tu cac thu vien ngoai xuong CRITICAL.
+- Thu vien va subprocess output co the bi suppress boi pdf.document_tools.
+
+======================================================================
+4. WORKFLOW NGHIEP VU DANG CO
+======================================================================
+
+4.1. Khoi dong va chon sach
+
+1. Mo ung dung desktop; MainWindow hien danh sach file da chon.
+2. Nguoi dung them mot hoac nhieu file .pdf/.epub qua file picker.
+3. UI khong co chon thu muc rieng; output_dir duoc lay tu parent cua file dau tien.
+4. Nguoi dung chon van phong va bam bat dau.
+5. BookWorker xu ly tung file theo thu tu; giao dien cap nhat status/progress va log.
+6. Ket thuc thi hien thong bao hoan tat; loi worker hien hop thoai loi.
+
+Luu y: UI cho chon file o nhieu thu muc, nhung output_dir chung lay tu file dau tien.
+Vi vay file ket qua cua cac file o thu muc khac co the duoc ghi vao thu muc file dau
+tiên, thay vi canh file goc. Can quyet dinh ro quy tac nay khi thiet ke lai.
+
+4.2. Nhan dang PDF scan
+
+is_pdf_scanned:
+- PDF rong duoc xem la scan.
+- Dem trang co text trich xuat dai hon 50 ky tu.
+- Neu ti le trang co text < 30% tong so trang, xem la PDF scan va bo qua.
+- Heuristic nay co the phan loai sai PDF scan co OCR text layer, sach pha tron, hoac
+  trang co rat it text. Can co preview/override trong app moi.
+
+4.3. Nhan dang EPUB tieng Viet
+
+is_vietnamese_text:
+- Dem ky tu trong tap dau hieu dau tieng Viet.
+- Xem la tieng Viet neu co it nhat 3 marker va ti le marker/chu >= 0.5%.
+- EPUB lay text tu cac item document roi ap dung heuristic nay.
+- Heuristic don gian, khong phai language identification; co the bo qua nham van ban
+  ngon ngu khac co dau tuong tu hoac nhan dien sai EPUB ngan/metadata.
+
+4.4. Xu ly EPUB
+
+- EPUB da duoc heuristic danh dau tieng Viet: bo qua, khong tao ban dich.
+- EPUB con lai: dich sang tieng Viet va tao <ten>_vietnamese.epub canh output_dir.
+- Chunk dich duoc luu lien tuc trong cache JSON; retry co the tiep tuc tu chunk da co.
+- Khong thay logic xoa file goc EPUB.
+- TOC duoc dich rieng, khong nam trong cache chunk noi dung.
+
+4.5. Xu ly PDF trong UI
+
+- PDF scan: log bo qua; khong chuyen doi/dich.
+- PDF digital: tao <ten>_marker.epub.
+- Neu EPUB trung gian duoc nhan la tieng Viet: rename thanh <ten>_vietnamese.epub.
+- Neu khong: dich EPUB trung gian sang <ten>_vietnamese.epub; neu return thanh cong
+  thi xoa EPUB trung gian.
+- PDF digital khong duoc dich truc tiep trong luong nay.
+- Hinh/chu trong anh khong duoc OCR trong luong Marker hien tai.
+
+======================================================================
+5. DATA FLOW / CONTRACT GOI Y
+======================================================================
+
+Data flow hien tai:
+Nguoi dung -> Qt file picker -> danh sach Path -> BookWorker/QThread
+  -> phan loai PDF/EPUB
+  -> (PDF digital) Marker -> Markdown + assets -> Pandoc -> EPUB
+  -> EPUB parse HTML -> leaf text nodes -> [P_i] prompt -> Gemini
+  -> parse/validate response -> cache chunk -> restore HTML -> write EPUB
+  -> file ket qua trong output directory -> UI thong bao.
+
+Data flow de xuat cho Capacitor:
+Capacitor UI -> Android document picker (URI)
+  -> POST /v1/jobs (multipart upload hoac signed upload)
+  -> backend tao job + validate file + luu object tam
+  -> worker doc/phan loai/chuyen doi/dich
+  -> database job state + object storage result/cache
+  -> GET /v1/jobs/{id} hoac WebSocket/SSE de cap nhat
+  -> GET /v1/jobs/{id}/result download.
+
+API contract toi thieu:
+- POST /v1/jobs
+  Input: file, languageTarget="vi", styleId, options (co the bo qua scan, xu ly OCR,
+  output format), idempotencyKey.
+  Output: jobId, state="queued", createdAt.
+- GET /v1/jobs/{jobId}
+  Output: state, stage, progressPercent, currentFile, currentChunk, totalChunks,
+  warnings[], error {code,message,retryable}, result {name,size,downloadUrl}.
+- POST /v1/jobs/{jobId}/cancel (neu backend ho tro huy).
+- GET /v1/jobs/{jobId}/result: tai file dau ra sau khi job completed.
+- POST /v1/jobs/{jobId}/retry: tiep tuc tu cache/checkpoint neu retryable.
+
+Trang thai nen co:
+queued -> validating -> classifying -> converting -> extracting -> translating ->
+packaging -> completed.
+Nhanh khac: skipped (scan/already Vietnamese), partial (co doan giu nguyen), failed,
+cancelled. Khong tra "completed" neu bat ky chunk nao duoc fallback sang text goc ma
+khong hien warning ro rang cho nguoi dung.
+
+Job record goi y:
+job_id, owner_id, source_name, source_sha256, source_size, mime_type, source_format,
+detected_document_type, target_language, style_id, options_json, state, stage,
+progress, warning_count, error_code, result_object_key, created_at, updated_at,
+expires_at.
+Khong luu API key trong record/job/client. Cache phai co owner scope, TTL, encryption
+at rest neu chua tai lieu la tai san rieng tu.
+
+Don vi job:
+- Mot file = mot job de co the retry/huy/bao loi doc lap.
+- UI co the gui nhieu file nhung tao nhieu job; hien thi queue/concurrency co gioi han.
+- Giu idempotency key de tranh upload va dich lap khi mobile mat mang gui lai request.
+
+======================================================================
+6. NHUNG DIEM CAN CHOT KHI PORT SANG CAPACITOR
+======================================================================
+
+6.1. Chon noi xu ly
+
+Khuyen nghi: backend xu ly PDF/EPUB va Gemini. Ly do: Marker/Pandoc va cac thu vien
+Python nang kho chay on dinh trong Android WebView; file sach co the rat lon; process
+can timeout, queue va cache; Gemini key can duoc giu server-side.
+
+Neu bat buoc offline/on-device:
+- Chon native Kotlin modules cho parse EPUB/PDF va luu file.
+- Danh gia thu vien Android co the thay Marker/Pandoc va kha nang giu layout.
+- OCR bang ML Kit/Tesseract native; xu ly PDF theo trang, gioi han RAM.
+- Gemini van nen qua backend proxy; neu client truc tiep thi key cua nguoi dung phai
+  do chinh nguoi dung nhap va khong dung key dung chung cua nha phat trien.
+- Xac dinh ro file tam, xoa file, resume sau force-stop, pin/battery va background jobs.
+
+6.2. UI/UX mobile
+
+- Dung @capacitor/filesystem va File Picker/Document Picker plugin de lay URI, khong
+  gia dinh file nam trong filesystem path truy cap truc tiep.
+- Hien preview metadata: ten, kich thuoc, loai, so trang/chapter neu co.
+- Cho nguoi dung chon target language, van phong, xu ly scan/OCR va dinh dang dau ra.
+- Co trang Job detail, stage, progress that tu server, warning, retry, cancel.
+- Hien dung luong upload/tai xuong, mang cham/mat mang va thoi gian het han ket qua.
+- Dung background upload/download neu can; khong giu UI thread cho xu ly.
+- Cho phep mo/chia se file dau ra qua native share sheet va luu vao vi tri nguoi dung chon.
+
+6.3. File va storage
+
+- Validate extension bang content sniffing/MIME, gioi han dung luong/trang, zip bomb
+  EPUB, malformed PDF/EPUB va ten file co ky tu dac biet.
+- Khong tin ten file de tao duong dan. Tao ten storage ngau nhien, escape ten hien thi.
+- File goc khong bi ghi de; dau ra la file rieng.
+- Xac dinh chinh sach retention, xoa file goc upload, file tam, cache va ket qua.
+- Ma hoa truyen tai HTTPS; phan quyen truy cap theo owner/job; URL tai xuong co TTL.
+- Bao ve cac subprocess khi chay backend: executable allowlist, timeout, kill process
+  tree, gioi han CPU/RAM va sandbox khong co quyen truy cap tuy y.
+
+6.4. Dich va chat luong
+
+- Giu output contract nhan [P_i] hoac thay bang JSON structured output co schema.
+- Kiem tra du/khong lap segment ID, token markup, chapter order va UTF-8.
+- Khong fallback im lang ve van ban goc; tra warning/partial de UI quyet dinh.
+- Store checkpoint theo segment ID va source hash, khong chi theo index neu viec tach
+  chunk co the thay doi.
+- Thiet ke retries co backoff, timeout va gioi han chi phi; tach retry quota vs loi
+  khong retry duoc.
+- Neu ho tro OCR, gui anh sach/anh trang len Gemini can thong bao muc dich va privacy.
+
+======================================================================
+7. BAO MAT, RUI RO VA CAC GAP PHAT HIEN
+======================================================================
+
+Muc uu tien P0:
+1. API key Gemini dang hard-code trong ai/runtime.py. Thu hoi/rotate ngay; xem nhu
+   bi lo. Xoa key khoi source va history; backend chi doc secret tu secret manager.
+2. Khong phat hanh app Capacitor voi key AI dung chung. APK/JS/native package deu co
+   the bi decompile. Backend phai xac thuc nguoi dung, rate-limit, quota va audit.
+
+Uu tien cao:
+- Current log/error message va Gemini prompt khong nen chua secret, noi dung sach day
+  du hoac du lieu ca nhan neu khong can thiet. Chinh sach log phai redact.
+- File upload can chong duong dan traversal, archive bomb, file doc hai, dung luong
+  qua lon va tien trinh chiem dung tai nguyen.
+- Gemini content duoc gui ra nha cung cap ben ngoai; can thong bao consent/privacy va
+  xac dinh retention/data residency.
+- APIKeyManager bo dem quota chi trong RAM; nhieu worker/device co the vuot quota
+  provider. Quota phai duoc quan ly backend/distributed.
+
+Gap logic/van hanh:
+- create_batches docstring noi co hard cap 75 item nhung code khong enforce cap nay.
+- Chunk thieu response co the duoc fallback bang source text va van tinh la chunk da
+  hoan tat, lam dau ra co mot phan chua dich.
+- Ngoai le tung translation worker duoc log; process_chunks_in_parallel khong re-raise
+  loi worker ve caller, nen trang thai job co the bi xem nhu thanh cong.
+- EPUB markup restoration co the tra False neu mat token; caller khong day loi ro rang.
+- is_vietnamese_text la heuristic ky tu, khong phai language ID.
+- Heuristic PDF scan co nguy co false positive/negative, khong co override trong UI.
+- UI lay output_dir tu parent cua file dau tien du nguoi dung co the chon file o nhieu
+  thu muc.
+- process_pdf_text_file hien khong duoc entry point goi; neu muon giu, can quyet dinh
+  ro no la san pham/feature hay code legacy.
+- enable_ocr cua EPUB workflow khong lam bat OCR; OCR PDF chi nam trong PDF->DOCX legacy.
+- manifest.json ghi snapshot release va source_root tu may build cu; khong nen dung no
+  lam source of truth cho runtime/deployment.
+- Huong dan noi chay bang .bat/.exe va cac dependency portable Windows; nhung .bat,
+  .exe, requirements/dependency lock va executable tools khong co trong snapshot nay.
+- Chua thay automated tests, dependency manifest, CI hay API contract trong workspace.
+
+======================================================================
+8. KIEN TRUC DE XUAT CHO SAN PHAM CAPACITOR
+======================================================================
+
+Frontend:
+- Capacitor + web framework da chon (React/Vue/Angular).
+- Screens: Library/Select files, Job queue, Job detail, Settings/privacy, Result preview.
+- Service: upload client, job polling/SSE, retry/cancel, secure session storage.
+- Native plugins: document picker, filesystem, download/share, background transfer.
+- Khong nhung ma Python hoac Gemini credential trong bundle.
+
+Backend API:
+- Auth/session va authorization theo user.
+- Validate upload, tao job, job status, cancel/retry, download result.
+- Rate limit theo user va source IP; gioi han so job dong thoi va chi phi model.
+- Secret Gemini chi tren server; log redact; metrics va audit.
+
+Worker:
+- Queue (Redis/RQ, Celery, cloud queue hoac tuong duong).
+- Worker Python co the tai su dung mot phan module hien tai.
+- Chay conversion trong container/image co pin version Marker/Pandoc va dependency.
+- Tach worker EPUB-only va PDF conversion neu tai nguyen/timeout khac nhau.
+- Ghi stage/progress vao database, artifact vao object storage, cleanup theo TTL.
+- Idempotency theo user + source hash + options/prompt version.
+
+Service seams nen tach:
+1. DocumentInspector: verify, format, page/chapter count, scan/language heuristic.
+2. PdfToEpubConverter: PDF digital -> Markdown -> EPUB; progress va timeout ro rang.
+3. EpubExtractor: chapter/block ID + text + markup tokens.
+4. TranslationProvider: Gemini backend abstraction, structured response, quotas.
+5. TranslationJob: chunk checkpoint, retry, partial status, cancellation.
+6. EpubWriter/PdfWriter: ghi output, verify artifact.
+7. JobRepository/ArtifactStore: state, cache, ownership, retention.
+
+======================================================================
+9. KE HOACH CHUYEN DOI THEO GIAI DOAN
+======================================================================
+
+Giai doan 0 - Bao mat va baseline:
+- Rotate/thu hoi key da nhung; xoa secrets khoi source/history.
+- Chot quy tac quyen rieng tu, retention, so trang/size gioi han, chi phi dich.
+- Chay fixture PDF text/scan va EPUB trong moi truong sach; ghi output/quality baseline.
+- Pin version Python, Marker, Pandoc, Google GenAI va dependency.
+
+Giai doan 1 - Backend API/job:
+- Xay job state machine va API contract.
+- Them upload validation, storage, worker queue, progress, retry/cancel.
+- Dua secret vao secret manager; auth, quota, rate limit, logging redact.
+- Dung lai EPUB workflow va conversion pipeline sau khi tach config khoi global state.
+
+Giai doan 2 - Capacitor:
+- Them file picker URI flow, upload co tien trinh va retry/idempotency.
+- Job list/detail, polling/SSE, warning/partial states.
+- Download/save/share EPUB; xu ly app background/resume.
+- Kiem tra Android permission, scoped storage, kich thuoc file va mang di dong.
+
+Giai doan 3 - Chat luong va rollout:
+- Test PDFs scan, digital, PDF pha tron, EPUB co inline markup/TOC, EPUB da tieng Viet.
+- Test quota, mat mang, backend restart, retry, duplicate request, cancellation.
+- Test file loi, file lon, zip bomb, UTF-8, chu co dau, filename traversal.
+- Theo doi latency, failure rate, partial translation, chi phi/token, storage.
+- Rollout theo feature flag va gioi han user; co rollback backend/app version.
+
+======================================================================
+10. TEST PLAN VA TIEU CHI CHAP NHAN GOI Y
+======================================================================
+
+Unit:
+- Scan classifier: rong, scan thuần, digital, mixed-page va nguong 30%.
+- Vietnamese classifier: EPUB Viet/Anh, sach ngan, metadata-only, dau Viet thua.
+- create_batches: don vi, item don le rat dai, nguong 2000 va gioi han item neu duoc them.
+- Translation parser: du ID, thieu ID, duplicate ID, ID ngoai pham vi, token HTML mat.
+- Cache: source hash thay doi, options/prompt version thay doi, file cache hong, write race.
+- Job state machine: transition hop le, retry, cancel, partial, completed.
+
+Integration:
+- EPUB co TOC long nhau, HTML inline tags, bang, chapter rong, link/anh.
+- PDF digital qua Marker/Pandoc; verify EPUB mo duoc, chapter order, anh, title, cleanup.
+- PDF scan phai tra skipped voi ly do; khong goi Gemini/conversion neu policy khong cho.
+- Provider mock: success, empty, blocked, 429/quota, timeout, response thieu segment.
+- Backend upload -> queue -> translate -> download; user khac khong truy cap artifact.
+- Mobile: picker URI, upload restart, app foreground/background, download va share.
+
+Acceptance:
+- App khong chua API key nha phat trien trong APK/web bundle.
+- Moi job co owner, stage, error/warning, result va trang thai partial minh bach.
+- Mat mang/ung dung dong khong lam mat checkpoint; gui lai request khong tao job trung.
+- File goc duoc giu; ket qua khong ghi de file nguon.
+- Output EPUB/PDF duoc verify truoc khi thong bao completed.
+- Co gioi han file/time/resource, cleanup TTL va logging khong lo noi dung/secret.
+- Ket qua fixture duoc nhom nghiep vu xac nhan ve layout, TOC, anh va chat luong dich.
+
+======================================================================
+11. THONG TIN PHIEN BAN / PHAM VI CHUA CO
+======================================================================
+
+manifest.json cho biet snapshot version 1.1, tao ngay 2026-09-13 va goi y source
+root cu tren Windows. whats_new.txt chi ghi backup 1.1 gom AI/OCR, EPUB/PDF workflow,
+cache, convert va workspace. Day la metadata snapshot, khong phai package manifest.
+
+Trong workspace duoc khao sat khong co:
+- package.json, capacitor.config.*, frontend source, Android project hoac plugin code.
+- requirements.txt/pyproject.toml/lockfile; danh sach dependency day du khong the xac
+  nhan chi tu snapshot.
+- Test runner/test source; Test_files chi la tai lieu mau.
+- Backend/API, auth, database, queue, object storage, CI/CD hay infrastructure.
+
+Vi vay tai lieu nay la ban mo ta hien trang ma Python va de xuat kien truc tich hop,
+khong phai cam ket rang APK/backend da ton tai hoac cac module PDF legacy dang duoc goi.
+
+======================================================================
+12. DANH MUC FILE SOURCE THAM KHAO
+======================================================================
+
+Dich_sach_AI_v1.1.py
+ai/runtime.py
+ai/gemini_manager.py
+ai/gemini_translate.py
+ai/gemini_ocr.py
+app/runtime.py
+cache/cache_io.py
+convert/marker_pandoc_pipeline.py
+convert/__init__.py
+epub/workflow.py
+epub/markup.py
+pdf/workflow.py
+pdf/document_tools.py
+Huong_dan_Dich_sach_AI_ver_1.1.txt
+manifest.json
+whats_new.txt
+
+Het tai lieu.
