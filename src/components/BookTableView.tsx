@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useDeferredValue, useCallback } from "react";
+import React, { useState, useMemo, useRef, useDeferredValue, useCallback, useEffect } from "react";
 import {
   Search,
   Edit2,
@@ -23,6 +23,7 @@ import { removeVietnameseTones } from "../utils/fuzzyMatcher";
 import { useToast } from "../context/ToastContext";
 import { CategoryBubbleChart } from "./CategoryBubbleChart";
 import { SortSelectDropdown, BookSortOption } from "./SortSelectDropdown";
+import { registerBackButtonHandler } from "../services/backButtonService";
 
 interface BookTableViewProps {
   books: BookRecord[];
@@ -298,6 +299,52 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
     showToast('Đã lưu sách!', 'success');
   };
 
+  // Xử lý phím Back Android cho các trạng thái của Bảng sách
+  // 1. Nếu đang có hộp thoại xác nhận xóa sách -> Back để hủy xác nhận xóa
+  useEffect(() => {
+    if (!confirmDeleteId) return;
+    return registerBackButtonHandler(() => {
+      setConfirmDeleteId(null);
+      return true;
+    });
+  }, [confirmDeleteId]);
+
+  // 2. Nếu đang sửa trực tiếp 1 dòng sách -> Back để hủy sửa
+  useEffect(() => {
+    if (!editingRowId) return;
+    return registerBackButtonHandler(() => {
+      handleCancelEdit();
+      return true;
+    });
+  }, [editingRowId]);
+
+  // 3. Nếu đang mở biểu đồ thống kê -> Back để quay lại chế độ danh sách
+  useEffect(() => {
+    if (viewMode !== 'chart') return;
+    return registerBackButtonHandler(() => {
+      setViewMode('list');
+      return true;
+    });
+  }, [viewMode]);
+
+  // 4. Nếu đang lọc theo danh mục cụ thể -> Back để quay về "Tất cả"
+  useEffect(() => {
+    if (selectedCategory === 'ALL') return;
+    return registerBackButtonHandler(() => {
+      setSelectedCategory('ALL');
+      return true;
+    });
+  }, [selectedCategory]);
+
+  // 5. Nếu đang nhập ô tìm kiếm -> Back để xóa ô tìm kiếm
+  useEffect(() => {
+    if (!globalFilter) return;
+    return registerBackButtonHandler(() => {
+      handleFilterChange('');
+      return true;
+    });
+  }, [globalFilter]);
+
   const isSearching = Boolean(globalFilter.trim());
 
   return (
@@ -317,7 +364,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
           >
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
-              type="search"
+              type="text"
               name="nomatch_search"
               id="book-catalog-search-input"
               autoComplete="new-password"
@@ -331,13 +378,14 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
               value={globalFilter}
               onChange={(e) => handleFilterChange(e.target.value)}
               placeholder="Tìm tên sách, tác giả..."
-              className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#0284C7] rounded-xl focus:ring-2 focus:ring-[#0284C7]/20 focus:outline-none transition font-medium"
+              className="w-full pl-9 pr-9 py-2 text-xs sm:text-sm bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#0284C7] rounded-xl focus:ring-2 focus:ring-[#0284C7]/20 focus:outline-none transition font-medium [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:hidden"
             />
             {globalFilter && (
               <button
                 type="button"
                 onClick={() => handleFilterChange('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 rounded-full bg-slate-200/60"
+                aria-label="Xóa từ khóa tìm kiếm"
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-slate-500 hover:text-slate-800 bg-slate-200/80 hover:bg-slate-300 rounded-full transition active:scale-95 shadow-2xs cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

@@ -23,3 +23,13 @@
   padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
 }
 
+/* Ẩn nút clear/cancel mặc định của trình duyệt WebKit/Chrome/Android trên ô input type="search" để tránh bị trùng lặp 2 dấu x */
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-results-button,
+input[type="search"]::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none !important;
+}
+

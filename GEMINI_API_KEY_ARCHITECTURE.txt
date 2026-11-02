@@ -1,0 +1,166 @@
+================================================================================
+ TÀI LIỆU KIẾN TRÚC & HƯỚNG DẪN TÍCH HỢP: QUẢN LÝ ĐA GEMINI API KEYS & RATE LIMITING
+================================================================================
+
+1. TỔNG QUAN HỆ THỐNG
+--------------------------------------------------------------------------------
+Tài liệu này mô tả chi tiết logic, workflow, yêu cầu kỹ thuật và các đoạn mã nguồn 
+cốt lõi phục vụ cho việc quản lý, phân bổ đa Gemini API Keys, điều tiết tốc độ 
+(Rate Limiting & Phase Staggering), tự động dự phòng (Auto Failover) và đồng bộ 2 chiều 
+(Cross-Device Sync) giữa Client và Google Drive (Sheet Config).
+
+Giải pháp được thiết kế theo mô hình 100% Client-Centric (không phụ thuộc Server Proxy), 
+giúp ứng dụng di động (Android Capacitor / Web PWA) hoạt động ổn định, an toàn, 
+không bị nghẽn mạng và tối ưu hóa tối đa hạn ngạch miễn phí của Google Gemini API.
+
+
+2. CÁC ĐẶC TẢ KỸ THUẬT & HẠN NGẠCH (QUOTA SPECIFICATIONS)
+--------------------------------------------------------------------------------
+- Thư viện tích hợp: `@google/genai` (SDK chính thức mới nhất của Google).
+- Models sử dụng (Ưu tiên engine Flash-Lite siêu nhẹ, tốc độ cao):
+  + Cấp 1 (Chính): `gemini-3.5-flash-lite`
+  + Cấp 2 (Dự phòng): `gemini-3.1-flash-lite`
+- Giới hạn hạn ngạch tiêu chuẩn cho từng API Key trên mỗi Model:
+  + RPM (Requests Per Minute): Tối đa 15 request/phút.
+  + RPD (Requests Per Day): Tối đa 500 request/ngày (tính theo múi giờ Thái Bình Dương - Pacific Time / America/Los_Angeles).
+
+
+3. LOGIC & WORKFLOW VẬN HÀNH
+--------------------------------------------------------------------------------
+
+A. Lưu trữ & Quản lý Đa API Keys (Multi-Key Management)
+- Hệ thống hỗ trợ người dùng nhập và lưu nhiều API Keys cá nhân.
+- Khóa lưu trữ cục bộ: `gemini_api_keys_v1` trong `localStorage` (hoặc Capacitor Preferences trên Native).
+- Khi có thay đổi hoặc đăng nhập mới, hệ thống tự động đồng bộ 2 chiều (`syncUserApiKeyWithSheetConfig`) lên Tab ẩn `__CONFIG__` của Google Sheet, giúp người dùng khi đăng nhập ở thiết bị thứ 2 hoặc máy mới sẽ tự động nhận lại bộ Key đã lưu mà không cần nhập lại.
+
+B. Thuật toán phân bổ Round-Robin & Kiểm tra Quota
+- Khi cần gọi Gemini API, hệ thống sử dụng hàm `getNextAvailableKey()` duyệt danh sách Key theo vòng tròn (Round-Robin).
+- Bỏ qua các Key đang nằm trong thời gian nghỉ (Cooldown), các Key gặp lỗi xác thực (`AUTH`), hoặc các Key đã cạn hạn ngạch ngày (`RPD`).
+
+C. Cơ chế Lệch Pha (Phase Staggering Rate Limiter)
+- Để tránh bắn dồn dập 15 request trong một tích tắc gây lỗi 429 (Too Many Requests) hoặc làm treo UI thiết bị di động:
+  + Mỗi Model duy trì khoảng cách tối thiểu 4000ms giữa 2 lần gọi (15 RPM).
+  + Khoảng cách lệch pha tối thiểu 2000ms giữa bất kỳ cuộc gọi nào trên cùng 1 Key.
+  + Sử dụng `navigator.locks` (Web Locks API) để đồng bộ an toàn giữa các luồng xử lý đa nhiệm (Multi-threaded batch processing).
+
+D. Auto Failover 2 cấp độ
+- Khi một request gặp lỗi:
+  + Lỗi `RPM` (429 / Quá tải tạm thời): Tạm đưa Model/Key đó vào trạng thái Cooldown và tự động xoay sang Key tiếp theo hoặc chuyển sang Model dự phòng (`gemini-3.1-flash-lite`).
+  + Lỗi `RPD` (Cạn hạn ngạch trong ngày): Ghi nhận mốc ngày theo giờ Pacific, khóa channel trong ngày và chuyển hướng sang tài nguyên khả dụng tiếp theo.
+
+
+4. MÃ NGUỒN CỐT LÕI (CODE REFERENCES)
+--------------------------------------------------------------------------------
+
+--- (Đoạn 1: Quản lý lưu trữ & Đọc/Ghi danh sách API Keys) ---
+```ts
+const KEYS_STORAGE_KEY = 'gemini_api_keys_v1';
+
+export function getStoredGeminiApiKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(KEYS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((k: string) => String(k || '').trim()).filter(Boolean);
+      }
+    }
+  } catch (err) {
+    console.warn('[GeminiService] Lỗi đọc API Key từ localStorage:', err);
+  }
+  const oldSingleKey = localStorage.getItem('custom_gemini_api_key');
+  if (oldSingleKey && oldSingleKey.trim()) {
+    return [oldSingleKey.trim()];
+  }
+  return [];
+}
+
+export function saveStoredGeminiApiKeys(keys: string[]): void {
+  try {
+    const cleanKeys = keys.map(k => k.trim()).filter(Boolean);
+    if (cleanKeys.length > 0) {
+      localStorage.setItem(KEYS_STORAGE_KEY, JSON.stringify(cleanKeys));
+      localStorage.setItem('custom_gemini_api_key', cleanKeys[0]);
+    } else {
+      localStorage.removeItem(KEYS_STORAGE_KEY);
+      localStorage.removeItem('custom_gemini_api_key');
+    }
+  } catch (err) {
+    console.error('[GeminiService] Lỗi lưu API Key:', err);
+  }
+}
+```
+
+--- (Đoạn 2: Thuật toán Round-Robin chọn Key khả dụng) ---
+```ts
+let rrIndex = 0;
+
+export function getNextAvailableKey(keys: string[], excludedKeys: ReadonlySet<string> = new Set()): string {
+  if (keys.length === 0) return '';
+  const numKeys = keys.length;
+  
+  for (let i = 0; i < numKeys; i++) {
+    const idx = (rrIndex + i) % numKeys;
+    const candidate = keys[idx];
+    const state = refreshPersistedRpdState(candidate);
+
+    if (!excludedKeys.has(candidate) && !state.isRpdExhausted && Date.now() >= state.cooldownUntil) {
+      rrIndex = (idx + 1) % numKeys;
+      return candidate;
+    }
+  }
+  return '';
+}
+```
+
+--- (Đoạn 3: Đồng bộ 2 chiều API Key với Google Sheet Config) ---
+```ts
+export async function syncUserApiKeyWithSheetConfig(
+  accessToken: string,
+  spreadsheetId: string,
+  userEmail: string,
+  userRole: string,
+  localKeys: string[]
+): Promise<{
+  syncedKeys: string[];
+  hasUpdatedLocal: boolean;
+  hasUpdatedRemote: boolean;
+}> {
+  const cleanEmail = (userEmail || '').trim().toLowerCase();
+  if (!accessToken || !spreadsheetId || !cleanEmail) {
+    return { syncedKeys: localKeys, hasUpdatedLocal: false, hasUpdatedRemote: false };
+  }
+
+  const cleanLocal = (localKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
+  const remoteKeys = await fetchUserApiKeysFromSheetConfig(accessToken, spreadsheetId, cleanEmail);
+
+  // Gộp hợp nhất các key không trùng lặp từ cả Local và Remote
+  const mergedSet = new Set<string>();
+  cleanLocal.forEach((k) => mergedSet.add(k));
+  remoteKeys.forEach((k) => mergedSet.add(k));
+  const mergedList = Array.from(mergedSet);
+
+  let hasUpdatedLocal = false;
+  let hasUpdatedRemote = false;
+
+  if (mergedList.length > cleanLocal.length) {
+    saveStoredGeminiApiKeys(mergedList);
+    hasUpdatedLocal = true;
+  }
+  if (mergedList.length > remoteKeys.length) {
+    await saveUserApiKeyToSheetConfig(accessToken, spreadsheetId, cleanEmail, mergedList, userRole);
+    hasUpdatedRemote = true;
+  }
+
+  return { syncedKeys: mergedList, hasUpdatedLocal, hasUpdatedRemote };
+}
+```
+
+
+5. HƯỚNG DẪN KẾ THỪA CHO TEAM DỰ ÁN MỚI
+--------------------------------------------------------------------------------
+1. Cài đặt thư viện chuẩn: `npm install @google/genai`
+2. Đưa module quản lý quota & rate limiter vào thư mục `services/` (ví dụ: `geminiService.ts`).
+3. Đảm bảo cấu hình giao diện cài đặt (Settings UI) cho phép người dùng nhập danh sách API Keys cá nhân và lưu xuống LocalStorage.
+4. Khi khởi tạo gọi SDK Gemini, luôn bọc qua lớp điều phối `getNextAvailableKey()` và `acquireRpmSlot()` để đảm bảo an toàn tuyệt đối trước giới hạn 15 RPM / 500 RPD của Google.
+================================================================================

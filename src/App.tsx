@@ -27,6 +27,7 @@ const SettingsModal = lazy(() => import('./components/SettingsModal').then((modu
 const FamilyShareModal = lazy(() => import('./components/FamilyShareModal').then((module) => ({ default: module.FamilyShareModal })));
 const AppUpdateModal = lazy(() => import('./components/AppUpdateModal').then((module) => ({ default: module.AppUpdateModal })));
 import { useToast } from './context/ToastContext';
+import { setupBackButtonListener, registerBackButtonHandler } from './services/backButtonService';
 import { useAutoUpdate } from './hooks/useAutoUpdate';
 import { CURRENT_APP_VERSION } from './version';
 import { IS_BUILD_AAB } from './config/buildConfig';
@@ -163,6 +164,65 @@ export default function App() {
     checkForUpdate,
     closeModal: closeUpdateModal
   } = useAutoUpdate();
+
+  // LẮNG NGHE PHÍM CỨNG VÀ CỬ CHỈ BACK CỦA HỆ ĐIỀU HÀNH ANDROID (CAPACITOR)
+  useEffect(() => {
+    const unbind = setupBackButtonListener((exitApp) => {
+      showToast('Nhấn lần nữa để thoát ứng dụng', 'info');
+    });
+    return unbind;
+  }, [showToast]);
+
+  // Xử lý phím Back Android cho các Modal và Tab của App (LIFO: Modal mở sau đóng trước)
+  useEffect(() => {
+    if (!isUpdateModalOpen) return;
+    return registerBackButtonHandler(() => {
+      closeUpdateModal();
+      return true;
+    });
+  }, [isUpdateModalOpen, closeUpdateModal]);
+
+  useEffect(() => {
+    if (!isFamilyShareModalOpen) return;
+    return registerBackButtonHandler(() => {
+      setIsFamilyShareModalOpen(false);
+      return true;
+    });
+  }, [isFamilyShareModalOpen]);
+
+  useEffect(() => {
+    if (!isSettingsModalOpen) return;
+    return registerBackButtonHandler(() => {
+      setIsSettingsModalOpen(false);
+      setSettingsInitialExpandKey(false);
+      return true;
+    });
+  }, [isSettingsModalOpen]);
+
+  useEffect(() => {
+    if (!isSyncModalOpen) return;
+    return registerBackButtonHandler(() => {
+      setIsSyncModalOpen(false);
+      return true;
+    });
+  }, [isSyncModalOpen]);
+
+  useEffect(() => {
+    if (!isAddEditModalOpen) return;
+    return registerBackButtonHandler(() => {
+      setIsAddEditModalOpen(false);
+      setEditingBook(null);
+      return true;
+    });
+  }, [isAddEditModalOpen]);
+
+  useEffect(() => {
+    if (currentTab === 'table') return;
+    return registerBackButtonHandler(() => {
+      setCurrentTab('table');
+      return true;
+    });
+  }, [currentTab]);
 
   // Lưu cache sách vào localStorage khi books thay đổi
   useEffect(() => {
@@ -1362,7 +1422,7 @@ export default function App() {
 
       {/* SplashScreen khi khởi động ứng dụng */}
       {showSplash && (
-        <SplashScreen onFinished={() => setShowSplash(false)} minDurationMs={2400} />
+        <SplashScreen onFinished={() => setShowSplash(false)} minDurationMs={800} />
       )}
 
       {/* Modal 7: Auto Update (Chỉ khả dụng ở bản APK) */}

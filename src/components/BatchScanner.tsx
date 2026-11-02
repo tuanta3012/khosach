@@ -18,6 +18,7 @@ import { flagDuplicateDrafts, checkDuplicateBook } from '../utils/fuzzyMatcher';
 import { scanImages, enrichBook, getStoredGeminiApiKeys, isKeyInCooldown } from '../utils/geminiService';
 import { useToast } from '../context/ToastContext';
 import { ImageCropModal } from './ImageCropModal';
+import { registerBackButtonHandler } from '../services/backButtonService';
 
 interface BatchScannerProps {
   existingBooks: BookRecord[];
@@ -117,6 +118,15 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     title: '',
     message: '',
   });
+
+  // Phím Back Android đóng hộp thoại cảnh báo API Key
+  useEffect(() => {
+    if (!keyAlertModal.isOpen) return;
+    return registerBackButtonHandler(() => {
+      setKeyAlertModal((prev) => ({ ...prev, isOpen: false }));
+      return true;
+    });
+  }, [keyAlertModal.isOpen]);
 
   const checkKeyCondition = (showToastIfError = false): boolean => {
     const keys = getStoredGeminiApiKeys();

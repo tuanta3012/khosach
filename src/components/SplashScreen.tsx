@@ -8,7 +8,7 @@ export interface SplashScreenProps {
 
 export const SplashScreen: React.FC<SplashScreenProps> = ({
   onFinished,
-  minDurationMs = 2400,
+  minDurationMs = 800,
 }) => {
   const [isFadingOut, setIsFadingOut] = useState(false);
 
@@ -17,7 +17,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
       setIsFadingOut(true);
       const finishTimer = setTimeout(() => {
         onFinished();
-      }, 400); // 400ms transition fade out
+      }, 200); // 200ms transition fade out
       return () => clearTimeout(finishTimer);
     }, minDurationMs);
 
@@ -26,7 +26,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
 
   return (
     <div
-      className={`fixed inset-0 z-100 bg-[#0f172a] text-white flex flex-col items-center justify-center p-6 select-none transition-opacity duration-400 ${
+      className={`fixed inset-0 z-100 bg-[#0f172a] text-white flex flex-col items-center justify-center p-6 select-none transition-opacity duration-200 ${
         isFadingOut ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
     >

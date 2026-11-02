@@ -8,6 +8,7 @@ import {
   Columns,
   Rows,
 } from 'lucide-react';
+import { registerBackButtonHandler } from '../services/backButtonService';
 
 interface ImageCropModalProps {
   isOpen: boolean;
@@ -133,6 +134,15 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
       });
     }
   }, [imageSrc, isOpen]);
+
+  // Phím Back Android đóng modal Cắt ảnh
+  useEffect(() => {
+    if (!isOpen) return;
+    return registerBackButtonHandler(() => {
+      onCancel();
+      return true;
+    });
+  }, [isOpen, onCancel]);
 
   const handleRotate = async () => {
     if (isRotating || !currentImageSrc) return;

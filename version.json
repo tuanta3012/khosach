@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
-  "notes": "Cập nhật Kho Sách Cá Nhân v1.0.0",
-  "apkUrl": "https://github.com/tuanta3012/khosach/releases/download/v1.0.0/khosach_v1.0.0.apk"
+  "version": "1.0.1",
+  "notes": "Kho Sách v1.0.1: Tối ưu nút xóa tìm kiếm, xử lý phím Back Android chuẩn xác từng màn hình, rút gọn Splash Screen mượt mà",
+  "apkUrl": "https://github.com/tuanta3012/khosach/releases/download/v1.0.1/khosach_v1.0.1.apk"
 }
