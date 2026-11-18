@@ -2100,6 +2100,9 @@ export async function removeFamilyMember(
     members: remaining,
     updatedAt: new Date().toISOString(),
   });
+
+  // 4. Dọn dẹp bản ghi chuyển tiếp trên Firestore cho thành viên vừa bị gỡ
+  removeAssignedFileForMember(cleanEmail).catch(() => {});
 }
 
 /**
@@ -3100,56 +3103,79 @@ export async function autoDiscoverCentralVault(
           
           let syncState = null;
           try {
-            syncState = await readMasterSyncStateFromGoogleSheet(accessToken, relay.assignedFileId);
+            syncState = await readMasterSyncStateFromGoogleSheet(accessToken, relay.assignedFileId, true);
           } catch (e) {
             log.warn('[AutoDiscover] Không đọc được syncState qua Sheets API:', e);
           }
-          
-          // Ưu tiên:
-          // 1. driveStatus.name (Tên thực tế trực tiếp từ Google Drive API hoặc Sheets API properties.title)
-          // 2. relay.assignedFileName (Tên file chính xác mà Admin gửi qua Firestore Relay)
-          // 3. meta?.activeFileName (Tên lưu trong sheet config nếu khác tên mặc định)
-          // 4. Fallback 'Kho Sách Gia Đình'
+
           const meta = syncState?.metadata;
-          const resolvedName =
-            (driveStatus.name && driveStatus.name !== 'Kho Sách Gia Đình' ? driveStatus.name : null) ||
-            (relay.assignedFileName && relay.assignedFileName !== 'Kho Sách Gia Đình' ? relay.assignedFileName : null) ||
-            driveStatus.name ||
-            relay.assignedFileName ||
-            (meta?.activeFileName && meta.activeFileName !== 'Kho Sách Gia Đình' ? meta.activeFileName : null) ||
-            meta?.activeFileName ||
-            'Kho Sách Gia Đình';
+          // Nếu Workspace đã bị Admin hủy liên kết thì bỏ qua relay này
+          if (meta && (meta.status === 'unlinked' || meta.lastAction === 'unlink')) {
+            log.info(`[AutoDiscover] File ${relay.assignedFileId} đang ở trạng thái unlinked trên Sheet __CONFIG__, bỏ qua.`);
+          } else {
+            const members = syncState?.members || [];
+            const adminEmailInConfig = (meta?.adminEmail || '').trim().toLowerCase();
+            const isAdminInConfig = Boolean(adminEmailInConfig && adminEmailInConfig === cleanEmail);
+            const matchedMember = members.find((m) => (m.email || '').trim().toLowerCase() === cleanEmail);
 
-          const matched: SpreadsheetInfo = {
-            id: relay.assignedFileId,
-            name: resolvedName,
-            webViewLink: `https://docs.google.com/spreadsheets/d/${relay.assignedFileId}/edit`,
-          };
+            // Nếu đọc được danh sách thành viên đầy đủ trong __CONFIG__ mà email không còn nằm trong nhóm -> bỏ qua
+            const hasConfigMemberList = Boolean(syncState && (adminEmailInConfig || members.length > 0));
+            const isAuthorizedInConfig = !hasConfigMemberList || isAdminInConfig || Boolean(matchedMember);
 
-          // Lưu danh bạ file và cache LocalStorage để sẵn sàng ngay
-          tagSpreadsheetAsAppCreated(accessToken, matched.id).catch(() => {});
-          applySheetColumnVisibility(accessToken, matched.id).catch(() => {});
-          saveKnownSpreadsheet(matched);
-          try {
-            localStorage.setItem('library_spreadsheet_info_v2', JSON.stringify(matched));
-            localStorage.removeItem('unlinked_spreadsheet_explicitly');
-            localStorage.removeItem('explicitly_unlinked');
-          } catch {}
-          
-          // FIRESTORE CHỈ CUNG CẤP FILEID 1 LẦN:
-          // Xóa ngay bản ghi trên Firestore sau khi thành viên đã tiếp nhận và liên kết file thành công
-          removeAssignedFileForMember(cleanEmail).catch((delErr) => {
-            log.warn('[AutoDiscover] Xóa bản ghi Firestore sau khi nhận fileId thất bại:', delErr);
-          });
-          log.info(`[AutoDiscover] Đã tự động liên kết thành công qua Firestore Relay 1 lần: ${matched.name} (${matched.id}). Đã xóa bản ghi relay trên Firestore.`);
-          
-          return {
-            matchedSheet: matched,
-            role: relay.role === 'Owner' ? 'ADMIN' : relay.role === 'Editor' ? 'EDITOR' : 'VIEWER',
-            taggedSheets: [matched],
-            allCandidates: [matched],
-            source: 'firestore_relay',
-          };
+            if (!isAuthorizedInConfig) {
+              log.info(`[AutoDiscover] Email ${cleanEmail} không còn trong danh sách thành viên của file ${relay.assignedFileId}.`);
+            } else {
+              // Ưu tiên:
+              // 1. driveStatus.name (Tên thực tế trực tiếp từ Google Drive API hoặc Sheets API properties.title)
+              // 2. relay.assignedFileName (Tên file chính xác mà Admin gửi qua Firestore Relay)
+              // 3. meta?.activeFileName (Tên lưu trong sheet config nếu khác tên mặc định)
+              // 4. Fallback 'Kho Sách Gia Đình'
+              const resolvedName =
+                (driveStatus.name && driveStatus.name !== 'Kho Sách Gia Đình' ? driveStatus.name : null) ||
+                (relay.assignedFileName && relay.assignedFileName !== 'Kho Sách Gia Đình' ? relay.assignedFileName : null) ||
+                driveStatus.name ||
+                relay.assignedFileName ||
+                (meta?.activeFileName && meta.activeFileName !== 'Kho Sách Gia Đình' ? meta.activeFileName : null) ||
+                meta?.activeFileName ||
+                'Kho Sách Gia Đình';
+
+              const resolvedRole: UserRole = isAdminInConfig
+                ? 'ADMIN'
+                : matchedMember
+                  ? (matchedMember.role === 'Owner' ? 'EDITOR' : matchedMember.role === 'Editor' ? 'EDITOR' : 'VIEWER')
+                  : (relay.role === 'Owner' ? 'ADMIN' : relay.role === 'Editor' ? 'EDITOR' : 'VIEWER');
+
+              const matched: SpreadsheetInfo = {
+                id: relay.assignedFileId,
+                name: resolvedName,
+                webViewLink: `https://docs.google.com/spreadsheets/d/${relay.assignedFileId}/edit`,
+              };
+
+              // Lưu danh bạ file và cache LocalStorage để sẵn sàng ngay
+              tagSpreadsheetAsAppCreated(accessToken, matched.id).catch(() => {});
+              applySheetColumnVisibility(accessToken, matched.id).catch(() => {});
+              saveKnownSpreadsheet(matched);
+              try {
+                localStorage.setItem('library_spreadsheet_info_v2', JSON.stringify(matched));
+                localStorage.removeItem('unlinked_spreadsheet_explicitly');
+                localStorage.removeItem('explicitly_unlinked');
+              } catch {}
+
+              // GIỮ NGUYÊN bản ghi trên Firestore để thành viên đăng nhập trên nhiều thiết bị khác
+              // (Tablet, Web, máy mới, cài lại app) đều tự động nhận được fileId và liên kết tức thì
+              // mà không cần mở rộng scope nhạy cảm drive.metadata.readonly.
+              // Bản ghi chỉ bị xóa khi Admin gỡ thành viên hoặc hủy liên kết Workspace.
+              log.info(`[AutoDiscover] Đã tự động liên kết qua Firestore Relay đa thiết bị: ${matched.name} (${matched.id}, vai trò: ${resolvedRole}).`);
+
+              return {
+                matchedSheet: matched,
+                role: resolvedRole,
+                taggedSheets: [matched],
+                allCandidates: [matched],
+                source: 'firestore_relay',
+              };
+            }
+          }
         } else {
           if (driveStatus.trashed) {
             log.warn(`[AutoDiscover] File từ Firestore Relay (${relay.assignedFileId}) đã bị xóa vào thùng rác trên Drive.`);

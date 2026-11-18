@@ -141,8 +141,9 @@ export async function consumeAssignedFileForMember(
 
     log.info(`[ShareRelay] Nhận file_id cho ${memberEmail}: ${data.assignedFileId} (Tên: ${data.assignedFileName || 'Kho Sách'}, Vai trò: ${data.role})`);
 
-    // Chỉ đọc bản ghi chuyển tiếp, KHÔNG xóa ngay tại đây.
-    // Bản ghi sẽ được xóa qua removeAssignedFileForMember() chỉ khi app đã hoàn tất liên kết thành công.
+    // Chỉ đọc bản ghi chuyển tiếp, KHÔNG xóa khi thành viên liên kết
+    // để hỗ trợ đăng nhập tự động đa thiết bị (Điện thoại, Tablet, Web, cài lại app).
+    // Bản ghi chỉ bị xóa qua removeAssignedFileForMember() khi Admin gỡ thành viên hoặc hủy Workspace.
     return data;
   } catch (err: any) {
     const isOffline =

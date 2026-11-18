@@ -146,6 +146,16 @@ export default function App() {
     } catch {}
     return null;
   });
+  const spreadsheetInfoRef = useRef<SpreadsheetInfo | null>(spreadsheetInfo);
+  const currentUserRef = useRef<AuthUser | null>(currentUser);
+
+  useEffect(() => {
+    spreadsheetInfoRef.current = spreadsheetInfo;
+  }, [spreadsheetInfo]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
   // Modals state
   const [isAddEditModalOpen, setIsAddEditModalOpen] = useState(false);
@@ -234,8 +244,35 @@ export default function App() {
   // LUỒNG TỰ ĐỘNG KẾT NỐI (AUTO-DISCOVERY & FALLBACK FLOW)
   // Đăng nhập trên bất kỳ thiết bị nào (Web hay APK Android) tự động nhận diện tệp dữ liệu ngầm qua Firestore & Google Drive
   const handleAutoDiscoverAndConnect = useCallback(
-    async (token: string, userEmail: string): Promise<SpreadsheetInfo | null> => {
+    async (
+      token: string,
+      userEmail: string,
+      options?: { isBackgroundPoll?: boolean }
+    ): Promise<SpreadsheetInfo | null> => {
       if (!token || !userEmail) return null;
+
+      const currentLinkedId = spreadsheetInfoRef.current?.id;
+      const currentCachedRole = currentUserRef.current?.userRole;
+
+      // Khi chạy polling ngầm định kỳ mà thiết bị ĐÃ liên kết sẵn với một file:
+      // Chỉ kiểm tra nhẹ bản ghi relay trên Firestore để phát hiện đổi file hoặc đổi vai trò,
+      // tránh đồng bộ lại toàn bộ và hiện toast lặp lại mỗi 15 giây.
+      if (options?.isBackgroundPoll && currentLinkedId) {
+        try {
+          const relay = await consumeAssignedFileForMember(userEmail);
+          if (!relay || relay.status === 'unlinked') {
+            return spreadsheetInfoRef.current;
+          }
+          const relayRole: UserRole =
+            relay.role === 'Owner' ? 'ADMIN' : relay.role === 'Editor' ? 'EDITOR' : 'VIEWER';
+          if (relay.assignedFileId === currentLinkedId && relayRole === currentCachedRole) {
+            return spreadsheetInfoRef.current;
+          }
+        } catch {
+          return spreadsheetInfoRef.current;
+        }
+      }
+
       setIsSyncingDrive(true);
       try {
         log.info('[AutoConnect] Khởi chạy luồng Auto-Discovery & Firestore Relay cho:', userEmail);
@@ -243,12 +280,14 @@ export default function App() {
 
         if (discovery.matchedSheet) {
           const activeSheet = discovery.matchedSheet;
+          const isNewOrChangedSheet = currentLinkedId !== activeSheet.id;
           const role =
             discovery.role ||
             (await determineCurrentUserRole(token, activeSheet.id, userEmail).catch(() => 'VIEWER' as const));
 
           log.info(`[AutoConnect] Đã tự động nhận diện file dữ liệu (${discovery.source}):`, activeSheet.id, activeSheet.name, role);
 
+          spreadsheetInfoRef.current = activeSheet;
           setSpreadsheetInfo(activeSheet);
           saveKnownSpreadsheet(activeSheet);
           try {
@@ -257,7 +296,15 @@ export default function App() {
             localStorage.removeItem('explicitly_unlinked');
           } catch {}
 
-          setCurrentUser((prev) => (prev ? { ...prev, userRole: role } : null));
+          setCurrentUser((prev) => {
+            const nextUser = prev ? { ...prev, userRole: role } : null;
+            if (nextUser) {
+              try {
+                localStorage.setItem('library_user_v2', JSON.stringify(nextUser));
+              } catch {}
+            }
+            return nextUser;
+          });
 
           // Đồng bộ 2 chiều dữ liệu tức thì
           const localBooks = loadLocalBooks();
@@ -266,7 +313,7 @@ export default function App() {
             if (syncRes.hasChanges || localBooks.length === 0) {
               saveAllLocalBooks(syncRes.mergedBooks);
               setBooks(syncRes.mergedBooks);
-              setLastDriveSyncTimestamp();
+              setLastDriveSyncTimestamp(Date.now(), activeSheet.id);
             }
           } catch (syncErr) {
             log.warn('[AutoConnect] Lỗi đồng bộ dữ liệu sau liên kết:', syncErr);
@@ -288,13 +335,15 @@ export default function App() {
           // Đảm bảo gắn nhãn com.khosach.app
           tagSpreadsheetAsAppCreated(token, activeSheet.id).catch(() => {});
 
-          const roleLabel = role === 'ADMIN' ? 'Quản trị viên' : role === 'EDITOR' ? 'Quyền Chỉnh sửa' : 'Quyền Xem';
-          showToast(`✨ Đã tự động kết nối với "${activeSheet.name}" (${roleLabel})`, 'success');
+          if (isNewOrChangedSheet) {
+            const roleLabel = role === 'ADMIN' ? 'Quản trị viên' : role === 'EDITOR' ? 'Quyền Chỉnh sửa' : 'Quyền Xem';
+            showToast(`✨ Đã tự động kết nối với "${activeSheet.name}" (${roleLabel})`, 'success');
+          }
           return activeSheet;
         } else {
           log.info('[AutoConnect] Không tìm thấy file active phù hợp trong config.');
           // Nếu có các file gắn nhãn com.khosach.app trên Drive, thông báo và mở modal chọn file
-          if (discovery.taggedSheets.length > 0) {
+          if (discovery.taggedSheets.length > 0 && !options?.isBackgroundPoll) {
             log.info('[AutoConnect] Tìm thấy', discovery.taggedSheets.length, 'file gắn nhãn com.khosach.app.');
             showToast(`Tìm thấy ${discovery.taggedSheets.length} file Kho Sách trên Drive. Vui lòng chọn file liên kết.`, 'info');
             setIsSyncModalOpen(true);
@@ -756,7 +805,7 @@ export default function App() {
       try {
         const token = await getAccessToken();
         if (token && currentUser?.email) {
-          await handleAutoDiscoverAndConnect(token, currentUser.email);
+          await handleAutoDiscoverAndConnect(token, currentUser.email, { isBackgroundPoll: true });
         }
       } catch (err) {
         log.warn('[ShareRelay] Polling background relay error:', err);
