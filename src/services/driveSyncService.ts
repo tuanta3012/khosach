@@ -25,6 +25,7 @@ import {
   consumeAssignedFileForMember,
   publishAssignedFile,
   publishAssignedFilesForMembers,
+  ensureAssignedFilesPublishedForMembers,
 } from './firebaseShareRelayService';
 
 export interface FamilyMember {
@@ -2065,12 +2066,23 @@ export async function updateFamilyMemberRole(
 export async function removeFamilyMember(
   accessToken: string,
   spreadsheetId: string,
-  email: string
+  email: string,
+  requestingAdminEmail?: string
 ): Promise<void> {
   const cleanEmail = email.trim().toLowerCase();
 
-  // 1. Đọc danh sách hiện tại trước, nếu không đọc được thì không xóa tab để tránh mất dữ liệu
-  const existing = await fetchFamilyMembers(accessToken, spreadsheetId);
+  // 1. Đọc danh sách & metadata hiện tại trước, xác thực chỉ Admin mới có quyền xóa thành viên
+  const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
+  const existing = (state?.members && state.members.length > 0)
+    ? state.members
+    : await fetchFamilyMembers(accessToken, spreadsheetId);
+
+  const ownerFromMembers = existing.find((m) => m.role === 'Owner')?.email?.trim().toLowerCase();
+  const configuredAdmin = (state?.metadata?.adminEmail || ownerFromMembers || '').trim().toLowerCase();
+  const requester = (requestingAdminEmail || '').trim().toLowerCase();
+  if (requester && configuredAdmin && requester !== configuredAdmin) {
+    throw new Error('Chỉ Quản trị viên (Admin) mới có quyền xóa thành viên và thu hồi truy cập.');
+  }
 
   // 2. Xóa permission trên Drive API
   try {
@@ -2094,14 +2106,13 @@ export async function removeFamilyMember(
   // 3. Cập nhật lại Tab __CONFIG__ với danh sách còn lại
   const remaining = existing.filter((m) => m.email.toLowerCase() !== cleanEmail);
 
-  const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
   await saveMasterSyncStateToGoogleSheet(accessToken, spreadsheetId, {
     ...(state?.metadata || { activeFileId: spreadsheetId, adminEmail: cleanEmail }),
     members: remaining,
     updatedAt: new Date().toISOString(),
   });
 
-  // 4. Dọn dẹp bản ghi chuyển tiếp trên Firestore cho thành viên vừa bị gỡ
+  // 4. Dọn dẹp bản ghi chuyển tiếp trên Firestore cho thành viên vừa bị Admin gỡ
   removeAssignedFileForMember(cleanEmail).catch(() => {});
 }
 
@@ -2796,6 +2807,14 @@ export async function syncSheetConfigVaultName(
 
     if (saveSuccess) {
       log.info(`[DriveSync] Đã cập nhật Vault Name và Metadata thành "${cleanTitle}" trong Sheet.`);
+      if (members.length > 0) {
+        ensureAssignedFilesPublishedForMembers(
+          members,
+          spreadsheetId,
+          cleanTitle,
+          existingMeta.adminEmail || adminEmail || ''
+        ).catch(() => {});
+      }
     }
 
     return saveSuccess;
@@ -3460,6 +3479,12 @@ export async function synchronizeDrivePermissionsWithJsonMembers(
       }
     }
 
+    // Đảm bảo mọi thành viên hợp lệ trong __CONFIG__ luôn có bản ghi fileId trên Firestore
+    const currentState = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId).catch(() => null);
+    const liveTitle = currentState?.metadata?.activeFileName || 'Kho Sách';
+    const resolvedAdminEmail = (currentState?.metadata?.adminEmail || cleanAdminEmail).trim().toLowerCase();
+    ensureAssignedFilesPublishedForMembers(members, spreadsheetId, liveTitle, resolvedAdminEmail).catch(() => {});
+
     // BƯỚC 2: Kiểm tra khớp vai trò và chỉ thu hồi quyền lạ khi danh sách thành viên trong Sheet đầy đủ
     for (const p of drivePermissions) {
       if (p.role === 'owner') continue; // Không can thiệp chủ sở hữu gốc của file
@@ -3467,7 +3492,7 @@ export async function synchronizeDrivePermissionsWithJsonMembers(
       const emailClean = p.emailAddress?.trim().toLowerCase();
       if (!emailClean) continue;
 
-      if (emailClean === cleanAdminEmail) continue; // Giữ nguyên quyền Admin gốc
+      if (emailClean === cleanAdminEmail || emailClean === resolvedAdminEmail) continue; // Giữ nguyên quyền Admin gốc
 
       const expectedRoleInSheet = memberMap.get(emailClean);
       if (!expectedRoleInSheet) {
@@ -3478,7 +3503,13 @@ export async function synchronizeDrivePermissionsWithJsonMembers(
           await fetch(delUrl, {
             method: 'DELETE',
             headers: { Authorization: `Bearer ${accessToken}` },
-          }).catch(() => {});
+          })
+            .then((delResp) => {
+              if (delResp.ok || delResp.status === 204) {
+                removeAssignedFileForMember(emailClean).catch(() => {});
+              }
+            })
+            .catch(() => {});
         }
       } else {
         // Khớp vai trò thực tế trên Drive: Editor -> writer, Viewer -> reader

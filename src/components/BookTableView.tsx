@@ -17,33 +17,54 @@ import {
   Plus,
   ArrowUpDown,
   PlusCircle,
+  Loader2,
 } from "lucide-react";
-import { BookRecord } from "../types";
+import { BookRecord, UserRole } from "../types";
 import { removeVietnameseTones } from "../utils/fuzzyMatcher";
 import { useToast } from "../context/ToastContext";
 import { CategoryBubbleChart } from "./CategoryBubbleChart";
 import { SortSelectDropdown, BookSortOption } from "./SortSelectDropdown";
 import { registerBackButtonHandler } from "../services/backButtonService";
+import {
+  normalizeSingleBook,
+  reclassifyBookCategories,
+  getStoredGeminiApiKeys,
+} from "../utils/geminiService";
 
 interface BookTableViewProps {
   books: BookRecord[];
   categories: string[];
   onSaveBook: (book: BookRecord) => Promise<void>;
   onDeleteBook: (id: string) => Promise<void>;
+  onBatchUpdateBooks?: (updatedBooksList: BookRecord[]) => Promise<void>;
   onOpenAddModal: () => void;
   onOpenImportModal: () => void;
   onSwitchToScanner?: () => void;
+  onOpenSettingsKey?: () => void;
+  userRole?: UserRole;
   appMode?: "offline" | "online";
   isSyncingDrive?: boolean;
 }
 
 function getCategoryBadgeStyle(categoryName: string): { bg: string; text: string; border: string } {
   const cat = (categoryName || "").toLowerCase();
-  if (cat.includes("kinh tế") || cat.includes("đầu tư") || cat.includes("kinh doanh")) {
-    return { bg: "bg-emerald-50", text: "text-[#10B981]", border: "border-emerald-200" };
+  if (cat.includes("kinh tế") || cat.includes("đầu tư") || cat.includes("kinh doanh") || cat.includes("quản trị")) {
+    return { bg: "bg-emerald-50", text: "text-[#059669]", border: "border-emerald-200" };
   }
   if (cat.includes("lịch sử") || cat.includes("hồi ký") || cat.includes("tự truyện")) {
     return { bg: "bg-amber-50", text: "text-[#EA580C]", border: "border-amber-200" };
+  }
+  if (cat.includes("tâm lý") || cat.includes("triết học") || cat.includes("kỹ năng")) {
+    return { bg: "bg-violet-50", text: "text-violet-700", border: "border-violet-200" };
+  }
+  if (cat.includes("y học") || cat.includes("sức khỏe") || cat.includes("giáo dục")) {
+    return { bg: "bg-teal-50", text: "text-teal-700", border: "border-teal-200" };
+  }
+  if (cat.includes("trinh thám") || cat.includes("giả tưởng") || cat.includes("khoa học")) {
+    return { bg: "bg-indigo-50", text: "text-indigo-700", border: "border-indigo-200" };
+  }
+  if (cat.includes("nghệ thuật") || cat.includes("lãng mạn") || cat.includes("tản văn")) {
+    return { bg: "bg-rose-50", text: "text-rose-700", border: "border-rose-200" };
   }
   return { bg: "bg-sky-50", text: "text-[#0284C7]", border: "border-[#bfdbfe]" };
 }
@@ -53,16 +74,24 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   categories,
   onSaveBook,
   onDeleteBook,
+  onBatchUpdateBooks,
   onOpenAddModal,
   onOpenImportModal,
   onSwitchToScanner,
+  onOpenSettingsKey,
+  userRole,
 }) => {
   const { showToast } = useToast();
   const [globalFilter, setGlobalFilter] = useState("");
   const deferredFilter = useDeferredValue(globalFilter);
   const [viewMode, setViewMode] = useState<"list" | "chart">("list");
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const editingRowIdRef = useRef<string | null>(null);
   const [editingValues, setEditingValues] = useState<Partial<BookRecord>>({});
+  const [isNormalizingSingle, setIsNormalizingSingle] = useState(false);
+  const [isReclassifyingCategories, setIsReclassifyingCategories] = useState(false);
+  const [reclassifyProgress, setReclassifyProgress] = useState<{ processed: number; total: number } | null>(null);
+  const stopReclassifyRef = useRef(false);
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -271,14 +300,145 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   }, [showToast]);
 
   const handleStartEdit = (book: BookRecord) => {
+    editingRowIdRef.current = book.id;
     setEditingRowId(book.id);
     setEditingValues({ ...book });
+    setIsNormalizingSingle(false);
   };
 
   const handleCancelEdit = () => {
+    editingRowIdRef.current = null;
     setEditingRowId(null);
     setEditingValues({});
+    setIsNormalizingSingle(false);
   };
+
+  const handleAiNormalizeSingleBook = async (originalBook: BookRecord) => {
+    if (userRole === 'VIEWER') {
+      showToast('⚠️ Bạn đang ở chế độ CHỈ XEM (Viewer). Không có quyền hiệu chỉnh sách!', 'warning');
+      return;
+    }
+    if (getStoredGeminiApiKeys().length === 0) {
+      showToast('Vui lòng thêm Gemini API Key trong Cài đặt để sử dụng AI!', 'warning');
+      onOpenSettingsKey?.();
+      return;
+    }
+    const candidateTitle = (editingValues.title ?? originalBook.title ?? '').trim();
+    if (!candidateTitle) {
+      showToast('Vui lòng nhập Tên sách trước khi hiệu chỉnh AI!', 'warning');
+      return;
+    }
+
+    setIsNormalizingSingle(true);
+    try {
+      const bookInput: BookRecord = {
+        ...originalBook,
+        title: candidateTitle,
+        author: (editingValues.author ?? originalBook.author ?? '').trim(),
+        category: (editingValues.category ?? originalBook.category ?? 'Chung').trim(),
+        publisher: (editingValues.publisher ?? originalBook.publisher ?? '').trim(),
+      };
+      const res = await normalizeSingleBook(bookInput, categories);
+      if (editingRowIdRef.current !== originalBook.id) return;
+
+      if (res.success && res.normalized) {
+        setEditingValues((prev) => ({
+          ...prev,
+          title: res.normalized!.title || prev.title,
+          author: res.normalized!.author || prev.author,
+          category: res.normalized!.category || prev.category,
+          publisher: res.normalized!.publisher ?? prev.publisher,
+          is_ai_normalized: true,
+        }));
+        showToast('✨ Đã hiệu chỉnh nội dung sách bằng AI! Bấm Lưu để áp dụng.', 'success');
+      } else {
+        showToast(res.error || 'Chưa thể hiệu chỉnh sách lúc này.', 'warning');
+      }
+    } catch (err: any) {
+      if (editingRowIdRef.current === originalBook.id) {
+        showToast(`Lỗi hiệu chỉnh AI: ${err?.message || String(err)}`, 'warning');
+      }
+    } finally {
+      if (editingRowIdRef.current === originalBook.id) {
+        setIsNormalizingSingle(false);
+      }
+    }
+  };
+
+  const handleStartReclassifyCategories = useCallback(async () => {
+    if (userRole === 'VIEWER') {
+      showToast('⚠️ Bạn đang ở chế độ CHỈ XEM (Viewer). Không có quyền hiệu chỉnh thể loại!', 'warning');
+      return;
+    }
+    if (!onBatchUpdateBooks || books.length === 0) return;
+    if (getStoredGeminiApiKeys().length === 0) {
+      showToast('Vui lòng thêm Gemini API Key trong Cài đặt để phân loại bằng AI!', 'warning');
+      onOpenSettingsKey?.();
+      return;
+    }
+
+    stopReclassifyRef.current = false;
+    setIsReclassifyingCategories(true);
+    setReclassifyProgress({ processed: 0, total: books.length });
+
+    try {
+      const res = await reclassifyBookCategories(books, {
+        categories,
+        stopSignal: stopReclassifyRef,
+        onChunkComplete: (_chunkUpdates, processed, total) => {
+          setReclassifyProgress({ processed, total });
+        },
+      });
+
+      const updateMap = new Map(res.updates.map((u) => [u.id, u.category]));
+      const now = Date.now();
+      const changedBooks: BookRecord[] = [];
+
+      books.forEach((book) => {
+        const nextCat = updateMap.get(book.id);
+        if (nextCat && nextCat !== (book.category || 'Chung').trim()) {
+          changedBooks.push({
+            ...book,
+            category: nextCat,
+            updated_at: now,
+          });
+        }
+      });
+
+      if (changedBooks.length > 0) {
+        await onBatchUpdateBooks(changedBooks);
+      }
+
+      if (res.stopped) {
+        showToast(
+          changedBooks.length > 0
+            ? `Đã dừng và cập nhật thể loại cho ${changedBooks.length} cuốn sách.`
+            : 'Đã dừng phân loại thể loại.',
+          'info'
+        );
+      } else if (res.failedChunks.length > 0) {
+        const failedCount = res.failedChunks.reduce((acc, c) => acc + c.bookIds.length, 0);
+        showToast(
+          `Đã cập nhật thể loại cho ${changedBooks.length} cuốn; còn ${failedCount} cuốn chưa xử lý được.`,
+          'warning'
+        );
+      } else if (changedBooks.length > 0) {
+        showToast(`✨ Đã phân loại lại thể loại cho ${changedBooks.length} cuốn sách!`, 'success');
+      } else {
+        showToast('Thể loại của toàn bộ kho sách đã chuẩn xác rồi!', 'success');
+      }
+    } catch (err: any) {
+      showToast(`Lỗi phân loại thể loại AI: ${err?.message || String(err)}`, 'error');
+    } finally {
+      setIsReclassifyingCategories(false);
+      setReclassifyProgress(null);
+      stopReclassifyRef.current = false;
+    }
+  }, [userRole, onBatchUpdateBooks, books, categories, onOpenSettingsKey, showToast]);
+
+  const handleStopReclassifyCategories = useCallback(() => {
+    stopReclassifyRef.current = true;
+  }, []);
 
   const handleSaveInline = async (originalBook: BookRecord) => {
     if (!editingValues.title?.trim()) {
@@ -291,11 +451,14 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       author: editingValues.author?.trim() || '',
       category: editingValues.category?.trim() || 'Chung',
       publisher: editingValues.publisher?.trim() || '',
+      is_ai_normalized: editingValues.is_ai_normalized ?? originalBook.is_ai_normalized,
       updated_at: Date.now(),
     };
     await onSaveBook(updatedBook);
+    editingRowIdRef.current = null;
     setEditingRowId(null);
     setEditingValues({});
+    setIsNormalizingSingle(false);
     showToast('Đã lưu sách!', 'success');
   };
 
@@ -497,8 +660,25 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                       key={book.id}
                       className="bg-amber-50/80 border border-amber-300 rounded-xl p-2.5 space-y-1.5 shadow-xs"
                     >
-                      <div className="text-[10px] font-bold text-[#85451e] uppercase tracking-wider">
-                        Sửa cuốn #{displayIndex}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[10px] font-bold text-[#85451e] uppercase tracking-wider">
+                          Sửa cuốn #{displayIndex}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleAiNormalizeSingleBook(book)}
+                          disabled={isNormalizingSingle}
+                          title="Dùng AI hiệu chỉnh lại riêng cuốn sách này"
+                          aria-label="Hiệu chỉnh riêng cuốn sách này bằng AI"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-[#059669] border border-emerald-300/90 text-[10px] font-extrabold transition shadow-2xs disabled:opacity-50 cursor-pointer"
+                        >
+                          {isNormalizingSingle ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3 h-3" />
+                          )}
+                          <span>AI</span>
+                        </button>
                       </div>
                       <div>
                         <label className="text-[10px] font-bold text-slate-500">Tên Sách</label>
@@ -557,6 +737,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                             data-lpignore="true"
                             data-1p-ignore="true"
                             data-form-type="other"
+                            list="inline-category-suggestions"
                             value={editingValues.category ?? book.category}
                             onChange={(e) =>
                               setEditingValues((prev) => ({
@@ -566,6 +747,11 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                             }
                             className="w-full px-2 py-0.5 text-xs bg-white border border-[#EA580C] rounded-lg focus:outline-none"
                           />
+                          <datalist id="inline-category-suggestions">
+                            {categories.map((cat) => (
+                              <option key={cat} value={cat} />
+                            ))}
+                          </datalist>
                         </div>
                       </div>
                       <div>
@@ -820,7 +1006,14 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
           )}
         </div>
       ) : (
-        <CategoryBubbleChart books={books} onSelectCategory={handleSelectCategoryFromChart} />
+        <CategoryBubbleChart
+          books={books}
+          onSelectCategory={handleSelectCategoryFromChart}
+          onReclassifyCategories={onBatchUpdateBooks ? handleStartReclassifyCategories : undefined}
+          onStopReclassify={handleStopReclassifyCategories}
+          isReclassifying={isReclassifyingCategories}
+          reclassifyProgress={reclassifyProgress}
+        />
       )}
     </div>
   );

@@ -168,6 +168,29 @@ export interface BatchNormalizeResult {
   stopped: boolean;
 }
 
+export interface ReclassifyCategoriesItem {
+  id: string;
+  category: string;
+}
+
+export interface ReclassifyCategoriesOptions {
+  preferredModel?: string;
+  categories?: string[];
+  onChunkComplete?: (
+    chunkUpdates: ReclassifyCategoriesItem[],
+    processedCount: number,
+    totalCount: number
+  ) => Promise<void> | void;
+  stopSignal?: { current: boolean };
+}
+
+export interface ReclassifyCategoriesResult {
+  success: boolean;
+  updates: ReclassifyCategoriesItem[];
+  failedChunks: BatchNormalizeFailure[];
+  stopped: boolean;
+}
+
 export interface KeyQuotaMetrics {
   keyCount: number;
   healthyKeyCount: number;

@@ -1250,12 +1250,18 @@ export default function App() {
             categories={currentCategories}
             onSaveBook={handleSaveBook}
             onDeleteBook={handleDeleteBook}
+            onBatchUpdateBooks={handleBatchUpdateBooks}
             onOpenAddModal={() => {
               setEditingBook(null);
               setIsAddEditModalOpen(true);
             }}
             onOpenImportModal={() => setIsSyncModalOpen(true)}
             onSwitchToScanner={() => setCurrentTab('scanner')}
+            onOpenSettingsKey={() => {
+              setSettingsInitialExpandKey(true);
+              setIsSettingsModalOpen(true);
+            }}
+            userRole={currentUser?.userRole}
             appMode={appMode}
             isSyncingDrive={isSyncingDrive}
           />

@@ -16,8 +16,31 @@ export interface BookMutation {
   timestamp: number;
 }
 
-// Danh mục mặc định
+// Danh mục mặc định mở rộng chi tiết (tối đa 20 thể loại gồm 'Chung')
 export const DEFAULT_CATEGORIES = [
+  'Văn học Việt Nam',
+  'Văn học kinh điển',
+  'Văn học hiện đại',
+  'Văn học thiếu nhi',
+  'Tiểu thuyết lãng mạn',
+  'Trinh thám',
+  'Giả tưởng',
+  'Tản văn',
+  'Hồi ký',
+  'Lịch sử',
+  'Triết học',
+  'Tâm lý',
+  'Kỹ năng sống',
+  'Kinh tế',
+  'Quản trị - Kinh doanh',
+  'Khoa học',
+  'Y học - Sức khỏe',
+  'Giáo dục - Gia đình',
+  'Nghệ thuật - Đời sống',
+  'Chung',
+];
+
+const LEGACY_DEFAULT_CATEGORIES_SET = new Set([
   'Văn học Việt Nam',
   'Văn học kinh điển',
   'Văn học thiếu nhi',
@@ -32,7 +55,21 @@ export const DEFAULT_CATEGORIES = [
   'Tản văn',
   'Kinh tế',
   'Chung',
-];
+]);
+
+function resolveExpandedCategories(stored?: unknown): string[] {
+  if (!Array.isArray(stored) || stored.length === 0) {
+    return DEFAULT_CATEGORIES;
+  }
+  const cleanStored = stored.map((c) => String(c || '').trim()).filter(Boolean);
+  const isLegacyOnly = cleanStored.every((c) => LEGACY_DEFAULT_CATEGORIES_SET.has(c));
+  if (isLegacyOnly) {
+    return DEFAULT_CATEGORIES;
+  }
+  // Giữ tùy chỉnh (nếu có) nhưng đảm bảo có các thể loại mới và không vượt quá 20 mục
+  const merged = Array.from(new Set([...DEFAULT_CATEGORIES, ...cleanStored]));
+  return merged.slice(0, 20);
+}
 
 export const DEFAULT_SETTINGS: LibrarySettings = {
   autoEnrichEnabled: false,
@@ -329,7 +366,7 @@ export function loadLocalSettings(): LibrarySettings {
         ...parsed,
         geminiApiKeys: keys,
         autoNormalizeEnabled: parsed.autoNormalizeEnabled ?? false,
-        categoriesList: parsed.categoriesList || DEFAULT_CATEGORIES,
+        categoriesList: resolveExpandedCategories(parsed.categoriesList),
       };
     } else if (storedKeys.length > 0) {
       return {

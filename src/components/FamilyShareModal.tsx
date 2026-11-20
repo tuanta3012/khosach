@@ -20,7 +20,7 @@ import { useToast } from '../context/ToastContext';
 import { AuthUser } from '../types';
 import { 
   publishAssignedFile, 
-  publishAssignedFilesForMembers, 
+  ensureAssignedFilesPublishedForMembers, 
   removeAssignedFileForMember 
 } from '../services/firebaseShareRelayService';
 
@@ -86,6 +86,13 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       const driveStatus = await checkSpreadsheetStatusOnDrive(token, sheetId).catch(() => null);
       const liveTitle = driveStatus?.name || spreadsheetInfo?.name || 'Kho Sách';
 
+      const myEmail = (currentUser?.email || '').trim().toLowerCase();
+      const isAdminViewing =
+        currentUser?.userRole === 'ADMIN' ||
+        list.some((m) => m.email.trim().toLowerCase() === myEmail && m.role === 'Owner');
+      if (isAdminViewing && list.length > 0) {
+        ensureAssignedFilesPublishedForMembers(list, sheetId, liveTitle, currentUser?.email || '').catch(() => {});
+      }
 
     } catch (err: any) {
       console.warn('[FamilyShare] Tải danh sách thành viên thất bại:', err);
@@ -207,7 +214,17 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
     }
   };
 
+  const cleanCurrentEmail = (currentUser?.email || '').trim().toLowerCase();
+  const myMemberRecord = members.find((m) => m.email.trim().toLowerCase() === cleanCurrentEmail);
+  const myRole = myMemberRecord?.role || (currentUser?.userRole === 'ADMIN' ? 'Owner' : currentUser?.userRole === 'EDITOR' ? 'Editor' : 'Viewer');
+  const isOwnerAdmin = myRole === 'Owner';
+  const canManageMembers = isOwnerAdmin || myRole === 'Editor';
+
   const handleRemoveMember = async (email: string) => {
+    if (!isOwnerAdmin) {
+      showToast('Chỉ Quản trị viên (Admin) mới có quyền xóa thành viên và thu hồi truy cập!', 'warning');
+      return;
+    }
     const sheetId = await resolveSheetId();
     if (!sheetId) return;
     setIsRemovingEmail(email);
@@ -218,7 +235,7 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
       const token = await getAccessToken();
       if (!token) throw new Error('Chưa đăng nhập tài khoản Google.');
 
-      await removeFamilyMember(token, sheetId, email);
+      await removeFamilyMember(token, sheetId, email, currentUser?.email);
 
       // Dọn dẹp bản ghi gán trên Firestore (nếu có)
       removeAssignedFileForMember(email).catch(() => {});
@@ -236,11 +253,6 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
     if (name) return name.charAt(0).toUpperCase();
     return email.charAt(0).toUpperCase();
   };
-
-  const cleanCurrentEmail = (currentUser?.email || '').trim().toLowerCase();
-  const myMemberRecord = members.find((m) => m.email.trim().toLowerCase() === cleanCurrentEmail);
-  const myRole = myMemberRecord?.role || (currentUser?.userRole === 'ADMIN' ? 'Owner' : currentUser?.userRole === 'EDITOR' ? 'Editor' : 'Viewer');
-  const canManageMembers = myRole === 'Owner' || myRole === 'Editor';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60">
@@ -451,19 +463,21 @@ export const FamilyShareModal: React.FC<FamilyShareModalProps> = ({
                               )}
                             </button>
 
-                            <button
-                              type="button"
-                              disabled={!!isRemovingEmail || !!updatingRoleEmail}
-                              onClick={() => handleRemoveMember(m.email)}
-                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
-                              title="Xóa thành viên"
-                            >
-                              {isRemovingEmail === m.email ? (
-                                <Loader2 className="w-4 h-4 animate-spin text-rose-600" />
-                              ) : (
-                                <Trash2 className="w-4 h-4" />
-                              )}
-                            </button>
+                            {isOwnerAdmin && (
+                              <button
+                                type="button"
+                                disabled={!!isRemovingEmail || !!updatingRoleEmail}
+                                onClick={() => handleRemoveMember(m.email)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition active:scale-95 cursor-pointer disabled:opacity-50"
+                                title="Xóa thành viên"
+                              >
+                                {isRemovingEmail === m.email ? (
+                                  <Loader2 className="w-4 h-4 animate-spin text-rose-600" />
+                                ) : (
+                                  <Trash2 className="w-4 h-4" />
+                                )}
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <div className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold border shadow-3xs ${

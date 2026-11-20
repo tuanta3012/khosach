@@ -1,26 +1,26 @@
 import React, { useMemo } from 'react';
 import { BookRecord } from '../types';
-import { BookOpen, Layers, ArrowUpRight } from 'lucide-react';
+import { BookOpen, Layers, ArrowUpRight, Sparkles, Loader2, Square } from 'lucide-react';
 
 interface CategoryBubbleChartProps {
   books: BookRecord[];
   onSelectCategory: (category: string) => void;
+  onReclassifyCategories?: () => Promise<void>;
+  onStopReclassify?: () => void;
+  isReclassifying?: boolean;
+  reclassifyProgress?: { processed: number; total: number } | null;
 }
 
-interface ShelfBookItem {
+interface HorizontalBookTagItem {
   id: string;
   category: string;
   count: number;
   spineColor: string;
   accentColor: string;
   textColor: string;
-  height: number;
-  width: number;
-  displayName: string;
-  fontSize: string;
 }
 
-// Bảng màu 5 cuốn sách chủ đạo từ App Icon + các sắc thái trang nhã
+// Bảng màu các cuốn sách chủ đạo từ App Icon + các sắc thái trang nhã
 const BRAND_SHELF_BOOK_PALETTES: { bg: string; accent: string; text: string }[] = [
   { bg: '#0284C7', accent: '#bae6fd', text: '#ffffff' }, // Ocean Blue
   { bg: '#10B981', accent: '#a7f3d0', text: '#ffffff' }, // Emerald Green
@@ -32,62 +32,15 @@ const BRAND_SHELF_BOOK_PALETTES: { bg: string; accent: string; text: string }[] 
   { bg: '#4c1d95', accent: '#ddd6fe', text: '#ffffff' }, // Deep Purple
 ];
 
-function formatCategorySpineText(rawCategory: string): { displayName: string; fontSize: string } {
-  const cat = (rawCategory || 'Chung').trim();
-
-  const smartAbbreviations: Record<string, string> = {
-    'Văn học Việt Nam': 'VH Việt Nam',
-    'Văn học nước ngoài': 'VH Nước Ngoài',
-    'Văn học thiếu nhi': 'VH Thiếu Nhi',
-    'Văn học kinh điển': 'VH Kinh Điển',
-    'Tâm lý / Phát triển bản thân': 'Tâm Lý - Phát Triển',
-    'Tâm lý - Phát triển bản thân': 'Tâm Lý - Phát Triển',
-    'Tâm lý / Phát triển': 'Tâm Lý - Phát Triển',
-    'Kỹ năng sống & Phát triển': 'Kỹ Năng Sống',
-    'Kinh tế / Quản trị': 'Kinh Tế - Quản Trị',
-    'Kinh tế - Đầu tư': 'Kinh Tế - Đầu Tư',
-    'Trinh thám / Ly kỳ': 'Trinh Thám - Ly Kỳ',
-    'Giả tưởng / Kỳ ảo': 'Giả Tưởng - Kỳ Ảo',
-    'Tản văn / Tùy bút': 'Tản Văn - Tùy Bút',
-    'Hồi ký / Tự truyện': 'Hồi Ký - Tự Truyện',
-    'Triết học & Tâm linh': 'Triết Học - Tâm Linh',
-    'Truyện tranh / Manga / Comic': 'Truyện Tranh - Manga',
-  };
-
-  let formatted = smartAbbreviations[cat] || cat;
-
-  if (formatted.length > 18) {
-    formatted = formatted
-      .replace(/Văn [Hh]ọc/g, 'VH')
-      .replace(/Kỹ [Nn]ăng/g, 'KN')
-      .replace(/Phát [Tt]riển/g, 'PT')
-      .replace(/\s*\/\s*/g, ' - ');
-  }
-
-  formatted = formatted.toUpperCase();
-  const len = formatted.length;
-  let fontSize = '10.5px';
-
-  if (len <= 7) {
-    fontSize = '11.5px';
-  } else if (len <= 12) {
-    fontSize = '10px';
-  } else if (len <= 16) {
-    fontSize = '9px';
-  } else if (len <= 22) {
-    fontSize = '8px';
-  } else {
-    fontSize = '7.5px';
-  }
-
-  return { displayName: formatted, fontSize };
-}
-
 export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = React.memo(({
   books,
   onSelectCategory,
+  onReclassifyCategories,
+  onStopReclassify,
+  isReclassifying = false,
+  reclassifyProgress = null,
 }) => {
-  const { shelves, totalBooks, totalCategories, topCategory } = useMemo(() => {
+  const { categoryTags, totalBooks, totalCategories, topCategory } = useMemo(() => {
     const counts: Record<string, number> = {};
     const total = books.length;
 
@@ -96,52 +49,31 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = React.mem
       counts[cat] = (counts[cat] || 0) + 1;
     });
 
-    const items = Object.entries(counts)
+    const items: HorizontalBookTagItem[] = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'vi'))
       .map(([category, count], idx) => {
         const palette = BRAND_SHELF_BOOK_PALETTES[idx % BRAND_SHELF_BOOK_PALETTES.length];
-
-        const minW = 38;
-        const maxW = 62;
-        const normalizedW = Math.min(1, Math.max(0, (count - 1) / 75));
-        const width = Math.round(minW + normalizedW * (maxW - minW));
-        const height = 135 + (idx % 4) * 8 + (count > 25 ? 6 : 0);
-
-        const { displayName, fontSize } = formatCategorySpineText(category);
-
         return {
-          id: `book_spine_${idx}_${encodeURIComponent(category)}`,
+          id: `book_tag_${idx}_${encodeURIComponent(category)}`,
           category,
           count,
           spineColor: palette.bg,
           accentColor: palette.accent,
           textColor: palette.text,
-          height,
-          width,
-          displayName,
-          fontSize,
         };
-      })
-      .sort((a, b) => b.count - a.count);
-
-    const shelf1: ShelfBookItem[] = [];
-    const shelf2: ShelfBookItem[] = [];
-    const shelf3: ShelfBookItem[] = [];
-
-    items.forEach((item, index) => {
-      if (index % 3 === 0) shelf1.push(item);
-      else if (index % 3 === 1) shelf2.push(item);
-      else shelf3.push(item);
-    });
-
-    const shelvesList = [shelf1, shelf2, shelf3].filter((s) => s.length > 0);
+      });
 
     return {
-      shelves: shelvesList,
+      categoryTags: items,
       totalBooks: total,
       totalCategories: items.length,
       topCategory: items[0],
     };
   }, [books]);
+
+  const progressPercent = reclassifyProgress && reclassifyProgress.total > 0
+    ? Math.min(100, Math.round((reclassifyProgress.processed / reclassifyProgress.total) * 100))
+    : 0;
 
   return (
     <div className="space-y-3 animate-in fade-in duration-300">
@@ -179,82 +111,118 @@ export const CategoryBubbleChart: React.FC<CategoryBubbleChartProps> = React.mem
         </div>
       </div>
 
-      {/* Container Kệ Sách Nền Sáng */}
-      <div className="bg-amber-50/40 rounded-2xl p-3 sm:p-4 border border-amber-200/80 shadow-xs relative overflow-hidden space-y-4">
-        {shelves.map((shelf, shelfIdx) => (
-          <div key={`shelf_${shelfIdx}`} className="relative pt-1">
-            <div className="flex items-end justify-center gap-1.5 px-1 min-h-[170px] overflow-x-auto no-scrollbar scroll-smooth">
-              {shelf.map((book) => {
-                const maxTextLength = book.height - 44;
+      {/* Container Thẻ Thể Loại Hình Quyển Sách Nằm Ngang (Không Kệ) + Nút AI Góc Phải Trên */}
+      <div className="bg-amber-50/40 rounded-2xl p-3 sm:p-4 border border-amber-200/80 shadow-xs relative space-y-3">
+        {/* Header của khung thể loại với nút AI ở góc phải trên */}
+        <div className="flex items-center justify-between gap-2 pb-2 border-b border-amber-200/60">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-xs font-extrabold text-amber-950/85 tracking-tight">
+              Thể loại sách
+            </span>
+            <span className="text-[10px] font-medium text-amber-800/70 hidden sm:inline">
+              (Chạm vào sách để lọc)
+            </span>
+          </div>
 
-                return (
-                  <div
-                    key={book.id}
-                    onClick={() => onSelectCategory(book.category)}
-                    style={{
-                      width: `${book.width}px`,
-                      height: `${book.height}px`,
-                      backgroundColor: book.spineColor,
-                    }}
-                    className="relative shrink-0 rounded-t-md cursor-pointer transition-all duration-200 flex flex-col items-center justify-between py-2 px-1 shadow-sm border-t border-l border-r border-white/30 select-none group hover:-translate-y-3 hover:shadow-xl hover:ring-2 hover:ring-amber-500 hover:z-30 hover:scale-105 active:scale-95 opacity-95 hover:opacity-100"
-                  >
-                    {/* Bookmark Ribbon */}
-                    <div
-                      className="absolute -top-2 right-1.5 w-1.5 h-3 rounded-b-xs shadow-xs z-20"
-                      style={{ backgroundColor: book.accentColor }}
-                    />
+          {onReclassifyCategories && (
+            isReclassifying ? (
+              <button
+                type="button"
+                onClick={onStopReclassify}
+                title="Dừng phân loại thể loại"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-100 hover:bg-amber-200 active:scale-95 text-amber-900 border border-amber-300 text-[11px] font-extrabold shadow-2xs transition cursor-pointer shrink-0"
+              >
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
+                <span>Dừng</span>
+                <Square className="w-2.5 h-2.5 fill-current" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onReclassifyCategories}
+                disabled={books.length === 0}
+                title="Dùng AI hiệu chỉnh lại phần thể loại của toàn bộ kho sách"
+                aria-label="Hiệu chỉnh thể loại toàn bộ kho sách bằng AI"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-[#059669] border border-emerald-300/90 text-[11px] font-extrabold shadow-2xs transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>AI</span>
+              </button>
+            )
+          )}
+        </div>
 
-                    {/* Top Accent Line */}
-                    <div className="w-full space-y-1 opacity-35">
-                      <div className="w-full h-0.5 bg-white" />
-                      <div className="w-full h-0.5 bg-black/20" />
-                    </div>
-
-                    {/* Category Vertical Text */}
-                    <div className="flex-1 flex items-center justify-center relative my-1 overflow-hidden w-full">
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <span
-                          className="font-black tracking-wider whitespace-nowrap text-center transition-transform pointer-events-none"
-                          style={{
-                            transform: 'rotate(-90deg)',
-                            color: book.textColor,
-                            maxWidth: `${maxTextLength}px`,
-                            fontSize: book.fontSize,
-                            textShadow: '0px 1px 2px rgba(0,0,0,0.5)',
-                          }}
-                        >
-                          {book.displayName}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Count Badge on Spine */}
-                    <div
-                      className="w-full py-0.5 rounded-xs text-[10px] font-black text-center text-slate-900 shadow-2xs z-10"
-                      style={{ backgroundColor: book.accentColor }}
-                    >
-                      {book.count}
-                    </div>
-
-                    {/* Bottom Accent Line */}
-                    <div className="w-full mt-1 opacity-35">
-                      <div className="w-full h-0.5 bg-white" />
-                    </div>
-                  </div>
-                );
-              })}
+        {/* Thanh tiến độ khi đang phân loại lại thể loại toàn bộ kho sách */}
+        {isReclassifying && reclassifyProgress && (
+          <div className="bg-white/90 border border-emerald-200 rounded-xl px-3 py-2 space-y-1.5 animate-in fade-in duration-200">
+            <div className="flex items-center justify-between text-[11px] font-bold text-emerald-800">
+              <span className="flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+                <span>Đang phân loại lại thể loại bằng AI...</span>
+              </span>
+              <span className="font-mono text-emerald-700">
+                {reclassifyProgress.processed}/{reclassifyProgress.total} ({progressPercent}%)
+              </span>
             </div>
-
-            {/* Honey Sand Wood Shelf Plank */}
-            <div className="relative w-full mt-0">
-              <div className="h-3.5 bg-gradient-to-r from-amber-300 via-amber-200 to-amber-300 rounded-xs shadow-inner border-t border-amber-400/80 flex items-center px-3 justify-between">
-                <div className="w-1.5 h-1 bg-amber-500/60 rounded-full" />
-                <div className="w-1.5 h-1 bg-amber-500/60 rounded-full" />
-              </div>
-              <div className="h-1.5 bg-amber-900/10 rounded-b-sm shadow-xs" />
+            <div className="w-full h-1.5 bg-emerald-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-[#10B981] transition-all duration-300 rounded-full"
+                style={{ width: `${progressPercent}%` }}
+              />
             </div>
           </div>
-        ))}
+        )}
+
+        {/* Danh sách các cuốn sách nằm ngang xếp kiểu Tag */}
+        {categoryTags.length > 0 ? (
+          <div className="flex flex-wrap gap-2 pt-0.5">
+            {categoryTags.map((book) => (
+              <button
+                key={book.id}
+                type="button"
+                onClick={() => onSelectCategory(book.category)}
+                style={{ backgroundColor: book.spineColor }}
+                className="relative inline-flex items-stretch rounded-l-sm rounded-r-lg cursor-pointer transition-all duration-150 shadow-xs border-t border-b border-white/25 border-r-[3px] border-r-amber-100/95 select-none group hover:-translate-y-0.5 hover:shadow-md hover:ring-2 hover:ring-amber-400/80 active:scale-95 text-left max-w-full"
+              >
+                {/* Bookmark Ribbon nhỏ phía trên mép phải của cuốn sách */}
+                <span
+                  className="absolute -top-1 right-2.5 w-1.5 h-2 rounded-b-xs shadow-2xs z-10 pointer-events-none"
+                  style={{ backgroundColor: book.accentColor }}
+                />
+
+                {/* Gáy sách bên trái với đường chỉ gáy */}
+                <span className="w-2.5 sm:w-3 shrink-0 rounded-l-sm bg-black/15 border-r border-white/25 flex flex-col justify-between py-1.5 px-0.5">
+                  <span className="w-full h-[1.5px] bg-white/40 rounded-full" />
+                  <span className="w-full h-[1.5px] bg-white/40 rounded-full" />
+                </span>
+
+                {/* Thân sách nằm ngang với tên thể loại & số lượng */}
+                <span className="relative flex items-center gap-2 py-1.5 pl-2.5 pr-2 min-w-0">
+                  <span className="absolute inset-x-2 top-0.5 h-[1px] bg-white/20 pointer-events-none" />
+                  <span
+                    className="text-xs font-extrabold tracking-tight leading-snug"
+                    style={{
+                      color: book.textColor,
+                      textShadow: '0px 1px 1.5px rgba(0,0,0,0.35)',
+                    }}
+                  >
+                    {book.category}
+                  </span>
+                  <span
+                    className="px-1.5 py-0.5 rounded-xs text-[10px] font-black text-slate-900 shadow-2xs shrink-0 leading-none"
+                    style={{ backgroundColor: book.accentColor }}
+                  >
+                    {book.count}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="py-8 text-center text-xs font-medium text-slate-400">
+            Chưa có sách nào trong kho để phân loại thể loại.
+          </div>
+        )}
       </div>
     </div>
   );

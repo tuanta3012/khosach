@@ -19,6 +19,18 @@ export interface AssignedShareRecord {
   lastCheckedAt?: number;
 }
 
+// Bộ nhớ đệm phiên giúp tránh ghi lặp lại lên Firestore khi bản ghi của thành viên đã khớp
+const publishedRelaySignatureCache = new Map<string, string>();
+
+function buildRelaySignature(
+  fileId: string,
+  fileName: string,
+  role: 'Owner' | 'Editor' | 'Viewer',
+  adminEmail: string
+): string {
+  return `${fileId}::${(fileName || 'Kho Sách').trim()}::${role}::${(adminEmail || '').trim().toLowerCase()}::active`;
+}
+
 /**
  * Chuẩn hóa email thành document ID an toàn cho Firestore
  * Ví dụ: tuanta3012@gmail.com -> tuanta3012_at_gmail_dot_com
@@ -41,25 +53,57 @@ export async function publishAssignedFile(
   fileId: string,
   fileName: string,
   adminEmail: string,
-  role: 'Owner' | 'Editor' | 'Viewer'
+  role: 'Owner' | 'Editor' | 'Viewer',
+  options?: { onlyIfMissingOrChanged?: boolean }
 ): Promise<boolean> {
   try {
     const emailKey = sanitizeEmailKey(memberEmail);
     if (!emailKey || !fileId) return false;
 
+    const cleanTitle = (fileName || 'Kho Sách').trim() || 'Kho Sách';
+    const cleanAdmin = (adminEmail || '').trim().toLowerCase();
+    const signature = buildRelaySignature(fileId, cleanTitle, role, cleanAdmin);
+
+    if (options?.onlyIfMissingOrChanged && publishedRelaySignatureCache.get(emailKey) === signature) {
+      return true;
+    }
+
     const docRef = doc(db, 'assigned_shares', emailKey);
+    let existingCreatedAt: number | undefined;
+
+    if (options?.onlyIfMissingOrChanged) {
+      const existingSnap = await getDoc(docRef);
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data() as Partial<AssignedShareRecord>;
+        existingCreatedAt = existingData.createdAt;
+        const alreadyMatches =
+          existingData.assignedFileId === fileId &&
+          (existingData.assignedFileName || 'Kho Sách').trim() === cleanTitle &&
+          existingData.role === role &&
+          existingData.status === 'active' &&
+          (!cleanAdmin || (existingData.adminEmail || '').trim().toLowerCase() === cleanAdmin);
+
+        if (alreadyMatches) {
+          publishedRelaySignatureCache.set(emailKey, signature);
+          return true;
+        }
+      }
+    }
+
+    const now = Date.now();
     const data: AssignedShareRecord = {
       assignedFileId: fileId,
-      assignedFileName: fileName || 'Kho Sách',
-      adminEmail: adminEmail || '',
+      assignedFileName: cleanTitle,
+      adminEmail: cleanAdmin,
       memberEmail: memberEmail.trim().toLowerCase(),
       role,
       status: 'active',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: existingCreatedAt || now,
+      updatedAt: now,
     };
 
     await setDoc(docRef, data, { merge: true });
+    publishedRelaySignatureCache.set(emailKey, signature);
     log.info(`[ShareRelay] Đã phát hành liên kết file ${fileId} cho ${memberEmail} (${role}) lên Firestore`);
     return true;
   } catch (err: any) {
@@ -79,13 +123,14 @@ export async function publishAssignedFile(
 }
 
 /**
- * Admin phát hành liên kết file cho toàn bộ danh sách thành viên hiện tại và cho chính Admin
+ * Admin phát hành liên kết file cho toàn bộ danh sách thành viên hiện tại
  */
 export async function publishAssignedFilesForMembers(
   members: Array<{ email: string; role: string }>,
   fileId: string,
   fileName: string,
-  adminEmail: string
+  adminEmail: string,
+  options?: { onlyIfMissingOrChanged?: boolean }
 ): Promise<number> {
   if (!fileId) return 0;
   const cleanAdmin = (adminEmail || '').trim().toLowerCase();
@@ -103,15 +148,31 @@ export async function publishAssignedFilesForMembers(
       fileId,
       fileName,
       cleanAdmin,
-      role
+      role,
+      options
     );
     if (success) count++;
   }
 
-  if (count > 0) {
+  if (count > 0 && !options?.onlyIfMissingOrChanged) {
     log.info(`[ShareRelay] Đã tự động phát hành liên kết file cho ${count} tài khoản lên Firestore.`);
   }
   return count;
+}
+
+/**
+ * Đảm bảo toàn bộ thành viên hợp lệ luôn có bản ghi fileId tồn tại và khớp trên Firestore
+ * (tự phục hồi nếu thiếu mà không ghi đè thừa khi đã tồn tại).
+ */
+export async function ensureAssignedFilesPublishedForMembers(
+  members: Array<{ email: string; role: string }>,
+  fileId: string,
+  fileName: string,
+  adminEmail: string
+): Promise<number> {
+  return publishAssignedFilesForMembers(members, fileId, fileName, adminEmail, {
+    onlyIfMissingOrChanged: true,
+  });
 }
 
 /**
@@ -143,7 +204,7 @@ export async function consumeAssignedFileForMember(
 
     // Chỉ đọc bản ghi chuyển tiếp, KHÔNG xóa khi thành viên liên kết
     // để hỗ trợ đăng nhập tự động đa thiết bị (Điện thoại, Tablet, Web, cài lại app).
-    // Bản ghi chỉ bị xóa qua removeAssignedFileForMember() khi Admin gỡ thành viên hoặc hủy Workspace.
+    // Bản ghi chỉ bị xóa qua removeAssignedFileForMember() khi Admin gỡ thành viên hoặc thu hồi quyền/hủy Workspace.
     return data;
   } catch (err: any) {
     const isOffline =
@@ -162,12 +223,14 @@ export async function consumeAssignedFileForMember(
 }
 
 /**
- * Xóa bản ghi chia sẻ khi Admin gỡ thành viên khỏi Workspace
+ * CHỈ DÙNG KHI ADMIN XÓA THÀNH VIÊN HOẶC THU HỒI QUYỀN TRUY CẬP:
+ * Xóa bản ghi chia sẻ của thành viên trên Firestore.
  */
 export async function removeAssignedFileForMember(memberEmail: string): Promise<void> {
   try {
     const emailKey = sanitizeEmailKey(memberEmail);
     if (!emailKey) return;
+    publishedRelaySignatureCache.delete(emailKey);
     const docRef = doc(db, 'assigned_shares', emailKey);
     await deleteDoc(docRef);
     log.info(`[ShareRelay] Đã xóa bản ghi gán file cho ${memberEmail} trên Firestore`);
@@ -177,7 +240,8 @@ export async function removeAssignedFileForMember(memberEmail: string): Promise<
 }
 
 /**
- * Đánh dấu hoặc xóa toàn bộ bản ghi chia sẻ khi Admin hủy liên kết Workspace
+ * CHỈ DÙNG KHI ADMIN HỦY LIÊN KẾT WORKSPACE / THU HỒI TOÀN BỘ QUYỀN:
+ * Xóa toàn bộ bản ghi chia sẻ của các thành viên trong Workspace trên Firestore.
  */
 export async function removeAssignedFilesForWorkspace(
   _fileId: string,
