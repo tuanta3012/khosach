@@ -115,7 +115,6 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
       };
 
       await onSave(bookToSave);
-      showToast(initialBook ? 'Đã lưu thay đổi!' : 'Đã thêm sách!', 'success');
       onClose();
     } catch (err: any) {
       showToast(`Lỗi khi lưu sách: ${err.message}`, 'error');

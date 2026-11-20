@@ -120,13 +120,20 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
 
   // Tối ưu hóa đếm số lượng sách theo danh mục trong O(N) duy nhất
   const categoryCounts = useMemo(() => {
-    const counts = {};
+    const counts: Record<string, number> = {};
     for (let i = 0; i < books.length; i++) {
       const cat = (books[i].category || "Chung").trim() || "Chung";
       counts[cat] = (counts[cat] || 0) + 1;
     }
     return counts;
   }, [books]);
+
+  // Kết hợp danh sách thể loại của kho với bất kỳ thể loại nào đang có sách thực tế
+  const filterCategories = useMemo(() => {
+    const merged = new Set<string>(categories);
+    Object.keys(categoryCounts).forEach((cat) => merged.add(cat));
+    return Array.from(merged);
+  }, [categories, categoryCounts]);
 
   // Bộ lọc thông minh + Fuzzy Match + Tự sắp xếp (chạy non-blocking với deferredFilter)
   const filteredData = useMemo(() => {
@@ -459,7 +466,6 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
     setEditingRowId(null);
     setEditingValues({});
     setIsNormalizingSingle(false);
-    showToast('Đã lưu sách!', 'success');
   };
 
   // Xử lý phím Back Android cho các trạng thái của Bảng sách
@@ -619,7 +625,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                 >
                   Tất cả ({books.length})
                 </button>
-                {categories.map((cat) => {
+                {filterCategories.map((cat) => {
                   const count = categoryCounts[cat] || 0;
                   if (count === 0) return null;
                   const isSel = selectedCategory === cat;

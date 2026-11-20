@@ -61,14 +61,18 @@ function resolveExpandedCategories(stored?: unknown): string[] {
   if (!Array.isArray(stored) || stored.length === 0) {
     return DEFAULT_CATEGORIES;
   }
-  const cleanStored = stored.map((c) => String(c || '').trim()).filter(Boolean);
+  const cleanStored = Array.from(new Set(stored.map((c) => String(c || '').trim()).filter(Boolean)));
+  if (cleanStored.length === 0) {
+    return DEFAULT_CATEGORIES;
+  }
   const isLegacyOnly = cleanStored.every((c) => LEGACY_DEFAULT_CATEGORIES_SET.has(c));
   if (isLegacyOnly) {
     return DEFAULT_CATEGORIES;
   }
-  // Giữ tùy chỉnh (nếu có) nhưng đảm bảo có các thể loại mới và không vượt quá 20 mục
-  const merged = Array.from(new Set([...DEFAULT_CATEGORIES, ...cleanStored]));
-  return merged.slice(0, 20);
+  if (!cleanStored.includes('Chung')) {
+    cleanStored.push('Chung');
+  }
+  return cleanStored;
 }
 
 export const DEFAULT_SETTINGS: LibrarySettings = {

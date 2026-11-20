@@ -27,6 +27,7 @@ import {
   publishAssignedFilesForMembers,
   ensureAssignedFilesPublishedForMembers,
 } from './firebaseShareRelayService';
+import { findClosestExistingCategory, insertCategoryIntoList } from '../utils/categoryMatcher';
 
 export interface FamilyMember {
   email: string;
@@ -1037,6 +1038,7 @@ export async function saveMasterSyncStateToGoogleSheet(
             appVersion: '1.0.0',
             ignoredDuplicatePairs: state.ignoredDuplicatePairs || [],
             userApiKeys,
+            customSettings: cleanCustomSettings,
           },
           members: finalMembers || members,
         },
@@ -1118,13 +1120,17 @@ export async function readMasterSyncStateFromGoogleSheet(
           membersList = metadataParsed.members;
         }
 
-        // Đọc custom settings / ignoredDuplicatePairs / userApiKeys
+        // Đọc custom settings / ignoredDuplicatePairs / userApiKeys / categoriesList
         let ignoredDuplicatePairs: string[] = [];
         let userApiKeysMap: Record<string, string[]> = {};
+        let parsedCustomSettings: Record<string, any> = {};
         const rawCustom = kvMap.get('custom settings');
         if (typeof rawCustom === 'string') {
           try {
             const parsed = JSON.parse(rawCustom);
+            if (parsed.customSettings && typeof parsed.customSettings === 'object') {
+              parsedCustomSettings = { ...parsed.customSettings };
+            }
             if (Array.isArray(parsed.ignoredDuplicatePairs)) {
               ignoredDuplicatePairs = parsed.ignoredDuplicatePairs;
             }
@@ -1138,6 +1144,7 @@ export async function readMasterSyncStateFromGoogleSheet(
         if (ignoredDuplicatePairs.length === 0 && Array.isArray(metadataParsed.ignoredDuplicatePairs)) {
           ignoredDuplicatePairs = metadataParsed.ignoredDuplicatePairs;
         }
+        delete parsedCustomSettings.userApiKeys;
 
         // Đọc từ hàng 'User API Keys JSON'
         const rawUserApiKeys = kvMap.get('user api keys json') || kvMap.get('user api keys');
@@ -1211,6 +1218,7 @@ export async function readMasterSyncStateFromGoogleSheet(
           appVersion: '1.0.0',
           ignoredDuplicatePairs,
           userApiKeys: userApiKeysMap,
+          customSettings: parsedCustomSettings,
         };
 
         const resultState = { metadata: meta, members: membersList };
@@ -2331,6 +2339,140 @@ export async function syncUserApiKeyWithSheetConfig(
   }
 
   return { syncedKeys: mergedList, hasUpdatedLocal, hasUpdatedRemote };
+}
+
+/**
+ * 7e. Lưu danh sách thể loại chung của Workspace vào Tab __CONFIG__ (Custom Settings.categoriesList)
+ * Chỉ Admin hoặc Editor mới có quyền ghi lên Google Sheet.
+ */
+export async function saveCategoriesListToSheetConfig(
+  accessToken: string,
+  spreadsheetId: string,
+  categoriesList: string[],
+  userRole?: UserRole
+): Promise<boolean> {
+  if (!accessToken || !spreadsheetId || userRole === 'VIEWER') return false;
+
+  const cleanCategories = Array.from(
+    new Set((categoriesList || []).map((c) => String(c || '').trim()).filter(Boolean))
+  );
+  if (cleanCategories.length === 0) return false;
+
+  try {
+    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
+    if (!state) return false;
+
+    const nowIso = new Date().toISOString();
+    const nextCustomSettings = {
+      ...(state.metadata.customSettings || {}),
+      categoriesList: cleanCategories,
+      categoriesUpdatedAt: nowIso,
+    };
+
+    const saveSuccess = await saveMasterSyncStateToGoogleSheet(accessToken, spreadsheetId, {
+      ...state.metadata,
+      members: state.members,
+      customSettings: nextCustomSettings,
+      updatedAt: nowIso,
+    });
+
+    if (saveSuccess) {
+      log.info(`[DriveSync] Đã lưu ${cleanCategories.length} thể loại vào Tab __CONFIG__ trên Google Sheet.`);
+    }
+    return saveSuccess;
+  } catch (err) {
+    console.warn('[DriveSync] saveCategoriesListToSheetConfig thất bại:', err);
+    return false;
+  }
+}
+
+/**
+ * 7f. Đồng bộ 2 chiều danh sách thể loại giữa LocalStorage và Tab __CONFIG__ của Google Sheet
+ * Đảm bảo Admin hoặc Editor đăng nhập trên máy cũ hay máy mới đều nhận đủ danh sách thể loại đã thêm.
+ */
+export async function syncCategoriesListWithSheetConfig(
+  accessToken: string,
+  spreadsheetId: string,
+  localCategories: string[],
+  defaultCategories: string[],
+  books: BookRecord[],
+  userRole?: UserRole
+): Promise<{
+  syncedCategories: string[];
+  hasUpdatedLocal: boolean;
+  hasUpdatedRemote: boolean;
+}> {
+  const cleanLocal = Array.from(
+    new Set((localCategories || []).map((c) => String(c || '').trim()).filter(Boolean))
+  );
+
+  if (!accessToken || !spreadsheetId) {
+    return { syncedCategories: cleanLocal, hasUpdatedLocal: false, hasUpdatedRemote: false };
+  }
+
+  try {
+    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
+    const remoteRaw = state?.metadata?.customSettings?.categoriesList;
+    const cleanRemote = Array.isArray(remoteRaw)
+      ? Array.from(new Set(remoteRaw.map((c: any) => String(c || '').trim()).filter(Boolean)))
+      : [];
+
+    const defaultSet = new Set(defaultCategories);
+    const localCustom = cleanLocal.filter((c) => !defaultSet.has(c));
+    const remoteCustom = cleanRemote.filter((c) => !defaultSet.has(c));
+    const canWriteRemote = userRole === 'ADMIN' || userRole === 'EDITOR';
+
+    // Trường hợp 1: Remote chưa lưu danh sách thể loại -> nếu local có thể loại tùy biến thì đẩy lên
+    if (cleanRemote.length === 0) {
+      if (localCustom.length > 0 && canWriteRemote) {
+        const pushed = await saveCategoriesListToSheetConfig(accessToken, spreadsheetId, cleanLocal, userRole);
+        return { syncedCategories: cleanLocal, hasUpdatedLocal: false, hasUpdatedRemote: pushed };
+      }
+      return { syncedCategories: cleanLocal, hasUpdatedLocal: false, hasUpdatedRemote: false };
+    }
+
+    // Trường hợp 2: Remote đã có danh sách và local chưa có thể loại tùy biến nào -> dùng trực tiếp danh sách từ Remote
+    if (localCustom.length === 0) {
+      const differsFromLocal =
+        cleanRemote.length !== cleanLocal.length ||
+        cleanRemote.some((c, idx) => c !== cleanLocal[idx]);
+      return {
+        syncedCategories: cleanRemote,
+        hasUpdatedLocal: differsFromLocal,
+        hasUpdatedRemote: false,
+      };
+    }
+
+    // Trường hợp 3: Cả 2 bên đều có thể loại tùy biến -> gộp không trùng khớp và cập nhật 2 bên nếu có mục mới
+    let merged = [...cleanRemote];
+    let addedLocalToRemote = false;
+
+    for (const customCat of localCustom) {
+      const matched = findClosestExistingCategory(customCat, merged);
+      if (!matched) {
+        merged = insertCategoryIntoList(merged, customCat, books, defaultCategories);
+        addedLocalToRemote = true;
+      }
+    }
+
+    const differsFromLocal =
+      merged.length !== cleanLocal.length ||
+      merged.some((c, idx) => c !== cleanLocal[idx]);
+
+    let hasUpdatedRemote = false;
+    if ((addedLocalToRemote || remoteCustom.length < localCustom.length) && canWriteRemote) {
+      hasUpdatedRemote = await saveCategoriesListToSheetConfig(accessToken, spreadsheetId, merged, userRole);
+    }
+
+    return {
+      syncedCategories: merged,
+      hasUpdatedLocal: differsFromLocal,
+      hasUpdatedRemote,
+    };
+  } catch (err) {
+    console.warn('[DriveSync] syncCategoriesListWithSheetConfig lỗi:', err);
+    return { syncedCategories: cleanLocal, hasUpdatedLocal: false, hasUpdatedRemote: false };
+  }
 }
 
 /**

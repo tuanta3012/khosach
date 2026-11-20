@@ -1323,7 +1323,7 @@ export async function normalizeSingleBook(
     return { success: false, error: 'Chưa có Gemini API Key. Vui lòng thêm Key trong Cài đặt.' };
   }
 
-  const categoryList = categories.length > 0 ? categories.slice(0, 20) : [...GEMINI_BOOK_CATEGORIES];
+  const categoryList = categories.length > 0 ? categories : [...GEMINI_BOOK_CATEGORIES];
   try {
     const results = await processChunk([book], undefined, categoryList, true);
     if (results && results.length > 0) {
@@ -1428,7 +1428,7 @@ export async function reclassifyBookCategories(
   }
 
   const categoryList = options.categories?.length
-    ? options.categories.slice(0, 20)
+    ? options.categories
     : [...GEMINI_BOOK_CATEGORIES];
 
   // Lô 15 cuốn vì chỉ xuất ra {id, category}, vừa nhanh vừa đảm bảo AI phân tích chính xác từng đầu sách

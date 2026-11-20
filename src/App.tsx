@@ -17,6 +17,7 @@ import {
   DEFAULT_CATEGORIES,
   clearAllLocalBooks,
 } from './utils/localBooksStorage';
+import { resolveCategoryForSave, syncCategoriesWithBooks } from './utils/categoryMatcher';
 import { Navbar, NavTabType } from './components/Navbar';
 import { BookTableView } from './components/BookTableView';
 import { SplashScreen } from './components/SplashScreen';
@@ -64,6 +65,8 @@ import {
   saveUserApiKeyToSheetConfig,
   syncUserApiKeyWithSheetConfig,
   syncSheetConfigVaultName,
+  saveCategoriesListToSheetConfig,
+  syncCategoriesListWithSheetConfig,
 } from './services/driveSyncService';
 import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
 import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
@@ -308,8 +311,10 @@ export default function App() {
 
           // Đồng bộ 2 chiều dữ liệu tức thì
           const localBooks = loadLocalBooks();
+          let latestBooksForCategories = localBooks;
           try {
             const syncRes = await syncBooksTwoWay(localBooks, token, activeSheet.id, role);
+            latestBooksForCategories = syncRes.mergedBooks;
             if (syncRes.hasChanges || localBooks.length === 0) {
               saveAllLocalBooks(syncRes.mergedBooks);
               setBooks(syncRes.mergedBooks);
@@ -319,18 +324,36 @@ export default function App() {
             log.warn('[AutoConnect] Lỗi đồng bộ dữ liệu sau liên kết:', syncErr);
           }
 
-          // Đồng bộ API key nếu có
-          if (role === 'ADMIN' || role === 'EDITOR') {
-            const localKeys = getStoredGeminiApiKeys();
-            syncUserApiKeyWithSheetConfig(token, activeSheet.id, userEmail, role, localKeys)
-              .then((res) => {
+          // Đồng bộ tuần tự API key và danh sách thể loại chung trong Tab __CONFIG__
+          (async () => {
+            if (role === 'ADMIN' || role === 'EDITOR') {
+              try {
+                const localKeys = getStoredGeminiApiKeys();
+                const res = await syncUserApiKeyWithSheetConfig(token, activeSheet.id, userEmail, role, localKeys);
                 if (res.hasUpdatedLocal) {
                   setSettings((prev) => ({ ...prev, geminiApiKeys: res.syncedKeys }));
                   saveStoredGeminiApiKeys(res.syncedKeys);
                 }
-              })
-              .catch(() => {});
-          }
+              } catch {}
+            }
+
+            try {
+              const localCats = loadLocalSettings().categoriesList || DEFAULT_CATEGORIES;
+              const catRes = await syncCategoriesListWithSheetConfig(
+                token,
+                activeSheet.id,
+                localCats,
+                DEFAULT_CATEGORIES,
+                latestBooksForCategories,
+                role
+              );
+              if (catRes.hasUpdatedLocal) {
+                const updatedSettings = { ...loadLocalSettings(), categoriesList: catRes.syncedCategories };
+                saveLocalSettings(updatedSettings);
+                setSettings((prev) => ({ ...prev, categoriesList: catRes.syncedCategories }));
+              }
+            } catch {}
+          })();
 
           // Đảm bảo gắn nhãn com.khosach.app
           tagSpreadsheetAsAppCreated(token, activeSheet.id).catch(() => {});
@@ -525,36 +548,67 @@ export default function App() {
           activeRole
         );
 
-        // 3. Nếu là ADMIN (Owner), chạy kiểm toán và dọn dẹp quyền vật lý rác trên Google Drive & đồng bộ relay Firestore
+        // 3. Nếu là ADMIN (Owner), chạy kiểm toán quyền trên Google Drive & đồng bộ tuần tự cấu hình __CONFIG__
         const liveDriveName = fileStatus.name || sheetInfo.name;
         if (activeRole === 'ADMIN') {
-          // Tự động đồng bộ Vault Name & Metadata trong Tab __CONFIG__ với tên thực tế trên Google Drive
-          if (liveDriveName && (!workspaceMetadata || workspaceMetadata.activeFileName !== liveDriveName)) {
-            log.info(`[Sync] Quản trị viên tự động cập nhật Vault Name trong Sheet thành "${liveDriveName}"...`);
-            syncSheetConfigVaultName(token, sheetInfo.id, liveDriveName, currentUser?.email || '').catch((e) => {
-              log.warn('[Sync] Đồng bộ Vault Name với Drive thất bại:', e);
-            });
-          }
-
           synchronizeDrivePermissionsWithJsonMembers(token, sheetInfo.id, currentUser?.email || '')
             .then(() => log.info('[Sync] Đã tự động dọn dẹp và kiểm toán quyền truy cập Drive thành công.'))
             .catch((err) => log.warn('[Sync] Kiểm toán quyền Drive thất bại:', err));
-
-
         }
 
-        // 3b. Tự động đồng bộ 2 chiều Gemini API Key của Admin/Editor với Sheet Config
-        if ((activeRole === 'ADMIN' || activeRole === 'EDITOR') && currentUser?.email) {
-          const localKeys = getStoredGeminiApiKeys();
-          syncUserApiKeyWithSheetConfig(token, sheetInfo.id, currentUser.email, activeRole, localKeys)
-            .then((keyRes) => {
+        // 3b. Chạy tuần tự các thao tác cập nhật Tab __CONFIG__ (Vault Name, API Key, Danh sách thể loại) để tránh ghi đè chéo
+        (async () => {
+          if (
+            activeRole === 'ADMIN' &&
+            liveDriveName &&
+            (!workspaceMetadata || workspaceMetadata.activeFileName !== liveDriveName)
+          ) {
+            try {
+              log.info(`[Sync] Quản trị viên tự động cập nhật Vault Name trong Sheet thành "${liveDriveName}"...`);
+              await syncSheetConfigVaultName(token, sheetInfo.id, liveDriveName, currentUser?.email || '');
+            } catch (e) {
+              log.warn('[Sync] Đồng bộ Vault Name với Drive thất bại:', e);
+            }
+          }
+
+          if ((activeRole === 'ADMIN' || activeRole === 'EDITOR') && currentUser?.email) {
+            try {
+              const localKeys = getStoredGeminiApiKeys();
+              const keyRes = await syncUserApiKeyWithSheetConfig(
+                token,
+                sheetInfo.id,
+                currentUser.email,
+                activeRole,
+                localKeys
+              );
               if (keyRes.hasUpdatedLocal) {
                 setSettings((prev) => ({ ...prev, geminiApiKeys: keyRes.syncedKeys }));
                 saveStoredGeminiApiKeys(keyRes.syncedKeys);
               }
-            })
-            .catch((err) => log.warn('[Sync] Đồng bộ API Key trong 2-way sync thất bại:', err));
-        }
+            } catch (err) {
+              log.warn('[Sync] Đồng bộ API Key trong 2-way sync thất bại:', err);
+            }
+          }
+
+          try {
+            const localCats = loadLocalSettings().categoriesList || DEFAULT_CATEGORIES;
+            const catRes = await syncCategoriesListWithSheetConfig(
+              token,
+              sheetInfo.id,
+              localCats,
+              DEFAULT_CATEGORIES,
+              syncRes.mergedBooks,
+              activeRole
+            );
+            if (catRes.hasUpdatedLocal) {
+              const updatedSettings = { ...loadLocalSettings(), categoriesList: catRes.syncedCategories };
+              saveLocalSettings(updatedSettings);
+              setSettings((prev) => ({ ...prev, categoriesList: catRes.syncedCategories }));
+            }
+          } catch (err) {
+            log.warn('[Sync] Đồng bộ danh sách thể loại trong 2-way sync thất bại:', err);
+          }
+        })();
 
         saveAllLocalBooks(syncRes.mergedBooks);
         setBooks(syncRes.mergedBooks);
@@ -1054,17 +1108,84 @@ export default function App() {
     }
   };
 
-  // Lưu 1 cuốn sách (Lưu máy + Đẩy lên Google Drive nếu Online)
+  // Tự động đồng bộ thể loại mới từ kho sách (ví dụ sau khi đồng bộ từ thiết bị khác hoặc nhập file)
+  useEffect(() => {
+    const baseList = settings.categoriesList && settings.categoriesList.length > 0
+      ? settings.categoriesList
+      : DEFAULT_CATEGORIES;
+    const synced = syncCategoriesWithBooks(baseList, books, DEFAULT_CATEGORIES);
+    if (synced.hasChanges) {
+      const updatedSettings = { ...settings, categoriesList: synced.categories };
+      saveLocalSettings(updatedSettings);
+      setSettings(updatedSettings);
+    }
+  }, [books, settings]);
+
+  // Lưu 1 cuốn sách (Đối chiếu thể loại + Lưu máy + Đẩy lên Google Drive nếu Online)
   const handleSaveBook = async (book: BookRecord) => {
     if (currentUser?.userRole === 'VIEWER') {
       showToast('⚠️ Bạn đang ở chế độ CHỈ XEM (Viewer). Không có quyền Thêm/Sửa sách!', 'warning');
       return;
     }
-    const updatedBooks = upsertLocalBook(book);
+
+    const baseCategories = settings.categoriesList && settings.categoriesList.length > 0
+      ? settings.categoriesList
+      : DEFAULT_CATEGORIES;
+    const categoryResolution = resolveCategoryForSave(
+      book.category || 'Chung',
+      baseCategories,
+      books,
+      DEFAULT_CATEGORIES
+    );
+
+    const bookToSave: BookRecord = {
+      ...book,
+      category: categoryResolution.resolvedCategory,
+    };
+
+    const listChanged =
+      categoryResolution.updatedCategoriesList.length !== baseCategories.length ||
+      categoryResolution.updatedCategoriesList.some((c, i) => c !== baseCategories[i]);
+
+    if (listChanged) {
+      const nextSettings: LibrarySettings = {
+        ...settings,
+        categoriesList: categoryResolution.updatedCategoriesList,
+      };
+      saveLocalSettings(nextSettings);
+      setSettings(nextSettings);
+    }
+
+    const updatedBooks = upsertLocalBook(bookToSave);
     setBooks(updatedBooks);
-    showToast('Đã lưu sách thành công!', 'success');
+
+    if (categoryResolution.isNewCategory) {
+      showToast(`Đã lưu sách & thêm thể loại mới "${categoryResolution.resolvedCategory}"!`, 'success');
+    } else if (categoryResolution.wasAutoCorrected) {
+      showToast(`Đã lưu sách (tự chuẩn hóa thể loại thành "${categoryResolution.resolvedCategory}")!`, 'success');
+    } else {
+      showToast('Đã lưu sách thành công!', 'success');
+    }
+
     if (appMode === 'online') {
-      syncWithGoogleDrive(updatedBooks)
+      (async () => {
+        if (listChanged && spreadsheetInfo?.id && currentUser?.userRole !== 'VIEWER') {
+          try {
+            const token = await getAccessToken();
+            if (token) {
+              await saveCategoriesListToSheetConfig(
+                token,
+                spreadsheetInfo.id,
+                categoryResolution.updatedCategoriesList,
+                currentUser?.userRole
+              );
+            }
+          } catch (catErr) {
+            console.warn('[SaveBook] Lỗi lưu danh sách thể loại lên Sheet Config:', catErr);
+          }
+        }
+        await syncWithGoogleDrive(updatedBooks);
+      })()
         .then(() => {
           console.info('[SaveBook] Sách đã được lưu và đồng bộ lên Google Drive thành công.');
         })
