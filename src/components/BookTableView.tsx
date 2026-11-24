@@ -89,7 +89,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   const { showToast } = useToast();
   const [globalFilter, setGlobalFilter] = useState("");
   const deferredFilter = useDeferredValue(globalFilter);
-  const [viewMode, setViewMode] = useState<"list" | "grid" | "chart">("list");
+  const [viewMode, setViewMode] = useState<"list" | "grid" | "chart">("grid");
   const [isReclassifyingCategories, setIsReclassifyingCategories] = useState(false);
   const [reclassifyProgress, setReclassifyProgress] = useState<{ processed: number; total: number } | null>(null);
   const stopReclassifyRef = useRef(false);
@@ -312,7 +312,17 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   }, [showToast]);
 
   const booksWithCoverCount = useMemo(
-    () => books.filter((b) => Boolean(b.cover_url && b.cover_url.trim())).length,
+    () => books.filter((b) => Boolean(b.cover_url && b.cover_url.trim() && b.cover_url !== 'NONE')).length,
+    [books]
+  );
+  const missingCoverOrSummaryCount = useMemo(
+    () =>
+      books.filter(
+        (b) =>
+          !b.cover_url ||
+          (b.cover_url !== 'NONE' && !b.cover_url.trim()) ||
+          !b.summary?.trim()
+      ).length,
     [books]
   );
   const missingCoverCount = Math.max(0, books.length - booksWithCoverCount);
@@ -337,14 +347,15 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       setCoverProgress({
         phase: 'catalog',
         processed: 0,
-        total: overwriteExisting ? books.length : missingCoverCount,
+        total: overwriteExisting ? books.length : missingCoverOrSummaryCount,
         foundCount: 0,
-        statusMessage: 'Đang chuẩn bị tìm bìa...',
+        statusMessage: 'Đang chuẩn bị tìm bìa & tóm tắt...',
       });
 
       try {
         const result = await batchFindBookCovers(books, {
           overwriteExisting,
+          enrichSummary: true,
           useAiFallback: true,
           stopSignal: stopFindingCoversRef,
           onProgress: (p) => setCoverProgress(p),
@@ -354,21 +365,21 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
         });
 
         if (result.stopped) {
-          showToast(`Đã dừng. Đã lưu ${result.updatedCount} ảnh bìa.`, 'info');
+          showToast(`Đã dừng. Đã lưu ${result.updatedCount} ảnh bìa & tóm tắt.`, 'info');
         } else if (result.updatedCount > 0) {
-          showToast(`✨ Đã cập nhật ${result.updatedCount} ảnh bìa!`, 'success');
+          showToast(`✨ Đã cập nhật ${result.updatedCount} ảnh bìa & tóm tắt!`, 'success');
         } else {
-          showToast('Không tìm thêm được ảnh bìa mới.', 'info');
+          showToast('Kho sách đã đầy đủ ảnh bìa & tóm tắt.', 'info');
         }
       } catch (err: any) {
-        showToast(`Lỗi tìm bìa: ${err?.message || String(err)}`, 'error');
+        showToast(`Lỗi tìm bìa & tóm tắt: ${err?.message || String(err)}`, 'error');
       } finally {
         setIsFindingCovers(false);
         setCoverProgress(null);
         stopFindingCoversRef.current = false;
       }
     },
-    [userRole, onBatchUpdateBooks, books, missingCoverCount, showToast]
+    [userRole, onBatchUpdateBooks, books, missingCoverOrSummaryCount, showToast]
   );
 
   const handleGridCoverAiButtonClick = useCallback(() => {
@@ -377,12 +388,12 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       return;
     }
     if (books.length === 0 || !onBatchUpdateBooks) return;
-    if (booksWithCoverCount === 0) {
-      handleStartBatchFindCovers(false);
+    if (missingCoverOrSummaryCount === 0) {
+      handleStartBatchFindCovers(true);
       return;
     }
     setShowCoverScopeChoices((prev) => !prev);
-  }, [userRole, books.length, onBatchUpdateBooks, booksWithCoverCount, handleStartBatchFindCovers, showToast]);
+  }, [userRole, books.length, onBatchUpdateBooks, missingCoverOrSummaryCount, handleStartBatchFindCovers, showToast]);
 
   const handleStopBatchFindCovers = useCallback(() => {
     stopFindingCoversRef.current = true;
@@ -547,20 +558,8 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
             )}
           </form>
 
-          {/* View Switcher: Danh sách / Kệ bìa / Thống kê */}
+          {/* View Switcher: Kệ bìa (đầu tiên) / Danh sách / Thể loại (sau cùng) */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0">
-            <button
-              onClick={() => setViewMode('list')}
-              className={`p-1.5 rounded-lg text-xs transition cursor-pointer ${
-                viewMode === 'list'
-                  ? 'bg-[#10B981] text-white shadow-xs font-bold'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-              title="Danh Sách"
-              aria-label="Xem dạng danh sách"
-            >
-              <LayoutList className="w-4 h-4" />
-            </button>
             <button
               onClick={() => setViewMode('grid')}
               className={`p-1.5 rounded-lg text-xs transition cursor-pointer ${
@@ -572,6 +571,18 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
               aria-label="Xem dạng kệ bìa sách"
             >
               <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`p-1.5 rounded-lg text-xs transition cursor-pointer ${
+                viewMode === 'list'
+                  ? 'bg-[#10B981] text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+              title="Danh Sách"
+              aria-label="Xem dạng danh sách"
+            >
+              <LayoutList className="w-4 h-4" />
             </button>
             <button
               onClick={() => setViewMode('chart')}
@@ -695,13 +706,13 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
 
               {showCoverScopeChoices && !isFindingCovers && (
                 <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-amber-200/60">
-                  {missingCoverCount > 0 && (
+                  {missingCoverOrSummaryCount > 0 && (
                     <button
                       type="button"
                       onClick={() => handleStartBatchFindCovers(false)}
                       className="px-2.5 py-1.5 rounded-xl bg-[#0284C7] hover:bg-[#0369a1] active:scale-95 text-white text-[11px] font-bold transition cursor-pointer"
                     >
-                      Chưa có bìa ({missingCoverCount})
+                      Chưa đủ bìa / tóm tắt ({missingCoverOrSummaryCount})
                     </button>
                   )}
                   <button

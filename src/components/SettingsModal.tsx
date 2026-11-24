@@ -147,10 +147,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [coverProgress, setCoverProgress] = useState<BatchCoverProgress | null>(null);
   const stopFindingCoversRef = useRef(false);
 
+  // Một cuốn sách được coi là hoàn thiện đầy đủ thông tin khi:
+  // - Đã chuẩn hóa AI (is_ai_normalized)
+  // - Có thể loại rõ ràng (khác 'Chung')
+  // - Có nhà xuất bản
+  // - Có tóm tắt
+  // - Có ảnh bìa (hoặc đã tìm và đánh dấu 'NONE')
+  const isBookComplete = (b: BookRecord) =>
+    Boolean(
+      b.is_ai_normalized &&
+      b.category &&
+      b.category.trim() !== '' &&
+      b.category.trim() !== 'Chung' &&
+      b.publisher &&
+      b.publisher.trim() !== '' &&
+      b.summary &&
+      b.summary.trim() !== '' &&
+      b.cover_url &&
+      b.cover_url.trim() !== ''
+    );
+
   const totalBooks = books.length;
-  const normalizedCount = books.filter((b) => b.is_ai_normalized).length;
-  const pendingBooks = books.filter((b) => !b.is_ai_normalized);
-  const booksWithCoverCount = books.filter((b) => Boolean(b.cover_url && b.cover_url.trim())).length;
+  const normalizedCount = books.filter(isBookComplete).length;
+  const pendingBooks = books.filter((b) => !isBookComplete(b));
+  const booksWithCoverCount = books.filter((b) => Boolean(b.cover_url && b.cover_url.trim() && b.cover_url !== 'NONE')).length;
   const missingCoverCount = Math.max(0, totalBooks - booksWithCoverCount);
   const activeReviewCount = reviewProposals ? reviewProposals.length : (pendingReviewCount || pendingReviewAccumulatorRef.current.length);
 
@@ -421,6 +441,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         // Nếu chỉ là làm đẹp / sửa chính tả nhẹ / định dạng -> Tự động áp dụng ngay vào bản ghi
         const resolvedTitle = titleMeaningfullyChanged ? orig.title : (normTitleTrim || orig.title);
         const resolvedAuthor = authorMeaningfullyChanged ? orig.author : (normAuthorTrim || orig.author);
+        const enrichedSummary = (normItem.summary && String(normItem.summary).trim()) || orig.summary || '';
 
         safeUpdatedList.push({
           ...orig,
@@ -428,6 +449,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           author: resolvedAuthor,
           publisher: enrichedPublisher,
           category: enrichedCategory,
+          ...(enrichedSummary ? { summary: enrichedSummary } : {}),
           is_ai_normalized: true,
           updated_at: Date.now(),
         });
@@ -663,6 +685,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       const result = await batchFindBookCovers(books, {
         overwriteExisting,
+        enrichSummary: true,
         useAiFallback: true,
         stopSignal: stopFindingCoversRef,
         onProgress: (p) => setCoverProgress(p),

@@ -22,6 +22,7 @@ export interface BatchCoverProgress {
 
 export interface BatchFindCoversOptions {
   overwriteExisting?: boolean;
+  enrichSummary?: boolean;
   useAiFallback?: boolean;
   stopSignal?: { current: boolean };
   onProgress?: (progress: BatchCoverProgress) => void;
@@ -159,20 +160,35 @@ export async function findBookCoverCandidatesFull(
 }
 
 /**
- * Tìm & cập nhật ảnh bìa hàng loạt cho kho sách:
+ * Tìm & cập nhật ảnh bìa và tóm tắt hàng loạt cho kho sách:
  * - Vòng 1: Tra cứu miễn phí siêu tốc qua Goodreads, Apple Books, Open Library, Google Books, Wikipedia.
- * - Vòng 2 (cho sách còn thiếu): Dùng Gemini theo lô 8 cuốn giải mã tên gốc/ISBN -> tra lại các nguồn mở.
+ * - Vòng 2 (cho sách còn thiếu bìa hoặc tóm tắt): Dùng Gemini giải mã tên gốc/ISBN + tạo tóm tắt nội dung 1-3 câu.
  * - Vòng 3 (cho sách Việt Nam đặc thù còn thiếu): Dùng Gemini Search Grounding + og:image.
+ * - Đánh dấu 'NONE' ở cột H nếu không tìm thấy bìa để không bị quét lại các lần sau.
  */
 export async function batchFindBookCovers(
   books: BookRecord[],
   options: BatchFindCoversOptions = {}
 ): Promise<BatchFindCoversResult> {
-  const { overwriteExisting = false, useAiFallback = true, stopSignal, onProgress, onChunkSave } = options;
+  const {
+    overwriteExisting = false,
+    enrichSummary = true,
+    useAiFallback = true,
+    stopSignal,
+    onProgress,
+    onChunkSave,
+  } = options;
 
   const targetBooks = overwriteExisting
     ? [...books]
-    : books.filter((b) => !b.cover_url || !b.cover_url.trim());
+    : books.filter((b) => {
+        const hasCover = Boolean(b.cover_url && b.cover_url.trim());
+        const hasSummary = Boolean(b.summary && b.summary.trim());
+        if (enrichSummary) {
+          return !hasCover || !hasSummary;
+        }
+        return !hasCover;
+      });
 
   if (targetBooks.length === 0) {
     onProgress?.({
@@ -180,7 +196,7 @@ export async function batchFindBookCovers(
       processed: 0,
       total: 0,
       foundCount: 0,
-      statusMessage: 'Tất cả sách đã có ảnh bìa.',
+      statusMessage: 'Tất cả sách đã có ảnh bìa và tóm tắt.',
     });
     return { updatedCount: 0, processedCount: 0, stopped: false };
   }
@@ -189,6 +205,7 @@ export async function batchFindBookCovers(
   let totalProcessed = 0;
   const pendingSaveBuffer: BookRecord[] = [];
   const foundIds = new Set<string>();
+  const summaryMap = new Map<string, string>();
 
   const flushSaves = async (force = false) => {
     if (pendingSaveBuffer.length === 0) return;
@@ -199,12 +216,14 @@ export async function batchFindBookCovers(
     }
   };
 
-  const recordBookCover = async (book: BookRecord, coverUrl: string) => {
+  const recordBookCover = async (book: BookRecord, coverUrl: string, summary?: string) => {
     foundIds.add(book.id);
     totalFound += 1;
+    const finalSummary = (summary && summary.trim()) || summaryMap.get(book.id) || book.summary;
     pendingSaveBuffer.push({
       ...book,
       cover_url: coverUrl,
+      ...(finalSummary ? { summary: finalSummary } : {}),
       updated_at: Date.now(),
     });
     await flushSaves(false);
@@ -221,6 +240,12 @@ export async function batchFindBookCovers(
       if (idx >= targetBooks.length) break;
 
       const book = targetBooks[idx];
+      // Nếu đã có cover và chỉ cần tóm tắt thì bỏ qua Vòng 1 catalog cover
+      if (book.cover_url && book.cover_url.trim() && !overwriteExisting) {
+        totalProcessed += 1;
+        continue;
+      }
+
       try {
         const candidates = await findBookCoverCandidates(book.title, book.author || '');
         const best = await pickFirstLoadableCover(candidates, 3);
@@ -253,13 +278,15 @@ export async function batchFindBookCovers(
     };
   }
 
-  // === VÒNG 2 & 3: BỔ SUNG BẰNG GEMINI AI CHO CÁC CUỐN CÒN THIẾU ===
-  const remainingBooks = targetBooks.filter((b) => !foundIds.has(b.id));
+  // === VÒNG 2 & 3: BỔ SUNG BẰNG GEMINI AI CHO CÁC CUỐN CÒN THIẾU BÌA HOẶC TÓM TẮT ===
+  const remainingBooks = targetBooks.filter(
+    (b) => !foundIds.has(b.id) || (enrichSummary && (!b.summary || !b.summary.trim()))
+  );
   if (useAiFallback && remainingBooks.length > 0 && (await ensureGeminiAccessAvailable())) {
     const keys = getEffectiveGeminiKeys();
     const concurrency = Math.max(1, Math.min(Math.max(1, keys.length) * 2, 4));
 
-    // Vòng 2: Giải mã tên gốc quốc tế / từ khóa sạch / ISBN theo lô 8 cuốn
+    // Vòng 2: Giải mã tên gốc quốc tế / từ khóa sạch / ISBN + Tóm tắt nội dung theo lô 8 cuốn
     const CHUNK_SIZE = 8;
     const chunks: BookRecord[][] = [];
     for (let i = 0; i < remainingBooks.length; i += CHUNK_SIZE) {
@@ -288,6 +315,9 @@ export async function batchFindBookCovers(
         for (const book of chunk) {
           if (stopSignal?.current) break;
           const hint = hintMap.get(book.id);
+          if (hint?.summary) {
+            summaryMap.set(book.id, hint.summary);
+          }
           if (hint && (hint.originalTitle || hint.searchQuery || hint.isbn)) {
             const candidates = await findBookCoverCandidates(book.title, book.author || '', {
               originalTitle: hint.originalTitle,
@@ -298,7 +328,7 @@ export async function batchFindBookCovers(
             });
             const best = await pickFirstLoadableCover(candidates, 3);
             if (best) {
-              await recordBookCover(book, best.coverUrl);
+              await recordBookCover(book, best.coverUrl, hint.summary);
             }
           }
           aiProcessed += 1;
@@ -307,7 +337,7 @@ export async function batchFindBookCovers(
             processed: aiProcessed,
             total: remainingBooks.length,
             foundCount: totalFound,
-            statusMessage: `AI phân tích tên gốc/ISBN (${aiProcessed}/${remainingBooks.length}) • Tổng ${totalFound} bìa`,
+            statusMessage: `AI phân tích tên gốc/ISBN & tóm tắt (${aiProcessed}/${remainingBooks.length}) • Tổng ${totalFound} bìa`,
           });
         }
       }
@@ -378,7 +408,7 @@ export async function batchFindBookCovers(
 
             const verified = await pickFirstLoadableCover(extraCandidates, 3);
             if (verified) {
-              await recordBookCover(book, verified.coverUrl);
+              await recordBookCover(book, verified.coverUrl, summaryMap.get(book.id));
             }
           } catch {}
 
@@ -396,6 +426,23 @@ export async function batchFindBookCovers(
       await Promise.all(Array.from({ length: groundWorkers }, (_, i) => runGroundWorker(i)));
       await flushSaves(true);
     }
+  }
+
+  // Đánh dấu 'NONE' ở cột H cho các sách không tìm thấy bìa để không quét lại lần sau
+  if (!stopSignal?.current) {
+    const notFoundBooks = targetBooks.filter((b) => !foundIds.has(b.id));
+    for (const book of notFoundBooks) {
+      const summaryToSave = summaryMap.get(book.id) || book.summary;
+      const currentCover = (book.cover_url || '').trim();
+      const finalCover = currentCover && currentCover !== 'NONE' ? currentCover : 'NONE';
+      pendingSaveBuffer.push({
+        ...book,
+        cover_url: finalCover,
+        ...(summaryToSave ? { summary: summaryToSave } : {}),
+        updated_at: Date.now(),
+      });
+    }
+    await flushSaves(true);
   }
 
   onProgress?.({

@@ -190,6 +190,7 @@ let inMemoryBooksCache: BookRecord[] | null = null;
  */
 export function sanitizeBookRecord(book: BookRecord): BookRecord {
   const cleanCover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
+  const cleanSummary = typeof book.summary === 'string' ? book.summary.trim() : '';
   return {
     id: String(book.id || `book_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`),
     title: String(book.title || '').trim(),
@@ -197,6 +198,7 @@ export function sanitizeBookRecord(book: BookRecord): BookRecord {
     category: String(book.category || 'Chung').trim(),
     publisher: String(book.publisher || '').trim(),
     is_ai_normalized: !!book.is_ai_normalized,
+    ...(cleanSummary ? { summary: cleanSummary } : {}),
     ...(cleanCover ? { cover_url: cleanCover } : {}),
     created_at: Number(book.created_at) || Date.now(),
     updated_at: Number(book.updated_at) || Date.now(),
@@ -266,12 +268,14 @@ export function upsertLocalBook(book: BookRecord): BookRecord[] {
   let updated: BookRecord[];
   
   const cleanCover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
+  const cleanSummary = typeof book.summary === 'string' ? book.summary.trim() : '';
   const cleanBook: BookRecord = {
     ...book,
     title: String(book.title || '').trim(),
     author: String(book.author || 'Chưa rõ').trim(),
     category: String(book.category || 'Chung').trim(),
     publisher: String(book.publisher || '').trim(),
+    ...(cleanSummary ? { summary: cleanSummary } : { summary: undefined }),
     ...(cleanCover ? { cover_url: cleanCover } : { cover_url: undefined }),
     updated_at: Date.now(),
     created_at: book.created_at || Date.now(),
@@ -324,12 +328,14 @@ export function batchUpsertLocalBooks(newOrUpdatedBooks: BookRecord[]): BookReco
   newOrUpdatedBooks.forEach((b) => {
     const isNew = !map.has(b.id);
     const cleanCover = typeof b.cover_url === 'string' ? b.cover_url.trim() : '';
+    const cleanSummary = typeof b.summary === 'string' ? b.summary.trim() : '';
     const item: BookRecord = {
       ...b,
       title: String(b.title || '').trim(),
       author: String(b.author || 'Chưa rõ').trim(),
       category: String(b.category || 'Chung').trim(),
       publisher: String(b.publisher || '').trim(),
+      ...(cleanSummary ? { summary: cleanSummary } : { summary: undefined }),
       ...(cleanCover ? { cover_url: cleanCover } : { cover_url: undefined }),
       updated_at: b.updated_at || Date.now(),
       created_at: b.created_at || Date.now(),

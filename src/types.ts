@@ -9,10 +9,11 @@ export interface BookRecord {
   author: string; // Tác giả (Bắt buộc)
   category?: string; // Thể loại (Văn học, Lịch sử, Kinh tế, Y học...)
   publisher?: string; // Nhà xuất bản
+  summary?: string; // Tóm tắt nội dung sách ngắn gọn
   created_at?: number; // Epoch Timestamp (ms)
   updated_at?: number; // Epoch Timestamp (ms)
   is_ai_normalized?: boolean; // Đã chuẩn hóa bằng AI chưa
-  cover_url?: string; // URL hoặc ảnh thu gọn trang bìa sách
+  cover_url?: string; // URL hoặc ảnh thu gọn trang bìa sách ('NONE' nếu không tìm thấy)
 }
 
 export interface DraftBookItem {
@@ -144,6 +145,8 @@ export interface NormalizedBookItem {
   author: string;
   publisher: string;
   category: string;
+  summary?: string;
+  cover_url?: string;
   is_ai_normalized: boolean;
   sources?: BookSource[];
   sourceWarning?: string;

@@ -112,7 +112,8 @@ export const BookCover: React.FC<BookCoverProps> = ({
     setHasError(false);
   }, [cleanUrl]);
 
-  const showImage = Boolean(cleanUrl) && !hasError;
+  const isExplicitNone = cleanUrl.toUpperCase() === 'NONE';
+  const showImage = Boolean(cleanUrl) && !isExplicitNone && !hasError;
   const palette = getCoverPalette(category, title);
   const initialLetter = (title || 'S').trim().charAt(0).toUpperCase();
 

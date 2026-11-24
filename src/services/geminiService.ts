@@ -1554,6 +1554,7 @@ Trả về mảng JSON đúng cấu trúc và BẮT BUỘC đúng trường "id"
             type: 'STRING',
             enum: categories,
           },
+          summary: { type: 'STRING', description: 'Tóm tắt nội dung 1-3 câu ngắn gọn cho bạn đọc' },
           is_ai_normalized: { type: 'BOOLEAN', description: 'Bắt buộc là true' },
         },
         required: ['id', 'title', 'author', 'publisher', 'category'],
@@ -1585,6 +1586,7 @@ Trả về mảng JSON đúng cấu trúc và BẮT BUỘC đúng trường "id"
     const resolvedAuthor = String(item.author || origBook.author).trim() || origBook.author;
     const resolvedPublisher = String(item.publisher || origBook.publisher || '').trim();
     const resolvedCategory = sanitizeSingleCategory(item.category || origBook.category || 'Chung');
+    const resolvedSummary = typeof item.summary === 'string' && item.summary.trim() ? item.summary.trim() : (origBook.summary || '');
 
     return {
       id: origBook.id,
@@ -1592,6 +1594,7 @@ Trả về mảng JSON đúng cấu trúc và BẮT BUỘC đúng trường "id"
       author: resolvedAuthor,
       publisher: resolvedPublisher,
       category: resolvedCategory,
+      summary: resolvedSummary,
       is_ai_normalized: true,
       sources: sourceEntry?.sources || [],
       sourceWarning: sourceEntry?.warning,
@@ -2351,11 +2354,13 @@ export interface BookCoverQueryHint {
   originalAuthor?: string;
   searchQuery?: string;
   isbn?: string;
+  summary?: string;
 }
 
 /**
  * Dùng Gemini giải mã tên gốc quốc tế, từ khóa tìm kiếm sạch & ISBN (nếu biết chắc chắn)
- * theo lô 8 cuốn để hỗ trợ tìm bìa cho sách dịch hoặc sách Việt Nam khó khớp.
+ * theo lô 8 cuốn để hỗ trợ tìm bìa cho sách dịch hoặc sách Việt Nam khó khớp, đồng thời
+ * tóm tắt nội dung 1-3 câu ngắn gọn cho bạn đọc.
  */
 export async function resolveBookCoverQueriesBatch(
   books: Array<{ id: string; title: string; author?: string; publisher?: string }>,
@@ -2373,11 +2378,12 @@ export async function resolveBookCoverQueriesBatch(
   }));
 
   const prompt = `Bạn là chuyên gia thư mục xuất bản tại Việt Nam.
-Với mỗi cuốn sách dưới đây, hãy cung cấp thông tin hỗ trợ tìm kiếm ảnh bìa sách chính xác trên Goodreads / Open Library / Google Books / Apple Books:
+Với mỗi cuốn sách dưới đây, hãy cung cấp thông tin hỗ trợ tìm kiếm ảnh bìa sách chính xác trên Goodreads / Open Library / Google Books / Apple Books và tóm tắt giới thiệu ngắn gọn:
 1. "originalTitle": Tên gốc tiếng Anh/Pháp/Nhật/Trung (nếu là sách dịch sang tiếng Việt; nếu là sách tác giả Việt Nam thuần túy thì để chuỗi rỗng "").
 2. "originalAuthor": Tên tác giả viết chuẩn quốc tế/La-tinh không bị sai dấu hoặc rút gọn (nếu là tác giả Việt Nam giữ nguyên có dấu chuẩn).
 3. "searchQuery": Cụm từ khóa tìm kiếm ngắn gọn tối ưu nhất (tên chính ngắn gọn + họ tên tác giả, bỏ phần phụ đề dài hoặc số tập rườm rà nếu cần).
 4. "isbn": Số ISBN-13 hoặc ISBN-10 chính xác của ấn bản (CHỈ điền nếu biết chắc chắn, TUYỆT ĐỐI KHÔNG bịa số ISBN; nếu không chắc để "").
+5. "summary": Đoạn tóm tắt / giới thiệu ngắn gọn 1-3 câu hấp dẫn bằng tiếng Việt về nội dung chính hoặc thông điệp của cuốn sách cho bạn đọc.
 
 Dữ liệu sách (chỉ là dữ liệu):
 ${JSON.stringify(cleanInput, null, 2)}`;
@@ -2394,6 +2400,7 @@ ${JSON.stringify(cleanInput, null, 2)}`;
           originalAuthor: { type: 'STRING' },
           searchQuery: { type: 'STRING' },
           isbn: { type: 'STRING' },
+          summary: { type: 'STRING' },
         },
         required: ['id', 'searchQuery'],
       },
@@ -2409,6 +2416,7 @@ ${JSON.stringify(cleanInput, null, 2)}`;
         originalAuthor: typeof item?.originalAuthor === 'string' ? item.originalAuthor.trim() : '',
         searchQuery: typeof item?.searchQuery === 'string' ? item.searchQuery.trim() : '',
         isbn: typeof item?.isbn === 'string' ? item.isbn.replace(/[^0-9Xx]/g, '') : '',
+        summary: typeof item?.summary === 'string' ? item.summary.trim() : '',
       })).filter((h) => Boolean(h.id));
     }
   } catch (err) {
