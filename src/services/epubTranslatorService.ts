@@ -160,6 +160,7 @@ export interface RunEpubTranslationOptions {
   genre: EpubGenreId;
   customNotes: string;
   stopSignal: { current: boolean };
+  getElapsedMs?: () => number;
   onProgress: (progress: EpubTranslationProgress) => void;
   onJobStateSync?: (updates: {
     translatedSegments: Record<number, string>;
@@ -184,7 +185,7 @@ export interface RunEpubTranslationResult {
 export async function runParallelEpubTranslation(
   options: RunEpubTranslationOptions
 ): Promise<RunEpubTranslationResult> {
-  const { job, genre, customNotes, stopSignal, onProgress, onJobStateSync } = options;
+  const { job, genre, customNotes, stopSignal, getElapsedMs, onProgress, onJobStateSync } = options;
   const availableKeys = getAvailableEpubTranslationKeys();
 
   const totalChunks = job.parsedData.chunks.length;
@@ -376,7 +377,7 @@ export async function runParallelEpubTranslation(
               preservedUpdates[s.segId] = s.tokenText;
               translatedSegments[s.segId] = s.tokenText;
             }
-            await recordChunkCheckpoint(job.jobId, chunkIdx, preservedUpdates);
+            await recordChunkCheckpoint(job.jobId, chunkIdx, preservedUpdates, getElapsedMs?.());
           }
           completedChunkSet.add(chunkIdx);
           continue;
@@ -507,7 +508,7 @@ export async function runParallelEpubTranslation(
           completedChunkSet.add(chunkIdx);
           failedChunkSet.delete(chunkIdx);
 
-          await recordChunkCheckpoint(job.jobId, chunkIdx, chunkUpdates);
+          await recordChunkCheckpoint(job.jobId, chunkIdx, chunkUpdates, getElapsedMs?.());
           if (onJobStateSync) {
             onJobStateSync({
               translatedSegments: { ...translatedSegments },
@@ -578,6 +579,8 @@ export async function runParallelEpubTranslation(
     failedChunkIds: Array.from(failedChunkSet),
     completedChunkIds: Array.from(completedChunkSet),
     translatedSegments,
+    ...(getElapsedMs ? { elapsedMs: getElapsedMs() } : {}),
+    ...(allCompleted ? { completedAt: Date.now() } : {}),
     lastError: allCompleted ? undefined : lastFatalOrKeyError || undefined,
   });
 

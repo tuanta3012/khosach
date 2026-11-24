@@ -143,6 +143,7 @@ export interface RunPdfTranslationOptions {
   genre: EpubGenreId;
   customNotes: string;
   stopSignal: { current: boolean };
+  getElapsedMs?: () => number;
   onProgress: (progress: EpubTranslationProgress) => void;
   onJobStateSync?: (updates: {
     translatedPdfPages: Record<number, PdfTranslatedBlock[]>;
@@ -170,6 +171,7 @@ export async function runParallelPdfTranslation(
     genre,
     customNotes,
     stopSignal,
+    getElapsedMs,
     onProgress,
     onJobStateSync,
   } = options;
@@ -570,7 +572,7 @@ export async function runParallelPdfTranslation(
             completedUnitSet.add(unitIdx);
             failedUnitSet.delete(unitIdx);
 
-            await recordPdfUnitCheckpoint(job.jobId, unitIdx, res.pageUpdates);
+            await recordPdfUnitCheckpoint(job.jobId, unitIdx, res.pageUpdates, getElapsedMs?.());
             if (onJobStateSync) {
               onJobStateSync({
                 translatedPdfPages: { ...translatedPdfPages },
@@ -647,6 +649,8 @@ export async function runParallelPdfTranslation(
     failedChunkIds: Array.from(failedUnitSet),
     completedChunkIds: Array.from(completedUnitSet),
     translatedPdfPages,
+    ...(getElapsedMs ? { elapsedMs: getElapsedMs() } : {}),
+    ...(allCompleted ? { completedAt: Date.now() } : {}),
     lastError: allCompleted ? undefined : lastFatalOrKeyError || undefined,
   });
 

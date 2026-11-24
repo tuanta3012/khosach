@@ -78,6 +78,7 @@ import {
   publishAssignedFile,
 } from './services/firebaseShareRelayService';
 import { log } from './utils/logger';
+import { normalizeInterruptedJobsOnStartup } from './services/epubCheckpointDb';
 
 export default function App() {
   const { showToast } = useToast();
@@ -124,6 +125,11 @@ export default function App() {
       console.warn('[CurationLearning] Startup cloud sync silent warning:', err);
     });
   }, [appMode]);
+
+  // Nếu app từng bị tắt/kill giữa chừng khi đang dịch sách, tự động dừng về trạng thái paused để giữ tiến độ
+  useEffect(() => {
+    normalizeInterruptedJobsOnStartup().catch(() => {});
+  }, []);
 
   // User Auth & Google Spreadsheet Info
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {

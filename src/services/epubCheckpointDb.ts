@@ -72,6 +72,84 @@ export async function getEpubJobById(jobId: string): Promise<EpubTranslationJob 
   }
 }
 
+export function sortJobsByQueueOrder(list: EpubTranslationJob[]): EpubTranslationJob[] {
+  return [...list].sort((a, b) => {
+    const orderA = a.queueOrder ?? a.createdAt ?? a.updatedAt ?? 0;
+    const orderB = b.queueOrder ?? b.createdAt ?? b.updatedAt ?? 0;
+    if (orderA !== orderB) return orderA - orderB;
+    return (a.createdAt ?? a.updatedAt ?? 0) - (b.createdAt ?? b.updatedAt ?? 0);
+  });
+}
+
+export function getNextQueueOrder(jobs: EpubTranslationJob[]): number {
+  let maxOrder = 0;
+  for (const job of jobs) {
+    const val = job.queueOrder ?? 0;
+    if (val > maxOrder) maxOrder = val;
+  }
+  return maxOrder + 1;
+}
+
+export async function loadAllEpubJobs(): Promise<EpubTranslationJob[]> {
+  try {
+    const db = await openDb();
+    const res = await new Promise<EpubTranslationJob[]>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list = (req.result as EpubTranslationJob[]) || [];
+        resolve(sortJobsByQueueOrder(list));
+      };
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return res;
+  } catch (err) {
+    console.warn('[EpubCheckpointDB] Lỗi nạp danh sách hàng chờ:', err);
+    return [];
+  }
+}
+
+/**
+ * Khi ứng dụng khởi động lại sau khi bị tắt/kill đột ngột, tự động chuyển mọi tác vụ
+ * đang ở trạng thái 'translating' về 'paused' để bảo toàn checkpoint & thời gian đã chạy.
+ */
+export async function normalizeInterruptedJobsOnStartup(): Promise<EpubTranslationJob[]> {
+  try {
+    const db = await openDb();
+    const res = await new Promise<EpubTranslationJob[]>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.getAll();
+      let normalizedList: EpubTranslationJob[] = [];
+      req.onsuccess = () => {
+        const list = (req.result as EpubTranslationJob[]) || [];
+        const now = Date.now();
+        normalizedList = list.map((item) => {
+          if (item.status === 'translating') {
+            const updated: EpubTranslationJob = {
+              ...item,
+              status: 'paused',
+              updatedAt: now,
+            };
+            store.put(updated);
+            return updated;
+          }
+          return item;
+        });
+      };
+      tx.oncomplete = () => resolve(sortJobsByQueueOrder(normalizedList));
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    return res;
+  } catch (err) {
+    console.warn('[EpubCheckpointDB] Lỗi khôi phục trạng thái tác vụ khi khởi động:', err);
+    return loadAllEpubJobs();
+  }
+}
+
 export async function loadLatestEpubJob(): Promise<EpubTranslationJob | null> {
   try {
     const db = await openDb();
@@ -105,7 +183,8 @@ export async function loadLatestEpubJob(): Promise<EpubTranslationJob | null> {
 export async function recordChunkCheckpoint(
   jobId: string,
   chunkIndex: number,
-  translatedMapUpdates: Record<number, string>
+  translatedMapUpdates: Record<number, string>,
+  elapsedMs?: number
 ): Promise<void> {
   try {
     const db = await openDb();
@@ -133,6 +212,9 @@ export async function recordChunkCheckpoint(
           },
           completedChunkIds: Array.from(completedSet),
           failedChunkIds: Array.from(failedSet),
+          ...(typeof elapsedMs === 'number' && Number.isFinite(elapsedMs)
+            ? { elapsedMs: Math.max(existing.elapsedMs || 0, elapsedMs) }
+            : {}),
           updatedAt: Date.now(),
         };
         store.put(nextJob);
@@ -149,7 +231,8 @@ export async function recordChunkCheckpoint(
 export async function recordPdfUnitCheckpoint(
   jobId: string,
   unitIndex: number,
-  pageUpdates: Record<number, PdfTranslatedBlock[]>
+  pageUpdates: Record<number, PdfTranslatedBlock[]>,
+  elapsedMs?: number
 ): Promise<void> {
   try {
     const db = await openDb();
@@ -177,6 +260,9 @@ export async function recordPdfUnitCheckpoint(
           },
           completedChunkIds: Array.from(completedSet),
           failedChunkIds: Array.from(failedSet),
+          ...(typeof elapsedMs === 'number' && Number.isFinite(elapsedMs)
+            ? { elapsedMs: Math.max(existing.elapsedMs || 0, elapsedMs) }
+            : {}),
           updatedAt: Date.now(),
         };
         store.put(nextJob);
@@ -204,6 +290,12 @@ export async function updateEpubJobMetadata(
     pdfUnits: PdfTranslationUnit[];
     translatedPdfPages: Record<number, PdfTranslatedBlock[]>;
     lastError?: string;
+    queueOrder: number;
+    elapsedMs: number;
+    completedAt?: number;
+    lastSavedLocation?: string;
+    lastSavedFileName?: string;
+    lastSavedFileUri?: string;
   }>
 ): Promise<void> {
   try {
@@ -245,5 +337,29 @@ export async function deleteEpubJob(jobId: string): Promise<void> {
     db.close();
   } catch (err) {
     console.warn('[EpubCheckpointDB] Lỗi xóa job:', err);
+  }
+}
+
+export async function clearCompletedEpubJobs(): Promise<void> {
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list = (req.result as EpubTranslationJob[]) || [];
+        for (const item of list) {
+          if (item.status === 'completed') {
+            store.delete(item.jobId);
+          }
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('[EpubCheckpointDB] Lỗi xóa các job đã xong:', err);
   }
 }

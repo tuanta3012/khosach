@@ -188,7 +188,7 @@ function classifyGeminiError(err: unknown): FailureKind {
   ) {
     return 'RPD';
   }
-  if (/api.?key.?not.?valid|invalid api key|api_key_invalid|unauthenticated|permission_denied|http.?401|http.?403/.test(errMsg)) {
+  if (/api.?key.?not.?valid|invalid api key|api_key_invalid|api.?key.?expired|api_key_expired|unauthenticated|permission_denied|http.?401|http.?403/.test(errMsg)) {
     return 'AUTH';
   }
   if (/gemini_non_retryable|safety|recitation|blocked by|prompt was blocked/.test(errMsg)) {
@@ -256,7 +256,7 @@ async function startServer() {
     });
   });
 
-  // 2. Kiểm tra tính hợp lệ của Key qua máy chủ
+  // 2. Kiểm tra tính hợp lệ của Key qua máy chủ (thử 3.5 -> dự phòng 3.1)
   app.post('/api/gemini/test-key', async (req: Request, res: Response) => {
     const candidateKey = typeof req.body?.key === 'string' ? req.body.key.trim() : '';
     const apiKey = candidateKey || getServerGeminiKeys()[0] || '';
@@ -270,43 +270,62 @@ async function startServer() {
       return;
     }
 
-    let releaseSlot: ((completionMs?: number) => void) | null = null;
-    try {
-      const slot = await acquireServerRpmSlot(apiKey, 'gemini-3.5-flash-lite');
-      releaseSlot = slot.releaseTimestamp;
-      const ai = createServerGeminiClient(apiKey);
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash-lite',
-        contents: 'Ping test. Reply with word OK.',
-      });
-      releaseSlot();
-      if (response?.text) {
-        res.json({ success: true, message: 'Key hoạt động tốt.' });
-        return;
+    const probeModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'] as const;
+    let lastFailureKind: FailureKind = 'OTHER';
+    let lastErrMessage = 'Key lỗi. Chờ hoặc thay key mới.';
+
+    for (const modelName of probeModels) {
+      let releaseSlot: ((completionMs?: number) => void) | null = null;
+      try {
+        const slot = await acquireServerRpmSlot(apiKey, modelName);
+        releaseSlot = slot.releaseTimestamp;
+        const ai = createServerGeminiClient(apiKey);
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: 'Ping test. Reply with word OK.',
+        });
+        releaseSlot();
+        if (response?.text) {
+          res.json({
+            success: true,
+            message:
+              modelName === 'gemini-3.5-flash-lite'
+                ? 'Key hoạt động tốt.'
+                : 'Key hoạt động tốt (dự phòng 3.1).',
+          });
+          return;
+        }
+        lastErrMessage = 'Gemini trả về phản hồi rỗng.';
+      } catch (err: unknown) {
+        releaseSlot?.();
+        lastFailureKind = classifyGeminiError(err);
+        if (lastFailureKind === 'RPM') {
+          recordServerRpm429(apiKey, modelName, getErrorText(err));
+        }
+        if (lastFailureKind === 'AUTH') {
+          res.status(401).json({
+            success: false,
+            failureKind: 'AUTH',
+            message: 'Key không hợp lệ hoặc bị từ chối quyền.',
+          });
+          return;
+        }
+        lastErrMessage =
+          lastFailureKind === 'RPD' || lastFailureKind === 'RPM'
+            ? 'Key hết hạn ngạch. Chờ hoặc thay key mới.'
+            : err instanceof Error
+            ? err.message
+            : 'Key lỗi. Chờ hoặc thay key mới.';
       }
-      res.status(502).json({
-        success: false,
-        failureKind: 'OTHER',
-        message: 'Gemini trả về phản hồi rỗng.',
-      });
-    } catch (err: unknown) {
-      releaseSlot?.();
-      const failureKind = classifyGeminiError(err);
-      if (failureKind === 'RPM') {
-        recordServerRpm429(apiKey, 'gemini-3.5-flash-lite', getErrorText(err));
-      }
-      let message = 'Key lỗi. Chờ hoặc thay key mới.';
-      if (failureKind === 'RPD' || failureKind === 'RPM') {
-        message = 'Key hết hạn ngạch. Chờ hoặc thay key mới.';
-      } else if (failureKind === 'AUTH') {
-        message = 'Key không hợp lệ. Vui lòng thay key mới.';
-      }
-      res.status(failureKind === 'AUTH' ? 401 : failureKind === 'RPM' || failureKind === 'RPD' ? 429 : 502).json({
-        success: false,
-        failureKind,
-        message,
-      });
     }
+
+    res
+      .status(lastFailureKind === 'RPM' || lastFailureKind === 'RPD' ? 429 : 502)
+      .json({
+        success: false,
+        failureKind: lastFailureKind,
+        message: lastErrMessage,
+      });
   });
 
   // 3. Proxy chuẩn cho tất cả tác vụ Gemini generateContent (OCR gáy sách, Chuẩn hóa, Tra cứu, Dịch EPUB)

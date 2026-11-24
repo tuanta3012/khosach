@@ -384,6 +384,13 @@ export interface EpubTranslationJob {
   failedChunkIds: number[];
   status: 'idle' | 'translating' | 'paused' | 'completed' | 'error';
   lastError?: string;
+  queueOrder?: number;
+  createdAt?: number;
+  elapsedMs?: number;
+  completedAt?: number;
+  lastSavedLocation?: string;
+  lastSavedFileName?: string;
+  lastSavedFileUri?: string;
   updatedAt: number;
 }
 

@@ -14,6 +14,7 @@
  *    - Callback cập nhật tiến độ chi tiết theo thời gian thực.
  */
 
+import { Capacitor } from '@capacitor/core';
 import { 
   BatchNormalizeFailure,
   BatchNormalizeResult,
@@ -262,6 +263,15 @@ export function getNextAvailableKey(keys: string[], excludedKeys: ReadonlySet<st
  */
 const API_BASE = ((import.meta as unknown as { env?: Record<string, string> })?.env?.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const SERVER_KEY_PREFIX = '__SERVER_KEY_';
+let backendProxyUnavailable = false;
+
+function isNativeWithoutCustomApiBase(): boolean {
+  try {
+    return !API_BASE && Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+}
 
 export function isServerKeyToken(key: string): boolean {
   return key.startsWith(SERVER_KEY_PREFIX);
@@ -284,6 +294,16 @@ export async function refreshServerGeminiStatus(): Promise<{
   serverConfigured: boolean;
   serverKeyCount: number;
 }> {
+  if (isNativeWithoutCustomApiBase()) {
+    backendProxyUnavailable = true;
+    serverStatusCache = {
+      checked: true,
+      serverConfigured: false,
+      serverKeyCount: 0,
+    };
+    return { serverConfigured: false, serverKeyCount: 0 };
+  }
+
   if (serverStatusPromise) return serverStatusPromise;
   serverStatusPromise = (async () => {
     try {
@@ -291,7 +311,9 @@ export async function refreshServerGeminiStatus(): Promise<{
         method: 'GET',
         headers: { Accept: 'application/json' },
       });
-      if (resp.ok) {
+      const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+      if (resp.ok && contentType.includes('application/json')) {
+        backendProxyUnavailable = false;
         const data = await resp.json();
         const prevConfigured = serverStatusCache.serverConfigured;
         const prevCount = serverStatusCache.serverKeyCount;
@@ -311,8 +333,13 @@ export async function refreshServerGeminiStatus(): Promise<{
           serverKeyCount: serverStatusCache.serverKeyCount,
         };
       }
+      if (!API_BASE) {
+        backendProxyUnavailable = true;
+      }
     } catch {
-      // Ignore network errors when backend is unreachable (e.g. offline native build)
+      if (!API_BASE) {
+        backendProxyUnavailable = true;
+      }
     } finally {
       serverStatusPromise = null;
     }
@@ -449,7 +476,7 @@ function classifyGeminiFailure(err: unknown): GeminiFailureKind {
     return 'RPD';
   }
 
-  if (/api.?key.?not.?valid|invalid api key|api_key_invalid|unauthenticated|permission_denied|http.?401|http.?403/.test(errMsg)) return 'AUTH';
+  if (/api.?key.?not.?valid|invalid api key|api_key_invalid|api.?key.?expired|api_key_expired|unauthenticated|permission_denied|http.?401|http.?403/.test(errMsg)) return 'AUTH';
   if (/gemini_non_retryable|safety|recitation|blocked by|prompt was blocked/.test(errMsg)) return 'NON_RETRYABLE';
   if (/429|resource_exhausted|rate.?limit|too many requests|quota exceeded/.test(errMsg)) return 'RPM';
   if (/503|502|500|timeout|timed out|network|failed to fetch|unavailable|socket/.test(errMsg)) return 'TRANSIENT';
@@ -490,6 +517,148 @@ export function getDynamicApiQuotaMetrics(): KeyQuotaMetrics {
   };
 }
 
+function clearKeyErrorState(key: string): void {
+  const clean = (key || '').trim();
+  if (!clean) return;
+  const state = getKeyState(clean);
+  state.isRpdExhausted = false;
+  state.rpdExhaustedDate = '';
+  state.cooldownUntil = 0;
+  state.backoffFactor = 0;
+
+  const fp = fingerprintKey(clean);
+  channelCooldownMap.delete(`${fp}_gemini-3.5-flash-lite`);
+  channelCooldownMap.delete(`${fp}_gemini-3.1-flash-lite`);
+
+  try {
+    const persisted = JSON.parse(localStorage.getItem(RPD_STATE_STORAGE_KEY) || '{}') as Record<string, string>;
+    let changed = false;
+    for (const targetKey of [fp, `${fp}_gemini-3.5-flash-lite`, `${fp}_gemini-3.1-flash-lite`]) {
+      if (targetKey in persisted) {
+        delete persisted[targetKey];
+        changed = true;
+      }
+    }
+    if (changed) {
+      localStorage.setItem(RPD_STATE_STORAGE_KEY, JSON.stringify(persisted));
+    }
+  } catch {}
+}
+
+function buildDirectGeminiRestPayload(contents: unknown, config?: unknown): Record<string, unknown> {
+  const normalizedContents =
+    typeof contents === 'string'
+      ? [{ role: 'user', parts: [{ text: contents }] }]
+      : Array.isArray(contents)
+      ? contents
+      : [contents];
+
+  const payload: Record<string, unknown> = {
+    contents: normalizedContents,
+  };
+
+  if (config && typeof config === 'object' && !Array.isArray(config)) {
+    const cfg = config as Record<string, unknown>;
+    if (typeof cfg.systemInstruction === 'string' && cfg.systemInstruction.trim()) {
+      payload.systemInstruction = { parts: [{ text: cfg.systemInstruction }] };
+    }
+    const genConfig: Record<string, unknown> = {};
+    if (typeof cfg.responseMimeType === 'string' && cfg.responseMimeType.trim()) {
+      genConfig.responseMimeType = cfg.responseMimeType;
+    }
+    if (cfg.responseSchema && typeof cfg.responseSchema === 'object') {
+      genConfig.responseSchema = cfg.responseSchema;
+    }
+    if (cfg.thinkingConfig && typeof cfg.thinkingConfig === 'object') {
+      genConfig.thinkingConfig = cfg.thinkingConfig;
+    }
+    if (typeof cfg.seed === 'number' && Number.isFinite(cfg.seed)) {
+      genConfig.seed = cfg.seed;
+    }
+    if (typeof cfg.maxOutputTokens === 'number' && Number.isFinite(cfg.maxOutputTokens)) {
+      genConfig.maxOutputTokens = cfg.maxOutputTokens;
+    }
+    if (Object.keys(genConfig).length > 0) {
+      payload.generationConfig = genConfig;
+    }
+  }
+
+  return payload;
+}
+
+async function callDirectGoogleGeminiGenerate(params: {
+  key: string;
+  model: string;
+  contents: unknown;
+  config?: unknown;
+}): Promise<{ text: string }> {
+  const { key, model, contents, config } = params;
+  const cleanKey = key.trim();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  const payload = buildDirectGeminiRestPayload(contents, config);
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': cleanKey,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const rawMsg =
+      data?.error?.message ||
+      data?.message ||
+      `HTTP ${resp.status}: Lỗi gọi trực tiếp Google Gemini API.`;
+    const errText = `${rawMsg} ${resp.status} ${JSON.stringify(data?.error || '')}`;
+    const err: Error & {
+      status?: number;
+      failureKind?: string;
+      retryAfterMs?: number;
+    } = new Error(rawMsg);
+    err.status = resp.status;
+    err.failureKind = classifyGeminiFailure(errText);
+    const secMatch = errText.match(/retry(?:\s+in|\s*delay["':\s]+)(\d+(?:\.\d+)?)\s*s/i);
+    if (secMatch) {
+      const parsedSec = Math.ceil(Number(secMatch[1]) * 1000);
+      if (Number.isFinite(parsedSec) && parsedSec > 0) {
+        err.retryAfterMs = Math.min(65_000, Math.max(RPM_429_COOLDOWN_MS, parsedSec + 1_500));
+      }
+    }
+    throw err;
+  }
+
+  const candidate = data?.candidates?.[0];
+  const finishReason = candidate?.finishReason;
+  if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
+    const err: Error & { failureKind?: string } = new Error(
+      `GEMINI_NON_RETRYABLE: Yêu cầu bị từ chối bởi Google AI (Lý do: ${finishReason}).`
+    );
+    err.failureKind = 'NON_RETRYABLE';
+    throw err;
+  }
+
+  const blockReason = data?.promptFeedback?.blockReason;
+  if (blockReason) {
+    const err: Error & { failureKind?: string } = new Error(
+      `GEMINI_NON_RETRYABLE: Nội dung bị chặn bởi bộ lọc an toàn Google AI (Lý do: ${blockReason}).`
+    );
+    err.failureKind = 'NON_RETRYABLE';
+    throw err;
+  }
+
+  const parts = candidate?.content?.parts;
+  const text = Array.isArray(parts)
+    ? parts
+        .map((p: { text?: string }) => (typeof p?.text === 'string' ? p.text : ''))
+        .join('')
+    : '';
+
+  return { text };
+}
+
 async function callServerGeminiGenerate(params: {
   key: string;
   model: string;
@@ -497,6 +666,12 @@ async function callServerGeminiGenerate(params: {
   config?: unknown;
 }): Promise<{ text: string }> {
   const { key, model, contents, config } = params;
+  const isPersonalKey = Boolean(key.trim()) && !isServerKeyToken(key);
+
+  if (isPersonalKey && (isNativeWithoutCustomApiBase() || backendProxyUnavailable)) {
+    return callDirectGoogleGeminiGenerate(params);
+  }
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -512,11 +687,26 @@ async function callServerGeminiGenerate(params: {
     headers['x-gemini-api-key'] = key.trim();
   }
 
-  const resp = await fetch(`${API_BASE}/api/gemini/generate`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}/api/gemini/generate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (networkErr) {
+    if (isPersonalKey && !API_BASE) {
+      backendProxyUnavailable = true;
+      return callDirectGoogleGeminiGenerate(params);
+    }
+    throw networkErr;
+  }
+
+  const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+  if (isPersonalKey && !API_BASE && (resp.status === 404 || !contentType.includes('application/json'))) {
+    backendProxyUnavailable = true;
+    return callDirectGoogleGeminiGenerate(params);
+  }
 
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
@@ -776,7 +966,9 @@ export async function executeWithFailover(
 }
 
 /**
- * KIỂM TRA TÍNH HỢP LỆ VÀ KẾT NỐI CỦA MỘT GEMINI API KEY QUA MÁY CHỦ
+ * KIỂM TRA TÍNH HỢP LỆ VÀ KẾT NỐI CỦA MỘT GEMINI API KEY
+ * - Trên Web/Server: gọi qua /api/gemini/test-key
+ * - Trên Android APK (không có proxy cục bộ): gọi trực tiếp Google Gemini REST API
  */
 export async function testGeminiApiKey(
   candidateKey: string
@@ -786,8 +978,57 @@ export async function testGeminiApiKey(
     return { success: false, message: 'Chưa nhập API Key.' };
   }
 
-  if (isKeyInCooldown(cleanKey)) {
-    return { success: false, message: 'Key lỗi hoặc hết hạn. Chờ hoặc thay key mới.' };
+  const testViaDirectGoogle = async (): Promise<{ success: boolean; message: string }> => {
+    const probeModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
+    let lastErrorMessage = 'Key lỗi. Kiểm tra lại key hoặc kết nối mạng.';
+
+    for (const model of probeModels) {
+      try {
+        const res = await callDirectGoogleGeminiGenerate({
+          key: cleanKey,
+          model,
+          contents: 'Ping test. Reply OK.',
+        });
+        if (res.text && res.text.trim()) {
+          clearKeyErrorState(cleanKey);
+          return {
+            success: true,
+            message:
+              model === 'gemini-3.5-flash-lite'
+                ? 'Key hoạt động tốt.'
+                : 'Key hoạt động tốt (dự phòng 3.1).',
+          };
+        }
+      } catch (err: unknown) {
+        const failure = classifyGeminiFailure(err);
+        const rawErrMsg = err instanceof Error ? err.message : String(err);
+        if (failure === 'AUTH') {
+          return {
+            success: false,
+            message: 'Key không hợp lệ hoặc chưa bật Gemini API.',
+          };
+        }
+        if (failure === 'RPD') {
+          lastErrorMessage = `Model ${model} đã hết lượt ngày (RPD).`;
+          continue;
+        }
+        if (failure === 'RPM') {
+          lastErrorMessage = 'Key tạm chạm ngưỡng RPM (429), chờ vài giây.';
+          continue;
+        }
+        if (failure === 'TRANSIENT') {
+          lastErrorMessage = 'Không kết nối được Google AI (kiểm tra mạng).';
+          continue;
+        }
+        lastErrorMessage = rawErrMsg || lastErrorMessage;
+      }
+    }
+
+    return { success: false, message: lastErrorMessage };
+  };
+
+  if (isNativeWithoutCustomApiBase() || backendProxyUnavailable) {
+    return testViaDirectGoogle();
   }
 
   try {
@@ -796,8 +1037,15 @@ export async function testGeminiApiKey(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: cleanKey }),
     });
+    const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+    if (!API_BASE && (resp.status === 404 || !contentType.includes('application/json'))) {
+      backendProxyUnavailable = true;
+      return testViaDirectGoogle();
+    }
+
     const data = await resp.json().catch(() => ({}));
     if (resp.ok && data?.success) {
+      clearKeyErrorState(cleanKey);
       return { success: true, message: data.message || 'Key hoạt động tốt.' };
     }
     return {
@@ -805,7 +1053,11 @@ export async function testGeminiApiKey(
       message: data?.message || 'Key lỗi. Chờ hoặc thay key mới.',
     };
   } catch {
-    return { success: false, message: 'Key lỗi. Chờ hoặc thay key mới.' };
+    if (!API_BASE) {
+      backendProxyUnavailable = true;
+      return testViaDirectGoogle();
+    }
+    return { success: false, message: 'Không kết nối được máy chủ kiểm tra key.' };
   }
 }
 
