@@ -24,6 +24,7 @@ import {
   ChevronDown,
   ChevronUp,
   Pencil,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { LibrarySettings, BookRecord, AuthUser, BookSource } from '../types';
 import { useToast } from '../context/ToastContext';
@@ -36,6 +37,10 @@ import {
   testAllGeminiApiKeys,
   ensureGeminiAccessAvailable,
 } from '../services/geminiService';
+import {
+  batchFindBookCovers,
+  BatchCoverProgress,
+} from '../services/bookCoverService';
 import {
   groupDuplicateBooksAsync,
   DuplicateGroup,
@@ -137,9 +142,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [, setProcessedCount] = useState(0);
   const stopNormalizingRef = useRef(false);
 
+  // States cho tìm ảnh bìa hàng loạt
+  const [isFindingCovers, setIsFindingCovers] = useState(false);
+  const [coverProgress, setCoverProgress] = useState<BatchCoverProgress | null>(null);
+  const stopFindingCoversRef = useRef(false);
+
   const totalBooks = books.length;
   const normalizedCount = books.filter((b) => b.is_ai_normalized).length;
   const pendingBooks = books.filter((b) => !b.is_ai_normalized);
+  const booksWithCoverCount = books.filter((b) => Boolean(b.cover_url && b.cover_url.trim())).length;
+  const missingCoverCount = Math.max(0, totalBooks - booksWithCoverCount);
   const activeReviewCount = reviewProposals ? reviewProposals.length : (pendingReviewCount || pendingReviewAccumulatorRef.current.length);
 
   // Mặc định tính năng AI tự động luôn là OFF khi cài app mới
@@ -148,6 +160,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     setAutoNormalize(!!settings.autoNormalizeEnabled);
   }, [settings.autoNormalizeEnabled, isOpen]);
+
+  useEffect(() => {
+    return () => {
+      stopFindingCoversRef.current = true;
+    };
+  }, []);
 
   const handleToggleAutoNormalize = async (val: boolean) => {
     setAutoNormalize(val);
@@ -623,6 +641,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     pendingReviewAccumulatorRef.current = [];
     setPendingReviewCount(0);
     showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách!`, 'success');
+  };
+
+  const handleStartBatchFindCovers = async (overwriteExisting = false) => {
+    if (currentUser?.userRole === 'VIEWER') {
+      showToast('Chế độ Chỉ xem không thể cập nhật ảnh bìa.', 'warning');
+      return;
+    }
+    if (!onBatchUpdateBooks || books.length === 0) return;
+
+    stopFindingCoversRef.current = false;
+    setIsFindingCovers(true);
+    setCoverProgress({
+      phase: 'catalog',
+      processed: 0,
+      total: overwriteExisting ? totalBooks : missingCoverCount,
+      foundCount: 0,
+      statusMessage: 'Đang chuẩn bị tìm bìa...',
+    });
+
+    try {
+      const result = await batchFindBookCovers(books, {
+        overwriteExisting,
+        useAiFallback: true,
+        stopSignal: stopFindingCoversRef,
+        onProgress: (p) => setCoverProgress(p),
+        onChunkSave: async (chunk) => {
+          await onBatchUpdateBooks(chunk);
+        },
+      });
+
+      if (result.stopped) {
+        showToast(`Đã dừng. Đã lưu ${result.updatedCount} ảnh bìa.`, 'info');
+      } else if (result.updatedCount > 0) {
+        showToast(`Đã cập nhật ${result.updatedCount} ảnh bìa!`, 'success');
+      } else {
+        showToast('Không tìm thêm được ảnh bìa mới.', 'info');
+      }
+    } catch (err: any) {
+      showToast(`Lỗi tìm bìa: ${err?.message || String(err)}`, 'error');
+    } finally {
+      setIsFindingCovers(false);
+      stopFindingCoversRef.current = false;
+    }
+  };
+
+  const handleStopBatchFindCovers = () => {
+    stopFindingCoversRef.current = true;
   };
 
   const handleManualDeduplicate = async () => {
@@ -1412,6 +1477,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <span>Làm lại</span>
                   </button>
                 </div>
+              </div>
+            </div>
+
+            {/* 3B. ẢNH BÌA SÁCH */}
+            <div className="bg-white rounded-2xl border border-slate-100 p-3.5 space-y-2.5 shadow-3xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-black text-slate-800 leading-tight">
+                  Ảnh bìa sách
+                </span>
+                <div className="px-2.5 py-1 bg-sky-50 text-[#0284C7] text-xs font-extrabold rounded-xl shrink-0">
+                  {booksWithCoverCount}/{totalBooks}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
+                  <span className="truncate font-medium">
+                    {isFindingCovers && coverProgress
+                      ? coverProgress.statusMessage
+                      : `Đạt ${Math.round((booksWithCoverCount / (totalBooks || 1)) * 100)}%`}
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#0284C7] transition-all duration-300 rounded-full"
+                    style={{ width: `${Math.round((booksWithCoverCount / (totalBooks || 1)) * 100)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                {isFindingCovers ? (
+                  <button
+                    type="button"
+                    onClick={handleStopBatchFindCovers}
+                    className="flex-1 h-9 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-3xs"
+                  >
+                    <Pause className="w-3.5 h-3.5 shrink-0" />
+                    <span>Dừng tìm bìa</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleStartBatchFindCovers(false)}
+                      disabled={missingCoverCount === 0}
+                      className="flex-1 h-9 px-3 bg-[#0284C7] hover:bg-[#0369a1] disabled:opacity-40 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-3xs whitespace-nowrap min-w-0"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 shrink-0" />
+                      <span>Tìm bìa ({missingCoverCount})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleStartBatchFindCovers(true)}
+                      disabled={totalBooks === 0}
+                      className="px-2.5 h-9 bg-sky-50 hover:bg-sky-100 disabled:opacity-40 text-[#0284C7] border border-sky-200/70 text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
+                      title="Tìm lại ảnh bìa cho toàn bộ kho sách"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                      <span>Tìm lại</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 

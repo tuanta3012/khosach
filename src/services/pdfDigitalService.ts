@@ -177,8 +177,11 @@ async function detectPageFigureBoxes(
     const w = clamped.maxX - clamped.minX;
     const h = clamped.maxY - clamped.minY;
     if (w < minW || h < minH) return;
-    // Bỏ qua khung nền trắng/tô phủ toàn trang
-    if (w * h > pageArea * 0.88 && w > viewport.width * 0.9 && h > viewport.height * 0.9) {
+    // Bỏ qua khung nền trắng/viền khung bao phủ phần lớn trang
+    if (
+      (w * h > pageArea * 0.72 && w > viewport.width * 0.85 && h > viewport.height * 0.8) ||
+      (w > viewport.width * 0.9 && h > viewport.height * 0.88)
+    ) {
       return;
     }
     rawBoxes.push(clamped);
@@ -236,7 +239,12 @@ async function detectPageFigureBoxes(
     .filter((b) => {
       const w = b.maxX - b.minX;
       const h = b.maxY - b.minY;
-      return w >= 52 && h >= 40 && !(w > viewport.width * 0.92 && h > viewport.height * 0.92);
+      const area = w * h;
+      return (
+        w >= 52 &&
+        h >= 40 &&
+        !(area > pageArea * 0.74 && w > viewport.width * 0.86 && h > viewport.height * 0.82)
+      );
     })
     .sort((a, b) => a.minY - b.minY || a.minX - b.minX)
     .slice(0, 6);
@@ -253,12 +261,24 @@ async function canvasToJpegBytes(canvas: HTMLCanvasElement, quality = 0.86): Pro
   return new Uint8Array(await blob.arrayBuffer());
 }
 
+interface FigurePlacement {
+  assetId: string;
+  minY: number;
+  maxY: number;
+  area: number;
+}
+
+interface CroppedFigureEntry {
+  asset: PdfExtractedAsset;
+  placement: FigurePlacement;
+}
+
 async function cropFiguresFromPage(
   page: pdfjsLib.PDFPageProxy,
   pageNumber: number,
   baseViewport: pdfjsLib.PageViewport,
   boxes: RectBox[]
-): Promise<PdfExtractedAsset[]> {
+): Promise<CroppedFigureEntry[]> {
   if (boxes.length === 0) return [];
 
   const targetScale = Math.min(2.0, Math.max(1.2, 1600 / Math.max(1, baseViewport.width)));
@@ -270,7 +290,7 @@ async function cropFiguresFromPage(
   const ctx = pageCanvas.getContext('2d');
   if (!ctx) return [];
 
-  const extracted: PdfExtractedAsset[] = [];
+  const extracted: CroppedFigureEntry[] = [];
   try {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
@@ -305,13 +325,21 @@ async function cropFiguresFromPage(
         const bytes = await canvasToJpegBytes(cropCanvas, 0.86);
         const assetId = `p${pageNumber}_fig${i + 1}`;
         extracted.push({
-          assetId,
-          pageNumber,
-          fileName: `${assetId}.jpg`,
-          mimeType: 'image/jpeg',
-          data: bytes,
-          width: cw,
-          height: ch,
+          asset: {
+            assetId,
+            pageNumber,
+            fileName: `${assetId}.jpg`,
+            mimeType: 'image/jpeg',
+            data: bytes,
+            width: cw,
+            height: ch,
+          },
+          placement: {
+            assetId,
+            minY: b.minY,
+            maxY: b.maxY,
+            area: Math.max(0, b.maxX - b.minX) * Math.max(0, b.maxY - b.minY),
+          },
         });
       }
       cropCanvas.width = 0;
@@ -456,20 +484,25 @@ function buildPreParsedBlocks(
   lines: PositionedLine[],
   bodyFontSize: number,
   pageWidth: number,
-  assetIds: string[]
+  figurePlacements: FigurePlacement[]
 ): PdfPreParsedBlock[] {
   const blocks: PdfPreParsedBlock[] = [];
   let nextBlockId = 1;
+  const pendingFigures = [...figurePlacements].sort((a, b) => a.minY - b.minY);
+
+  const pushFigureBlock = (assetId: string) => {
+    blocks.push({
+      blockId: nextBlockId++,
+      tag: 'figure',
+      text: `[[PDF_IMG_${assetId}]]`,
+      isFigure: true,
+      assetId,
+    });
+  };
 
   if (lines.length === 0) {
-    for (const assetId of assetIds) {
-      blocks.push({
-        blockId: nextBlockId++,
-        tag: 'figure',
-        text: `[[PDF_IMG_${assetId}]]`,
-        isFigure: true,
-        assetId,
-      });
+    for (const fig of pendingFigures) {
+      pushFigureBlock(fig.assetId);
     }
     return blocks;
   }
@@ -543,7 +576,25 @@ function buildPreParsedBlocks(
       }
     }
 
-    if (shouldBreak) {
+    // Chèn ảnh đúng vị trí dọc (Y) trước khối văn bản mới hoặc ngay sau khi vượt qua đáy ảnh
+    const readyFigureBeforeLine =
+      pendingFigures.length > 0 &&
+      ((shouldBreak && line.y >= pendingFigures[0].minY - 6) ||
+        line.y > pendingFigures[0].maxY + 8);
+
+    if (readyFigureBeforeLine) {
+      flush();
+      while (
+        pendingFigures.length > 0 &&
+        ((shouldBreak && line.y >= pendingFigures[0].minY - 6) ||
+          line.y > pendingFigures[0].maxY + 8)
+      ) {
+        const fig = pendingFigures.shift()!;
+        pushFigureBlock(fig.assetId);
+      }
+      curTag = lineTag;
+      curText = line.text;
+    } else if (shouldBreak) {
       flush();
       curTag = lineTag;
       curText = line.text;
@@ -558,14 +609,9 @@ function buildPreParsedBlocks(
   }
   flush();
 
-  for (const assetId of assetIds) {
-    blocks.push({
-      blockId: nextBlockId++,
-      tag: 'figure',
-      text: `[[PDF_IMG_${assetId}]]`,
-      isFigure: true,
-      assetId,
-    });
+  while (pendingFigures.length > 0) {
+    const fig = pendingFigures.shift()!;
+    pushFigureBlock(fig.assetId);
   }
 
   return blocks;
@@ -709,6 +755,8 @@ export async function parseDigitalPdfFile(
       height: number;
       lines: PositionedLine[];
       assetIds: string[];
+      figurePlacements: FigurePlacement[];
+      figureAreaRatio: number;
       hasFigures: boolean;
       isMultiColumn: boolean;
       hasTables: boolean;
@@ -766,12 +814,20 @@ export async function parseDigitalPdfFile(
 
       // Lớp 3: dò hình ảnh / biểu đồ vector và cắt xuất sắc nét
       const figureBoxes = await detectPageFigureBoxes(page, viewport);
-      const pageAssets = await cropFiguresFromPage(page, pageNumber, viewport, figureBoxes);
+      const croppedEntries = await cropFiguresFromPage(page, pageNumber, viewport, figureBoxes);
       const assetIds: string[] = [];
-      for (const asset of pageAssets) {
-        assets[asset.assetId] = asset;
-        assetIds.push(asset.assetId);
+      const figurePlacements: FigurePlacement[] = [];
+      let totalFigureArea = 0;
+
+      for (const entry of croppedEntries) {
+        assets[entry.asset.assetId] = entry.asset;
+        assetIds.push(entry.asset.assetId);
+        figurePlacements.push(entry.placement);
+        totalFigureArea += entry.placement.area;
       }
+
+      const pageArea = Math.max(1, viewport.width * viewport.height);
+      const figureAreaRatio = Math.min(1, Math.round((totalFigureArea / pageArea) * 1000) / 1000);
 
       rawPages.push({
         pageNumber,
@@ -779,6 +835,8 @@ export async function parseDigitalPdfFile(
         height: viewport.height,
         lines,
         assetIds,
+        figurePlacements,
+        figureAreaRatio,
         hasFigures: assetIds.length > 0,
         isMultiColumn,
         hasTables,
@@ -904,26 +962,29 @@ export async function parseDigitalPdfFile(
 
     for (const { rp, cleanLines } of filteredPages) {
       const ch = resolveChapterForPage(rp.pageNumber);
-      const blocks = buildPreParsedBlocks(cleanLines, bodyFontSize, rp.width, rp.assetIds);
+      const blocks = buildPreParsedBlocks(cleanLines, bodyFontSize, rp.width, rp.figurePlacements);
       const rawDigitalText = cleanLines.map((l) => l.text).join('\n');
-      const requiresVision =
-        rp.hasFigures || rp.hasTables || rp.isMultiColumn || rp.hasMathOrGarbled;
-
-      if (requiresVision) visionPageCount += 1;
-      else textOnlyPageCount += 1;
-
-      pages.push({
+      const parsedPageDraft: PdfParsedPage = {
         pageNumber: rp.pageNumber,
         chapterIndex: ch.chapterIndex,
         chapterTitle: ch.title,
         rawDigitalText,
-        requiresVision,
+        requiresVision: false,
         hasFigures: rp.hasFigures,
         hasTables: rp.hasTables,
         isMultiColumn: rp.isMultiColumn,
+        hasMathOrGarbled: rp.hasMathOrGarbled,
+        figureAreaRatio: rp.figureAreaRatio,
         assetIds: rp.assetIds,
         blocks,
-      });
+      };
+      const requiresVision = evaluateHybridVisionNeeded(parsedPageDraft, assets);
+      parsedPageDraft.requiresVision = requiresVision;
+
+      if (requiresVision) visionPageCount += 1;
+      else textOnlyPageCount += 1;
+
+      pages.push(parsedPageDraft);
     }
 
     return {
@@ -940,6 +1001,45 @@ export async function parseDigitalPdfFile(
   } finally {
     await loadingTask.destroy().catch(() => {});
   }
+}
+
+export function evaluateHybridVisionNeeded(
+  page: PdfParsedPage,
+  assets?: Record<string, PdfExtractedAsset>
+): boolean {
+  if (page.hasTables || page.isMultiColumn || page.hasMathOrGarbled) {
+    return true;
+  }
+
+  const assetCount = page.assetIds?.length || 0;
+  if (assetCount === 0) {
+    return false;
+  }
+
+  const textCharCount = (page.rawDigitalText || '').replace(/\s+/g, ' ').trim().length;
+  // Trang ít chữ / trang bìa / trang minh họa nhiều -> dùng Vision
+  if (textCharCount < 380) {
+    return true;
+  }
+
+  let areaRatio = typeof page.figureAreaRatio === 'number' ? page.figureAreaRatio : -1;
+  if (areaRatio < 0 && assets) {
+    // Ước lượng tương thích ngược cho PDF đã phân tích trước đó (~1.5M px / trang render)
+    let totalPx = 0;
+    for (const id of page.assetIds) {
+      const asset = assets[id];
+      if (asset) totalPx += asset.width * asset.height;
+    }
+    areaRatio = Math.min(1, totalPx / 1_500_000);
+  }
+
+  if (areaRatio >= 0) {
+    if (areaRatio >= 0.2) return true;
+    if (assetCount >= 2 && areaRatio >= 0.12) return true;
+    return false;
+  }
+
+  return page.requiresVision;
 }
 
 export function buildPdfTranslationUnits(
@@ -966,7 +1066,8 @@ export function buildPdfTranslationUnits(
   };
 
   for (const page of parsedPdf.pages) {
-    const useVision = mode === 'full-vision' || page.requiresVision;
+    const useVision =
+      mode === 'full-vision' || evaluateHybridVisionNeeded(page, parsedPdf.assets);
     const pageChars = Math.max(80, page.rawDigitalText.length);
     const nonFigureBlocks = page.blocks.filter((b) => !b.isFigure);
 

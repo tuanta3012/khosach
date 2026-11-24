@@ -25,12 +25,24 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   private handleReset = () => {
+    try {
+      for (const key of Object.keys(sessionStorage)) {
+        if (key.startsWith('lazy_retry_reloaded_')) {
+          sessionStorage.removeItem(key);
+        }
+      }
+    } catch {}
     this.setState({ hasError: false, error: null });
     window.location.reload();
   };
 
   override render() {
     if (this.state.hasError) {
+      const rawMessage = this.state.error?.message || '';
+      const isChunkLoadErr =
+        rawMessage.includes('dynamically imported module') ||
+        rawMessage.includes('Loading chunk') ||
+        rawMessage.includes('ChunkLoadError');
       return (
         <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center p-4">
           <div className="bg-slate-800 border border-slate-700 rounded-2xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
@@ -40,7 +52,9 @@ export class ErrorBoundary extends Component<Props, State> {
             <div>
               <h2 className="text-lg font-bold text-white">Đã xảy ra lỗi không mong muốn</h2>
               <p className="text-xs text-slate-400 mt-1">
-                {this.state.error?.message || 'Ứng dụng đã gặp sự cố tạm thời.'}
+                {isChunkLoadErr
+                  ? 'Ứng dụng vừa được cập nhật hoặc mạng tạm gián đoạn khi tải màn hình mới. Vui lòng bấm Tải lại trang.'
+                  : rawMessage || 'Ứng dụng đã gặp sự cố tạm thời.'}
               </p>
             </div>
             <div className="flex items-center justify-center gap-3 pt-2">

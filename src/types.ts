@@ -12,6 +12,7 @@ export interface BookRecord {
   created_at?: number; // Epoch Timestamp (ms)
   updated_at?: number; // Epoch Timestamp (ms)
   is_ai_normalized?: boolean; // Đã chuẩn hóa bằng AI chưa
+  cover_url?: string; // URL hoặc ảnh thu gọn trang bìa sách
 }
 
 export interface DraftBookItem {
@@ -122,17 +123,19 @@ export interface BookEnrichmentResult {
     publish_year?: number;
     category?: string;
     summary?: string;
+    cover_url?: string;
   };
 }
 
 export interface BookSource {
-  provider: 'Google Books' | 'Open Library';
+  provider: 'Google Books' | 'Open Library' | 'Goodreads' | 'Apple Books' | 'Wikipedia' | 'Web';
   title: string;
   url: string;
   authors: string[];
   publisher?: string;
   publishedDate?: string;
   description?: string;
+  coverUrl?: string;
 }
 
 export interface NormalizedBookItem {
@@ -333,6 +336,8 @@ export interface PdfParsedPage {
   hasFigures: boolean;
   hasTables: boolean;
   isMultiColumn: boolean;
+  hasMathOrGarbled?: boolean;
+  figureAreaRatio?: number;
   assetIds: string[];
   blocks: PdfPreParsedBlock[];
 }

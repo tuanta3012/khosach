@@ -59,6 +59,7 @@ export function exportBooksToExcel(books: BookRecord[], filename = 'kho_sach_ca_
     'Tác giả': b.author,
     'Thể loại': b.category || 'Chung',
     'Nhà xuất bản': b.publisher || '',
+    'Ảnh bìa': b.cover_url && b.cover_url.length < 32000 ? b.cover_url : '',
   }));
 
   const worksheet = XLSX.utils.json_to_sheet(data);
@@ -87,6 +88,7 @@ export function parseBooksFromExcelBuffer(buffer: ArrayBuffer): BookRecord[] {
     const publisher = row['Nhà xuất bản'] || row['Publisher'] || row['nxb'] || row['publisher'] || '';
     const category = row['Thể loại'] || row['Category'] || row['the_loai'] || 'Chung';
     const id = row['Mã ID'] || row['ID'] || row['id'] || 'book_' + Math.random().toString(36).substring(2, 9);
+    const coverUrl = row['Ảnh bìa'] || row['Ảnh Bìa'] || row['Cover'] || row['cover_url'] || '';
 
     books.push({
       id: String(id),
@@ -94,6 +96,7 @@ export function parseBooksFromExcelBuffer(buffer: ArrayBuffer): BookRecord[] {
       author: String(author).trim(),
       publisher: String(publisher).trim(),
       category: String(category).trim(),
+      ...(String(coverUrl).trim() ? { cover_url: String(coverUrl).trim() } : {}),
       created_at: now,
       updated_at: now,
     });
@@ -104,13 +107,17 @@ export function parseBooksFromExcelBuffer(buffer: ArrayBuffer): BookRecord[] {
 
 function normalizeBookList(list: any[]): BookRecord[] {
   const now = Date.now();
-  return list.map((item, i) => ({
-    id: item.id || `book_${now}_${i}`,
-    title: item.title || 'Sách chưa đặt tên',
-    author: item.author || 'Khuyết danh',
-    publisher: item.publisher || '',
-    category: item.category || 'Chung',
-    created_at: item.created_at || now,
-    updated_at: item.updated_at || now,
-  }));
+  return list.map((item, i) => {
+    const cleanCover = typeof item.cover_url === 'string' ? item.cover_url.trim() : '';
+    return {
+      id: item.id || `book_${now}_${i}`,
+      title: item.title || 'Sách chưa đặt tên',
+      author: item.author || 'Khuyết danh',
+      publisher: item.publisher || '',
+      category: item.category || 'Chung',
+      ...(cleanCover ? { cover_url: cleanCover } : {}),
+      created_at: item.created_at || now,
+      updated_at: item.updated_at || now,
+    };
+  });
 }

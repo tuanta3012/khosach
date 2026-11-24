@@ -277,10 +277,45 @@ export async function initBookQueueManager(): Promise<void> {
   initPromise = (async () => {
     try {
       const normalized = await normalizeInterruptedJobsOnStartup();
+      const syncedJobs: EpubTranslationJob[] = [];
+
+      for (const job of normalized) {
+        if (
+          job.sourceType === 'pdf' &&
+          job.parsedPdfData &&
+          job.status !== 'completed' &&
+          (job.completedChunkIds?.length || 0) === 0
+        ) {
+          const mode: PdfProcessingMode = 'hybrid-digital';
+          const freshUnits = buildPdfTranslationUnits(job.parsedPdfData, mode);
+          const prevCount = job.pdfUnits?.length || 0;
+          const prevKinds = (job.pdfUnits || []).map((u) => u.kind).join(',');
+          const nextKinds = freshUnits.map((u) => u.kind).join(',');
+          if (
+            job.pdfProcessingMode !== mode ||
+            freshUnits.length !== prevCount ||
+            prevKinds !== nextKinds
+          ) {
+            const updated: EpubTranslationJob = {
+              ...job,
+              pdfProcessingMode: mode,
+              pdfUnits: freshUnits,
+            };
+            syncedJobs.push(updated);
+            void updateEpubJobMetadata(job.jobId, {
+              pdfProcessingMode: mode,
+              pdfUnits: freshUnits,
+            });
+            continue;
+          }
+        }
+        syncedJobs.push(job);
+      }
+
       setState({
         initialized: true,
         isLoading: false,
-        jobs: normalized,
+        jobs: syncedJobs,
       });
     } catch {
       setState({

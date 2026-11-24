@@ -1,43 +1,48 @@
 import React, { useState, useMemo, useRef, useDeferredValue, useCallback, useEffect } from "react";
 import {
   Search,
-  Edit2,
   X,
   Trash2,
   ChevronLeft,
   ChevronRight,
   Database,
   LayoutList,
+  LayoutGrid,
   PieChart,
   User,
   Building,
   Sparkles,
   Upload,
   Camera,
-  Plus,
   ArrowUpDown,
   PlusCircle,
   Loader2,
+  Square,
 } from "lucide-react";
 import { BookRecord, UserRole } from "../types";
 import { removeVietnameseTones } from "../utils/fuzzyMatcher";
 import { useToast } from "../context/ToastContext";
 import { CategoryBubbleChart } from "./CategoryBubbleChart";
 import { SortSelectDropdown, BookSortOption } from "./SortSelectDropdown";
+import { BookCover } from "./BookCover";
 import { registerBackButtonHandler } from "../services/backButtonService";
 import {
-  normalizeSingleBook,
   reclassifyBookCategories,
   ensureGeminiAccessAvailable,
 } from "../utils/geminiService";
+import {
+  batchFindBookCovers,
+  BatchCoverProgress,
+} from "../services/bookCoverService";
 
 interface BookTableViewProps {
   books: BookRecord[];
   categories: string[];
-  onSaveBook: (book: BookRecord) => Promise<void>;
+  onSaveBook?: (book: BookRecord) => Promise<void>;
   onDeleteBook: (id: string) => Promise<void>;
   onBatchUpdateBooks?: (updatedBooksList: BookRecord[]) => Promise<void>;
   onOpenAddModal: () => void;
+  onOpenEditModal?: (book: BookRecord) => void;
   onOpenImportModal: () => void;
   onSwitchToScanner?: () => void;
   onOpenSettingsKey?: () => void;
@@ -72,10 +77,10 @@ function getCategoryBadgeStyle(categoryName: string): { bg: string; text: string
 export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   books,
   categories,
-  onSaveBook,
   onDeleteBook,
   onBatchUpdateBooks,
   onOpenAddModal,
+  onOpenEditModal,
   onOpenImportModal,
   onSwitchToScanner,
   onOpenSettingsKey,
@@ -84,14 +89,14 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   const { showToast } = useToast();
   const [globalFilter, setGlobalFilter] = useState("");
   const deferredFilter = useDeferredValue(globalFilter);
-  const [viewMode, setViewMode] = useState<"list" | "chart">("list");
-  const [editingRowId, setEditingRowId] = useState<string | null>(null);
-  const editingRowIdRef = useRef<string | null>(null);
-  const [editingValues, setEditingValues] = useState<Partial<BookRecord>>({});
-  const [isNormalizingSingle, setIsNormalizingSingle] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "grid" | "chart">("list");
   const [isReclassifyingCategories, setIsReclassifyingCategories] = useState(false);
   const [reclassifyProgress, setReclassifyProgress] = useState<{ processed: number; total: number } | null>(null);
   const stopReclassifyRef = useRef(false);
+  const [isFindingCovers, setIsFindingCovers] = useState(false);
+  const [coverProgress, setCoverProgress] = useState<BatchCoverProgress | null>(null);
+  const [showCoverScopeChoices, setShowCoverScopeChoices] = useState(false);
+  const stopFindingCoversRef = useRef(false);
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -306,71 +311,82 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
     showToast(`Đã lọc: ${catName}`, 'info');
   }, [showToast]);
 
-  const handleStartEdit = (book: BookRecord) => {
-    editingRowIdRef.current = book.id;
-    setEditingRowId(book.id);
-    setEditingValues({ ...book });
-    setIsNormalizingSingle(false);
-  };
+  const booksWithCoverCount = useMemo(
+    () => books.filter((b) => Boolean(b.cover_url && b.cover_url.trim())).length,
+    [books]
+  );
+  const missingCoverCount = Math.max(0, books.length - booksWithCoverCount);
 
-  const handleCancelEdit = () => {
-    editingRowIdRef.current = null;
-    setEditingRowId(null);
-    setEditingValues({});
-    setIsNormalizingSingle(false);
-  };
+  useEffect(() => {
+    return () => {
+      stopFindingCoversRef.current = true;
+    };
+  }, []);
 
-  const handleAiNormalizeSingleBook = async (originalBook: BookRecord) => {
+  const handleStartBatchFindCovers = useCallback(
+    async (overwriteExisting: boolean) => {
+      if (userRole === 'VIEWER') {
+        showToast('⚠️ Chế độ Chỉ xem không thể cập nhật ảnh bìa.', 'warning');
+        return;
+      }
+      if (!onBatchUpdateBooks || books.length === 0) return;
+
+      setShowCoverScopeChoices(false);
+      stopFindingCoversRef.current = false;
+      setIsFindingCovers(true);
+      setCoverProgress({
+        phase: 'catalog',
+        processed: 0,
+        total: overwriteExisting ? books.length : missingCoverCount,
+        foundCount: 0,
+        statusMessage: 'Đang chuẩn bị tìm bìa...',
+      });
+
+      try {
+        const result = await batchFindBookCovers(books, {
+          overwriteExisting,
+          useAiFallback: true,
+          stopSignal: stopFindingCoversRef,
+          onProgress: (p) => setCoverProgress(p),
+          onChunkSave: async (chunk) => {
+            await onBatchUpdateBooks(chunk);
+          },
+        });
+
+        if (result.stopped) {
+          showToast(`Đã dừng. Đã lưu ${result.updatedCount} ảnh bìa.`, 'info');
+        } else if (result.updatedCount > 0) {
+          showToast(`✨ Đã cập nhật ${result.updatedCount} ảnh bìa!`, 'success');
+        } else {
+          showToast('Không tìm thêm được ảnh bìa mới.', 'info');
+        }
+      } catch (err: any) {
+        showToast(`Lỗi tìm bìa: ${err?.message || String(err)}`, 'error');
+      } finally {
+        setIsFindingCovers(false);
+        setCoverProgress(null);
+        stopFindingCoversRef.current = false;
+      }
+    },
+    [userRole, onBatchUpdateBooks, books, missingCoverCount, showToast]
+  );
+
+  const handleGridCoverAiButtonClick = useCallback(() => {
     if (userRole === 'VIEWER') {
-      showToast('⚠️ Bạn đang ở chế độ CHỈ XEM (Viewer). Không có quyền hiệu chỉnh sách!', 'warning');
+      showToast('⚠️ Chế độ Chỉ xem không thể cập nhật ảnh bìa.', 'warning');
       return;
     }
-    if (!(await ensureGeminiAccessAvailable())) {
-      showToast('Vui lòng thêm Gemini API Key trong Cài đặt để sử dụng AI!', 'warning');
-      onOpenSettingsKey?.();
+    if (books.length === 0 || !onBatchUpdateBooks) return;
+    if (booksWithCoverCount === 0) {
+      handleStartBatchFindCovers(false);
       return;
     }
-    const candidateTitle = (editingValues.title ?? originalBook.title ?? '').trim();
-    if (!candidateTitle) {
-      showToast('Vui lòng nhập Tên sách trước khi hiệu chỉnh AI!', 'warning');
-      return;
-    }
+    setShowCoverScopeChoices((prev) => !prev);
+  }, [userRole, books.length, onBatchUpdateBooks, booksWithCoverCount, handleStartBatchFindCovers, showToast]);
 
-    setIsNormalizingSingle(true);
-    try {
-      const bookInput: BookRecord = {
-        ...originalBook,
-        title: candidateTitle,
-        author: (editingValues.author ?? originalBook.author ?? '').trim(),
-        category: (editingValues.category ?? originalBook.category ?? 'Chung').trim(),
-        publisher: (editingValues.publisher ?? originalBook.publisher ?? '').trim(),
-      };
-      const res = await normalizeSingleBook(bookInput, categories);
-      if (editingRowIdRef.current !== originalBook.id) return;
-
-      if (res.success && res.normalized) {
-        setEditingValues((prev) => ({
-          ...prev,
-          title: res.normalized!.title || prev.title,
-          author: res.normalized!.author || prev.author,
-          category: res.normalized!.category || prev.category,
-          publisher: res.normalized!.publisher ?? prev.publisher,
-          is_ai_normalized: true,
-        }));
-        showToast('✨ Đã hiệu chỉnh nội dung sách bằng AI! Bấm Lưu để áp dụng.', 'success');
-      } else {
-        showToast(res.error || 'Chưa thể hiệu chỉnh sách lúc này.', 'warning');
-      }
-    } catch (err: any) {
-      if (editingRowIdRef.current === originalBook.id) {
-        showToast(`Lỗi hiệu chỉnh AI: ${err?.message || String(err)}`, 'warning');
-      }
-    } finally {
-      if (editingRowIdRef.current === originalBook.id) {
-        setIsNormalizingSingle(false);
-      }
-    }
-  };
+  const handleStopBatchFindCovers = useCallback(() => {
+    stopFindingCoversRef.current = true;
+  }, []);
 
   const handleStartReclassifyCategories = useCallback(async () => {
     if (userRole === 'VIEWER') {
@@ -447,27 +463,6 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
     stopReclassifyRef.current = true;
   }, []);
 
-  const handleSaveInline = async (originalBook: BookRecord) => {
-    if (!editingValues.title?.trim()) {
-      showToast('Tên sách không được để trống!', 'warning');
-      return;
-    }
-    const updatedBook: BookRecord = {
-      ...originalBook,
-      title: editingValues.title.trim(),
-      author: editingValues.author?.trim() || '',
-      category: editingValues.category?.trim() || 'Chung',
-      publisher: editingValues.publisher?.trim() || '',
-      is_ai_normalized: editingValues.is_ai_normalized ?? originalBook.is_ai_normalized,
-      updated_at: Date.now(),
-    };
-    await onSaveBook(updatedBook);
-    editingRowIdRef.current = null;
-    setEditingRowId(null);
-    setEditingValues({});
-    setIsNormalizingSingle(false);
-  };
-
   // Xử lý phím Back Android cho các trạng thái của Bảng sách
   // 1. Nếu đang có hộp thoại xác nhận xóa sách -> Back để hủy xác nhận xóa
   useEffect(() => {
@@ -477,15 +472,6 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       return true;
     });
   }, [confirmDeleteId]);
-
-  // 2. Nếu đang sửa trực tiếp 1 dòng sách -> Back để hủy sửa
-  useEffect(() => {
-    if (!editingRowId) return;
-    return registerBackButtonHandler(() => {
-      handleCancelEdit();
-      return true;
-    });
-  }, [editingRowId]);
 
   // 3. Nếu đang mở biểu đồ thống kê -> Back để quay lại chế độ danh sách
   useEffect(() => {
@@ -561,27 +547,41 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
             )}
           </form>
 
-          {/* View Switcher: Thẻ Sách vs Thống Kê */}
+          {/* View Switcher: Danh sách / Kệ bìa / Thống kê */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0">
             <button
               onClick={() => setViewMode('list')}
-              className={`p-1.5 rounded-lg text-xs transition ${
+              className={`p-1.5 rounded-lg text-xs transition cursor-pointer ${
                 viewMode === 'list'
                   ? 'bg-[#10B981] text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-800'
               }`}
               title="Danh Sách"
+              aria-label="Xem dạng danh sách"
             >
               <LayoutList className="w-4 h-4" />
             </button>
             <button
+              onClick={() => setViewMode('grid')}
+              className={`p-1.5 rounded-lg text-xs transition cursor-pointer ${
+                viewMode === 'grid'
+                  ? 'bg-[#10B981] text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+              title="Kệ Bìa Sách"
+              aria-label="Xem dạng kệ bìa sách"
+            >
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button
               onClick={() => setViewMode('chart')}
-              className={`p-1.5 rounded-lg text-xs transition ${
+              className={`p-1.5 rounded-lg text-xs transition cursor-pointer ${
                 viewMode === 'chart'
                   ? 'bg-[#10B981] text-white shadow-xs font-bold'
                   : 'text-slate-500 hover:text-slate-800'
               }`}
               title="Thống Kê Thể Loại"
+              aria-label="Xem thống kê thể loại"
             >
               <PieChart className="w-4 h-4" />
             </button>
@@ -608,7 +608,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
             </div>
           </div>
         ) : (
-          viewMode === 'list' && (
+          viewMode !== 'chart' && (
             <div className="flex items-center gap-1.5 text-xs">
               {/* Nút Sắp Xếp: Cố định bên trái, nằm ngoài thanh cuộn ngang để menu dropdown xổ xuống tự do */}
               <SortSelectDropdown value={sortBy} onChange={handleSortChange} className="shrink-0" />
@@ -650,151 +650,143 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       </div>
 
       {/* Main Content Area */}
-      {viewMode === 'list' ? (
+      {viewMode !== 'chart' ? (
         <div className="space-y-2.5">
-          {/* Books List Cards (Khoảng cách gọn gàng) */}
-          <div className="space-y-1">
+          {/* Header riêng cho Kệ bìa sách với nút AI góc trên bên phải (giống Thống kê) */}
+          {viewMode === 'grid' && (
+            <div className="bg-amber-50/40 rounded-2xl p-3 border border-amber-200/80 shadow-xs space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs font-extrabold text-amber-950/85 tracking-tight">
+                    Kệ bìa sách
+                  </span>
+                  <span className="text-[11px] font-bold text-amber-800/80">
+                    ({booksWithCoverCount}/{books.length})
+                  </span>
+                </div>
+
+                {onBatchUpdateBooks && (
+                  isFindingCovers ? (
+                    <button
+                      type="button"
+                      onClick={handleStopBatchFindCovers}
+                      title="Dừng tìm ảnh bìa"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-100 hover:bg-amber-200 active:scale-95 text-amber-900 border border-amber-300 text-[11px] font-extrabold shadow-2xs transition cursor-pointer shrink-0"
+                    >
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
+                      <span>Dừng</span>
+                      <Square className="w-2.5 h-2.5 fill-current" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleGridCoverAiButtonClick}
+                      disabled={books.length === 0}
+                      title="Tìm ảnh bìa sách bằng AI"
+                      aria-label="Tìm ảnh bìa sách bằng AI"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-[#059669] border border-emerald-300/90 text-[11px] font-extrabold shadow-2xs transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>AI</span>
+                    </button>
+                  )
+                )}
+              </div>
+
+              {showCoverScopeChoices && !isFindingCovers && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-amber-200/60">
+                  {missingCoverCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleStartBatchFindCovers(false)}
+                      className="px-2.5 py-1.5 rounded-xl bg-[#0284C7] hover:bg-[#0369a1] active:scale-95 text-white text-[11px] font-bold transition cursor-pointer"
+                    >
+                      Chưa có bìa ({missingCoverCount})
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleStartBatchFindCovers(true)}
+                    className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[11px] font-bold transition cursor-pointer"
+                  >
+                    Toàn bộ kho ({books.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCoverScopeChoices(false)}
+                    className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 text-[11px] font-bold transition cursor-pointer ml-auto"
+                  >
+                    Hủy
+                  </button>
+                </div>
+              )}
+
+              {isFindingCovers && coverProgress && (
+                <div className="bg-white/90 border border-emerald-200 rounded-xl px-3 py-2 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-emerald-800">
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600 shrink-0" />
+                      <span className="truncate">{coverProgress.statusMessage}</span>
+                    </span>
+                    <span className="font-mono text-emerald-700 shrink-0">
+                      {coverProgress.total > 0
+                        ? `${Math.min(100, Math.round((coverProgress.processed / coverProgress.total) * 100))}%`
+                        : '0%'}
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 bg-emerald-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#10B981] transition-all duration-300 rounded-full"
+                      style={{
+                        width: `${
+                          coverProgress.total > 0
+                            ? Math.min(100, Math.round((coverProgress.processed / coverProgress.total) * 100))
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Books List or Grid Shelf */}
+          <div
+            className={
+              viewMode === 'grid' && paginatedBooks.length > 0
+                ? 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-3.5'
+                : 'space-y-1'
+            }
+          >
             {paginatedBooks.length > 0 ? (
               paginatedBooks.map((book, idx) => {
-                const isEditing = editingRowId === book.id;
                 const displayIndex = pageIndex * pageSize + idx + 1;
                 const badgeStyle = getCategoryBadgeStyle(book.category || '');
 
-                if (isEditing) {
+                if (viewMode === 'grid') {
                   return (
                     <div
                       key={book.id}
-                      className="bg-amber-50/80 border border-amber-300 rounded-xl p-2.5 space-y-1.5 shadow-xs"
+                      onClick={() => onOpenEditModal?.(book)}
+                      className="group bg-white border border-slate-200/90 rounded-2xl p-2 shadow-2xs hover:border-emerald-300 transition flex flex-col cursor-pointer active:scale-[0.98]"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-[10px] font-bold text-[#85451e] uppercase tracking-wider">
-                          Sửa cuốn #{displayIndex}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleAiNormalizeSingleBook(book)}
-                          disabled={isNormalizingSingle}
-                          title="Dùng AI hiệu chỉnh lại riêng cuốn sách này"
-                          aria-label="Hiệu chỉnh riêng cuốn sách này bằng AI"
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-[#059669] border border-emerald-300/90 text-[10px] font-extrabold transition shadow-2xs disabled:opacity-50 cursor-pointer"
-                        >
-                          {isNormalizingSingle ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Sparkles className="w-3 h-3" />
-                          )}
-                          <span>AI</span>
-                        </button>
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500">Tên Sách</label>
-                        <input
-                          type="text"
-                          name="nomatch_inline_title"
-                          autoComplete="new-password"
-                          autoCorrect="off"
-                          autoCapitalize="none"
-                          spellCheck={false}
-                          data-lpignore="true"
-                          data-1p-ignore="true"
-                          data-form-type="other"
-                          value={editingValues.title ?? book.title}
-                          onChange={(e) =>
-                            setEditingValues((prev) => ({
-                              ...prev,
-                              title: e.target.value,
-                            }))
-                          }
-                          className="w-full px-2 py-1 text-xs font-bold text-slate-900 bg-white border border-[#EA580C] rounded-lg focus:outline-none"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-[10px] font-bold text-slate-500">Tác Giả</label>
-                          <input
-                            type="text"
-                            name="nomatch_inline_author"
-                            autoComplete="new-password"
-                            autoCorrect="off"
-                            autoCapitalize="none"
-                            spellCheck={false}
-                            data-lpignore="true"
-                            data-1p-ignore="true"
-                            data-form-type="other"
-                            value={editingValues.author ?? book.author}
-                            onChange={(e) =>
-                              setEditingValues((prev) => ({
-                                ...prev,
-                                author: e.target.value,
-                              }))
-                            }
-                            className="w-full px-2 py-0.5 text-xs bg-white border border-[#EA580C] rounded-lg focus:outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] font-bold text-slate-500">Thể Loại</label>
-                          <input
-                            type="text"
-                            name="nomatch_inline_category"
-                            autoComplete="new-password"
-                            autoCorrect="off"
-                            autoCapitalize="none"
-                            spellCheck={false}
-                            data-lpignore="true"
-                            data-1p-ignore="true"
-                            data-form-type="other"
-                            list="inline-category-suggestions"
-                            value={editingValues.category ?? book.category}
-                            onChange={(e) =>
-                              setEditingValues((prev) => ({
-                                ...prev,
-                                category: e.target.value,
-                              }))
-                            }
-                            className="w-full px-2 py-0.5 text-xs bg-white border border-[#EA580C] rounded-lg focus:outline-none"
-                          />
-                          <datalist id="inline-category-suggestions">
-                            {categories.map((cat) => (
-                              <option key={cat} value={cat} />
-                            ))}
-                          </datalist>
-                        </div>
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-bold text-slate-500">Nhà Xuất Bản</label>
-                        <input
-                          type="text"
-                          name="nomatch_inline_publisher"
-                          autoComplete="new-password"
-                          autoCorrect="off"
-                          autoCapitalize="none"
-                          spellCheck={false}
-                          data-lpignore="true"
-                          data-1p-ignore="true"
-                          data-form-type="other"
-                          value={editingValues.publisher ?? book.publisher}
-                          onChange={(e) =>
-                            setEditingValues((prev) => ({
-                              ...prev,
-                              publisher: e.target.value,
-                            }))
-                          }
-                          className="w-full px-2 py-0.5 text-xs bg-white border border-[#EA580C] rounded-lg focus:outline-none"
-                        />
-                      </div>
-                      <div className="flex items-center justify-end gap-2 pt-0.5">
-                        <button
-                          onClick={handleCancelEdit}
-                          className="px-2.5 py-0.5 bg-slate-200 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-300 transition"
-                        >
-                          Hủy
-                        </button>
-                        <button
-                          onClick={() => handleSaveInline(book)}
-                          className="px-2.5 py-0.5 bg-[#EA580C] text-white rounded-lg text-xs font-bold hover:bg-[#c2410c] transition shadow-xs cursor-pointer"
-                        >
-                          Lưu
-                        </button>
+                      <BookCover
+                        coverUrl={book.cover_url}
+                        title={book.title}
+                        author={book.author}
+                        category={book.category}
+                        size="grid"
+                      />
+                      <div className="pt-1.5 space-y-0.5 min-w-0 flex-1 flex flex-col justify-between">
+                        <h2 className="text-[11px] sm:text-xs font-extrabold text-slate-900 leading-tight line-clamp-2">
+                          {book.title}
+                        </h2>
+                        {book.author && (
+                          <p className="text-[10px] text-slate-500 font-medium truncate">
+                            {book.author}
+                          </p>
+                        )}
                       </div>
                     </div>
                   );
@@ -803,52 +795,58 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
                 return (
                   <div
                     key={book.id}
-                    className="bg-white border border-slate-200/90 rounded-xl px-2.5 py-1.5 shadow-2xs hover:border-emerald-300 transition"
+                    onClick={() => onOpenEditModal?.(book)}
+                    className="bg-white border border-slate-200/90 rounded-xl px-2.5 py-1.5 shadow-2xs hover:border-emerald-300 active:bg-slate-50 transition cursor-pointer"
                   >
-                    {/* Top Row: Index + Title + Quick Actions */}
+                    {/* Top Row: Index + Title + Delete Action */}
                     <div className="flex items-start justify-between gap-1.5">
                       <h2 className="text-xs sm:text-[13px] font-extrabold text-slate-900 leading-snug min-w-0 flex-1">
                         <span className="text-slate-400 font-mono font-bold mr-1">{displayIndex}.</span>
                         {book.title}
                       </h2>
 
-                      <div className="flex items-center gap-0.5 shrink-0 pt-0.5">
+                      <div
+                        className="flex items-center gap-0.5 shrink-0 pt-0.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         {confirmDeleteId === book.id ? (
                           <div className="flex items-center gap-1 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded-lg animate-in fade-in duration-150">
                             <span className="text-[9.5px] font-bold text-rose-700 shrink-0">Xóa?</span>
                             <button
-                              onClick={() => {
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 onDeleteBook(book.id);
                                 setConfirmDeleteId(null);
                               }}
-                              className="px-1.5 py-0.2 bg-rose-600 text-white rounded text-[9.5px] font-bold hover:bg-rose-700 transition"
+                              className="px-1.5 py-0.5 bg-rose-600 text-white rounded text-[9.5px] font-bold hover:bg-rose-700 transition cursor-pointer"
                             >
                               Có
                             </button>
                             <button
-                              onClick={() => setConfirmDeleteId(null)}
-                              className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded text-[9.5px] font-bold hover:bg-slate-300 transition"
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmDeleteId(null);
+                              }}
+                              className="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded text-[9.5px] font-bold hover:bg-slate-300 transition cursor-pointer"
                             >
                               Không
                             </button>
                           </div>
                         ) : (
-                          <>
-                            <button
-                              onClick={() => handleStartEdit(book)}
-                              className="p-0.5 text-slate-400 hover:text-[#0284C7] hover:bg-sky-50 rounded-md transition"
-                              title="Sửa"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => setConfirmDeleteId(book.id)}
-                              className="p-0.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition"
-                              title="Xóa"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmDeleteId(book.id);
+                            }}
+                            className="p-0.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
+                            title="Xóa"
+                            aria-label="Xóa sách"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </div>
                     </div>

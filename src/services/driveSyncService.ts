@@ -1338,15 +1338,15 @@ async function initializeSheetHeaders(
 
     // 1. Tab Khosach: Kiểm tra xem hàng tiêu đề dòng 1 đã có chưa
     try {
-      const headerCheck = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1:G1`, {
+      const headerCheck = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1:H1`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const headerData = headerCheck.ok ? await headerCheck.json() : null;
       if (!headerData?.values || headerData.values.length === 0 || !headerData.values[0] || headerData.values[0].length === 0) {
         const khosachHeader = [
-          ['ID', 'Tên Sách', 'Tác Giả', 'Thể Loại', 'Nhà Xuất Bản', 'Ngày Cập Nhật', 'Đã AI']
+          ['ID', 'Tên Sách', 'Tác Giả', 'Thể Loại', 'Nhà Xuất Bản', 'Ngày Cập Nhật', 'Đã AI', 'Ảnh Bìa']
         ];
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1:G1?valueInputOption=USER_ENTERED`, {
+        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1:H1?valueInputOption=USER_ENTERED`, {
           method: 'PUT',
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -1414,7 +1414,7 @@ export async function applySheetColumnVisibility(
   if (!accessToken || !spreadsheetId) return false;
   if (!force) {
     try {
-      if (sessionStorage.getItem(`sheet_columns_optimized_${spreadsheetId}`)) {
+      if (sessionStorage.getItem(`sheet_columns_optimized_v2_${spreadsheetId}`)) {
         return true;
       }
     } catch {}
@@ -1434,8 +1434,8 @@ export async function applySheetColumnVisibility(
     }
 
     const khosachSheetId = khosachSheet.properties.sheetId;
-    const totalCols = khosachSheet.properties?.gridProperties?.columnCount || 7;
-    const safeEndIndex = Math.max(7, totalCols);
+    const totalCols = khosachSheet.properties?.gridProperties?.columnCount || 8;
+    const safeEndIndex = Math.max(8, totalCols);
 
     const requests: any[] = [
       // 1. Ẩn cột A (ID) - index 0 đến 1
@@ -1595,9 +1595,9 @@ export async function applySheetColumnVisibility(
     });
 
     if (batchResp.ok) {
-      log.info(`[DriveSync] Đã tối ưu hiển thị Google Sheet (${spreadsheetId}): Ẩn cột A & F:G, chỉ hiện 4 cột Tên sách, Tác giả, Thể loại, NXB.`);
+      log.info(`[DriveSync] Đã tối ưu hiển thị Google Sheet (${spreadsheetId}): Ẩn cột A & F:H, chỉ hiện 4 cột Tên sách, Tác giả, Thể loại, NXB.`);
       try {
-        sessionStorage.setItem(`sheet_columns_optimized_${spreadsheetId}`, 'true');
+        sessionStorage.setItem(`sheet_columns_optimized_v2_${spreadsheetId}`, 'true');
       } catch {}
       return true;
     } else {
@@ -1622,13 +1622,12 @@ export async function fetchBooksFromGoogleSheet(
   accessToken: string,
   spreadsheetId: string
 ): Promise<BookRecord[]> {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A:G`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A:H`;
 
   const resp = await fetch(url, {
+    cache: 'no-store',
     headers: {
       Authorization: `Bearer ${accessToken}`,
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      Pragma: 'no-cache',
     },
   });
 
@@ -1653,6 +1652,7 @@ export async function fetchBooksFromGoogleSheet(
   let pubIdx = headerRow.findIndex((h) => h === 'nhà xuất bản' || h === 'nha xuat ban' || h === 'nxb' || h === 'publisher');
   let dateIdx = headerRow.findIndex((h) => h.includes('ngày') || h.includes('ngay') || h.includes('date') || h.includes('updated'));
   let aiIdx = headerRow.findIndex((h) => h.includes('ai'));
+  let coverIdx = headerRow.findIndex((h) => h.includes('bìa') || h.includes('bia') || h.includes('cover') || h.includes('image'));
 
   // Chỉ số chuẩn mặc định nếu hàng tiêu đề không khớp
   if (titleIdx === -1) titleIdx = 1;
@@ -1661,6 +1661,7 @@ export async function fetchBooksFromGoogleSheet(
   if (pubIdx === -1) pubIdx = 4;
   if (dateIdx === -1) dateIdx = 5;
   if (aiIdx === -1) aiIdx = 6;
+  if (coverIdx === -1) coverIdx = 7;
   if (idIdx === -1) idIdx = 0;
 
   const books: BookRecord[] = [];
@@ -1696,6 +1697,8 @@ export async function fetchBooksFromGoogleSheet(
     const rawAi = aiIdx >= 0 ? String(row[aiIdx] || '').toLowerCase().trim() : '';
     const isNormalized = rawAi === 'có' || rawAi === '1' || rawAi === 'true' || rawAi === 'yes';
 
+    const rawCover = coverIdx >= 0 ? String(row[coverIdx] || '').trim() : '';
+
     const bookItem: BookRecord = {
       id: bookId,
       title,
@@ -1703,6 +1706,7 @@ export async function fetchBooksFromGoogleSheet(
       category: category || 'Chung',
       publisher,
       is_ai_normalized: isNormalized,
+      ...(rawCover ? { cover_url: rawCover } : {}),
       created_at: updatedAt,
       updated_at: updatedAt,
     };
@@ -1727,18 +1731,22 @@ export async function saveBooksToGoogleSheet(
   books: BookRecord[]
 ): Promise<void> {
   clearSyncCaches(spreadsheetId);
-  // Chuẩn bị mảng hàng: Cột A là ID (ẩn), Cột B:E là Tên Sách, Tác Giả, Thể Loại, NXB (hiện), Cột F:G là Ngày Cập Nhật, Đã AI (ẩn)
+  // Chuẩn bị mảng hàng: Cột A là ID (ẩn), Cột B:E là Tên Sách, Tác Giả, Thể Loại, NXB (hiện), Cột F:H là Ngày Cập Nhật, Đã AI, Ảnh Bìa (ẩn)
   const rows = [
-    ['ID', 'Tên Sách', 'Tác Giả', 'Thể Loại', 'Nhà Xuất Bản', 'Ngày Cập Nhật', 'Đã AI'],
-    ...books.map((b) => [
-      b.id || '',
-      b.title || '',
-      b.author || 'Chưa rõ',
-      b.category || 'Chung',
-      b.publisher || '',
-      formatVietnameseDate(b.updated_at || b.created_at || Date.now()),
-      b.is_ai_normalized ? 'Có' : 'Chưa',
-    ]),
+    ['ID', 'Tên Sách', 'Tác Giả', 'Thể Loại', 'Nhà Xuất Bản', 'Ngày Cập Nhật', 'Đã AI', 'Ảnh Bìa'],
+    ...books.map((b) => {
+      const safeCover = b.cover_url && b.cover_url.length <= 45000 ? b.cover_url.trim() : '';
+      return [
+        b.id || '',
+        b.title || '',
+        b.author || 'Chưa rõ',
+        b.category || 'Chung',
+        b.publisher || '',
+        formatVietnameseDate(b.updated_at || b.created_at || Date.now()),
+        b.is_ai_normalized ? 'Có' : 'Chưa',
+        safeCover,
+      ];
+    }),
   ];
 
   // 1. Đảm bảo các tab (Khosach và __CONFIG__) tồn tại và được định dạng chuẩn
@@ -1747,7 +1755,7 @@ export async function saveBooksToGoogleSheet(
   });
 
   // 2. Xóa vùng dữ liệu cũ trước để tránh rác
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(KHOSACH_SHEET_TITLE + '!A:G')}:clear`, {
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(KHOSACH_SHEET_TITLE + '!A:H')}:clear`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -1767,7 +1775,7 @@ export async function saveBooksToGoogleSheet(
       valueInputOption: 'USER_ENTERED',
       data: [
         {
-          range: `${KHOSACH_SHEET_TITLE}!A1:G${rows.length}`,
+          range: `${KHOSACH_SHEET_TITLE}!A1:H${rows.length}`,
           majorDimension: 'ROWS',
           values: rows,
         },
@@ -1786,7 +1794,7 @@ export async function saveBooksToGoogleSheet(
 
   // Tự động kiểm tra và đảm bảo các cột hiển thị được tối ưu
   try {
-    const isOptimized = sessionStorage.getItem(`sheet_columns_optimized_${spreadsheetId}`);
+    const isOptimized = sessionStorage.getItem(`sheet_columns_optimized_v2_${spreadsheetId}`);
     if (!isOptimized) {
       applySheetColumnVisibility(accessToken, spreadsheetId).catch(() => {});
     }
@@ -2553,7 +2561,14 @@ export async function syncBooksTwoWay(
       } else if (mutation.type === 'UPDATE') {
         // Chỉ áp dụng biến động cập nhật nếu cuốn sách thực sự đang tồn tại trên Google Drive
         if (mutation.book && mergedMap.has(mutation.bookId)) {
-          mergedMap.set(mutation.bookId, mutation.book);
+          const remoteExisting = mergedMap.get(mutation.bookId)!;
+          mergedMap.set(mutation.bookId, {
+            ...remoteExisting,
+            ...mutation.book,
+            ...(mutation.book.cover_url === undefined && remoteExisting.cover_url
+              ? { cover_url: remoteExisting.cover_url }
+              : {}),
+          });
           localChangesMade = true;
         }
       } else if (mutation.type === 'CREATE') {
@@ -2652,6 +2667,7 @@ export async function syncBooksTwoWay(
         (lBook.author || '').trim() !== (existing.author || '').trim() ||
         (lBook.category || '').trim() !== (existing.category || '').trim() ||
         (lBook.publisher || '').trim() !== (existing.publisher || '').trim() ||
+        (lBook.cover_url || '').trim() !== (existing.cover_url || '').trim() ||
         !!lBook.is_ai_normalized !== !!existing.is_ai_normalized;
 
       if (hasUpdateMutation) {
@@ -2668,7 +2684,14 @@ export async function syncBooksTwoWay(
           mergedMap.set(lBook.id, {
             ...existing,
             ...lBook,
+            cover_url: lBook.cover_url || existing.cover_url,
             updated_at: lTime,
+          });
+          localChangesMade = true;
+        } else if (!existing.cover_url && lBook.cover_url) {
+          mergedMap.set(lBook.id, {
+            ...existing,
+            cover_url: lBook.cover_url,
           });
           localChangesMade = true;
         }
@@ -2689,6 +2712,7 @@ export async function syncBooksTwoWay(
         (a.author || '').trim() !== (b.author || '').trim() ||
         (a.category || '').trim() !== (b.category || '').trim() ||
         (a.publisher || '').trim() !== (b.publisher || '').trim() ||
+        (a.cover_url || '').trim() !== (b.cover_url || '').trim() ||
         !!a.is_ai_normalized !== !!b.is_ai_normalized
       ) {
         return true;
@@ -2715,7 +2739,7 @@ export async function syncBooksTwoWay(
 
   // Tự động đảm bảo các cột hiển thị trên Google Sheet được tối ưu (chỉ hiện 4 cột chính)
   try {
-    const isOptimized = sessionStorage.getItem(`sheet_columns_optimized_${spreadsheetId}`);
+    const isOptimized = sessionStorage.getItem(`sheet_columns_optimized_v2_${spreadsheetId}`);
     if (!isOptimized) {
       applySheetColumnVisibility(accessToken, spreadsheetId).catch(() => {});
     }

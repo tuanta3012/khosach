@@ -227,6 +227,15 @@ function sanitizeModelConfig(rawConfig: unknown): Record<string, unknown> | unde
   if (typeof input.maxOutputTokens === 'number' && Number.isFinite(input.maxOutputTokens)) {
     safe.maxOutputTokens = input.maxOutputTokens;
   }
+  if (Array.isArray(input.tools)) {
+    const safeTools = input.tools.filter(
+      (t): t is Record<string, unknown> =>
+        Boolean(t && typeof t === 'object' && !Array.isArray(t) && 'googleSearch' in (t as Record<string, unknown>))
+    ).map(() => ({ googleSearch: {} }));
+    if (safeTools.length > 0) {
+      safe.tools = safeTools;
+    }
+  }
   return Object.keys(safe).length > 0 ? safe : undefined;
 }
 
@@ -398,9 +407,20 @@ async function startServer() {
         return;
       }
 
+      const rawChunks = candidate?.groundingMetadata?.groundingChunks;
+      const groundingUrls: Array<{ uri: string; title?: string }> = Array.isArray(rawChunks)
+        ? rawChunks
+            .map((chunk: any) => ({
+              uri: typeof chunk?.web?.uri === 'string' ? chunk.web.uri : '',
+              title: typeof chunk?.web?.title === 'string' ? chunk.web.title : undefined,
+            }))
+            .filter((item: { uri: string }) => item.uri.startsWith('http'))
+        : [];
+
       res.json({
         text: response?.text || '',
         finishReason: finishReason || 'STOP',
+        ...(groundingUrls.length > 0 ? { groundingUrls } : {}),
       });
     } catch (err: unknown) {
       releaseSlot?.();
@@ -499,6 +519,97 @@ async function startServer() {
       const errMsg = err instanceof Error ? err.message : String(err);
       res.write(`data: ${JSON.stringify({ error: errMsg, failureKind })}\n\n`);
       res.end();
+    }
+  });
+
+  // 5. Proxy tìm bìa sách Goodreads (giải quyết CORS trên trình duyệt Web)
+  app.get('/api/covers/goodreads', async (req: Request, res: Response) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!q || q.length > 200) {
+      res.json([]);
+      return;
+    }
+    try {
+      const targetUrl = `https://www.goodreads.com/book/auto_complete?format=json&q=${encodeURIComponent(q)}`;
+      const upstream = await fetch(targetUrl, {
+        signal: AbortSignal.timeout(6000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; KhoSachApp/1.0)',
+          Accept: 'application/json',
+        },
+      });
+      if (!upstream.ok) {
+        res.status(upstream.status).json([]);
+        return;
+      }
+      const data = await upstream.json();
+      res.json(Array.isArray(data) ? data : []);
+    } catch {
+      res.json([]);
+    }
+  });
+
+  // 6. Proxy trích xuất og:image an toàn từ các trang sách uy tín khi dùng AI Search Grounding
+  const ALLOWED_OG_HOSTS = new Set([
+    'www.goodreads.com',
+    'goodreads.com',
+    'www.nxbtre.com.vn',
+    'nxbtre.com.vn',
+    'nhanam.vn',
+    'www.nhanam.vn',
+    'tiki.vn',
+    'www.fahasa.com',
+    'fahasa.com',
+    'nxbkimdong.com.vn',
+    'www.nxbkimdong.com.vn',
+    'books.google.com',
+    'books.google.com.vn',
+    'openlibrary.org',
+    'phuongnambook.com',
+    'www.phuongnambook.com',
+    'vinabook.com',
+    'www.vinabook.com',
+    'waka.vn',
+    'vi.wikipedia.org',
+  ]);
+
+  app.get('/api/covers/og', async (req: Request, res: Response) => {
+    const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+    if (!rawUrl || rawUrl.length > 500) {
+      res.json({ imageUrl: '' });
+      return;
+    }
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== 'https:' || !ALLOWED_OG_HOSTS.has(parsed.hostname.toLowerCase())) {
+        res.json({ imageUrl: '' });
+        return;
+      }
+      const upstream = await fetch(parsed.toString(), {
+        signal: AbortSignal.timeout(5500),
+        redirect: 'follow',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      });
+      if (!upstream.ok) {
+        res.json({ imageUrl: '' });
+        return;
+      }
+      const html = (await upstream.text()).slice(0, 120_000);
+      const ogMatch =
+        html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+        html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ||
+        html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
+      const imageUrl = ogMatch?.[1]?.trim() || '';
+      if (imageUrl && /^https?:\/\//i.test(imageUrl)) {
+        res.json({ imageUrl: imageUrl.replace(/^http:\/\//i, 'https://') });
+      } else {
+        res.json({ imageUrl: '' });
+      }
+    } catch {
+      res.json({ imageUrl: '' });
     }
   });
 

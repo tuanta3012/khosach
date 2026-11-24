@@ -24,30 +24,61 @@ export function sanitizeSingleCategory(rawCategory: string): string {
 export async function smartDriveFetch(
   targetUrl: string,
   options?: RequestInit,
-  autoRetry401 = true
+  autoRetry401 = true,
+  networkRetryRemaining = 1
 ): Promise<Response> {
   let response: Response;
 
   if (Capacitor.isNativePlatform()) {
     const headers = Object.fromEntries(new Headers(options?.headers).entries());
-    const nativeResponse = await CapacitorHttp.request({
-      url: targetUrl,
-      method: options?.method || 'GET',
-      headers,
-      data: typeof options?.body === 'string' ? options.body : undefined,
-      responseType: 'text',
-      connectTimeout: 20000,
-      readTimeout: 30000,
-    });
-    const body = typeof nativeResponse.data === 'string'
-      ? nativeResponse.data
-      : JSON.stringify(nativeResponse.data ?? '');
-    response = new Response(body, {
-      status: nativeResponse.status,
-      headers: nativeResponse.headers,
-    });
+    try {
+      const nativeResponse = await CapacitorHttp.request({
+        url: targetUrl,
+        method: options?.method || 'GET',
+        headers,
+        data: typeof options?.body === 'string' ? options.body : undefined,
+        responseType: 'text',
+        connectTimeout: 20000,
+        readTimeout: 30000,
+      });
+      const body = typeof nativeResponse.data === 'string'
+        ? nativeResponse.data
+        : JSON.stringify(nativeResponse.data ?? '');
+      response = new Response(body, {
+        status: nativeResponse.status,
+        headers: nativeResponse.headers,
+      });
+    } catch (nativeErr) {
+      if (networkRetryRemaining > 0 && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        await new Promise((r) => setTimeout(r, 500));
+        return smartDriveFetch(targetUrl, options, autoRetry401, networkRetryRemaining - 1);
+      }
+      throw nativeErr;
+    }
   } else {
-    response = await fetch(targetUrl, { ...options, redirect: 'follow' });
+    const sanitizedHeaders = new Headers(options?.headers);
+    let cacheMode: RequestCache | undefined = options?.cache;
+    // Tránh lỗi CORS preflight trên Web khi gọi Google APIs với Pragma / Cache-Control custom headers
+    if (sanitizedHeaders.has('cache-control') || sanitizedHeaders.has('pragma')) {
+      sanitizedHeaders.delete('cache-control');
+      sanitizedHeaders.delete('pragma');
+      if (!cacheMode) cacheMode = 'no-store';
+    }
+
+    try {
+      response = await fetch(targetUrl, {
+        ...options,
+        headers: sanitizedHeaders,
+        ...(cacheMode ? { cache: cacheMode } : {}),
+        redirect: 'follow',
+      });
+    } catch (webErr) {
+      if (networkRetryRemaining > 0 && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        await new Promise((r) => setTimeout(r, 500));
+        return smartDriveFetch(targetUrl, options, autoRetry401, networkRetryRemaining - 1);
+      }
+      throw webErr;
+    }
   }
 
   // Nếu gặp lỗi 401 (Unauthorized/Token Expired) và cho phép tự động thử lại
@@ -63,7 +94,7 @@ export async function smartDriveFetch(
           headers,
         };
         console.info(`[smartDriveFetch] Gia hạn token ngầm thành công! Đang tự động thử lại request: ${targetUrl}`);
-        return await smartDriveFetch(targetUrl, updatedOptions, false);
+        return await smartDriveFetch(targetUrl, updatedOptions, false, 0);
       }
     } catch (retryErr) {
       console.warn('[smartDriveFetch] Lỗi khi tự động retry sau khi làm mới token:', retryErr);

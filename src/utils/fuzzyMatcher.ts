@@ -763,6 +763,7 @@ export function calculateBookRichness(book: BookRecord): number {
 
   if (publisher && publisher.trim().length > 0) score += 5;
   if (book.is_ai_normalized) score += 5;
+  if (book.cover_url && book.cover_url.trim().length > 0) score += 4;
   return score;
 }
 
@@ -805,6 +806,7 @@ export function deduplicateBookList(books: BookRecord[]): { cleanBooks: BookReco
         publisher: book.publisher || existing.publisher,
         category: (book.category && book.category !== 'Chung') ? book.category : existing.category,
         is_ai_normalized: existing.is_ai_normalized || book.is_ai_normalized,
+        cover_url: prefersNew ? (book.cover_url || existing.cover_url) : (existing.cover_url || book.cover_url),
         updated_at: Date.now(),
       };
     }

@@ -189,6 +189,7 @@ let inMemoryBooksCache: BookRecord[] | null = null;
  * Làm sạch và chuẩn hóa đối tượng sách trước khi lưu nhằm tối ưu dung lượng LocalStorage
  */
 export function sanitizeBookRecord(book: BookRecord): BookRecord {
+  const cleanCover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
   return {
     id: String(book.id || `book_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`),
     title: String(book.title || '').trim(),
@@ -196,6 +197,7 @@ export function sanitizeBookRecord(book: BookRecord): BookRecord {
     category: String(book.category || 'Chung').trim(),
     publisher: String(book.publisher || '').trim(),
     is_ai_normalized: !!book.is_ai_normalized,
+    ...(cleanCover ? { cover_url: cleanCover } : {}),
     created_at: Number(book.created_at) || Date.now(),
     updated_at: Number(book.updated_at) || Date.now(),
   };
@@ -263,12 +265,14 @@ export function upsertLocalBook(book: BookRecord): BookRecord[] {
   const index = current.findIndex((b) => b.id === book.id);
   let updated: BookRecord[];
   
+  const cleanCover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
   const cleanBook: BookRecord = {
     ...book,
     title: String(book.title || '').trim(),
     author: String(book.author || 'Chưa rõ').trim(),
     category: String(book.category || 'Chung').trim(),
     publisher: String(book.publisher || '').trim(),
+    ...(cleanCover ? { cover_url: cleanCover } : { cover_url: undefined }),
     updated_at: Date.now(),
     created_at: book.created_at || Date.now(),
   };
@@ -319,12 +323,14 @@ export function batchUpsertLocalBooks(newOrUpdatedBooks: BookRecord[]): BookReco
   current.forEach((b) => map.set(b.id, b));
   newOrUpdatedBooks.forEach((b) => {
     const isNew = !map.has(b.id);
+    const cleanCover = typeof b.cover_url === 'string' ? b.cover_url.trim() : '';
     const item: BookRecord = {
       ...b,
       title: String(b.title || '').trim(),
       author: String(b.author || 'Chưa rõ').trim(),
       category: String(b.category || 'Chung').trim(),
       publisher: String(b.publisher || '').trim(),
+      ...(cleanCover ? { cover_url: cleanCover } : { cover_url: undefined }),
       updated_at: b.updated_at || Date.now(),
       created_at: b.created_at || Date.now(),
     };

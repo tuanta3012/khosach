@@ -31,7 +31,6 @@ import {
   EpubGenreId,
   EpubTranslationJob,
   PdfOutputFormat,
-  PdfProcessingMode,
 } from '../types';
 import {
   EPUB_BACKUP_MODEL,
@@ -96,6 +95,18 @@ function getJobStats(job: EpubTranslationJob) {
     }
   }
 
+  let pdfTextPagesCount = 0;
+  let pdfVisionPagesCount = 0;
+  if (isPdf && job.pdfUnits) {
+    for (const u of job.pdfUnits) {
+      if (u.kind === 'vision-page') {
+        pdfVisionPagesCount += u.pageNumbers.length;
+      } else {
+        pdfTextPagesCount += u.pageNumbers.length;
+      }
+    }
+  }
+
   return {
     isPdf,
     totalChunks,
@@ -103,6 +114,8 @@ function getJobStats(job: EpubTranslationJob) {
     failedChunks,
     totalUnitsCount,
     completedUnitsCount,
+    pdfTextPagesCount,
+    pdfVisionPagesCount,
   };
 }
 
@@ -389,7 +402,6 @@ export const EpubTranslatorView: React.FC = () => {
 
               const lockedConfig = isActive;
               const outFmt: PdfOutputFormat = job.pdfOutputFormat || 'epub';
-              const procMode: PdfProcessingMode = job.pdfProcessingMode || 'hybrid-digital';
 
               return (
                 <div
@@ -550,64 +562,35 @@ export const EpubTranslatorView: React.FC = () => {
                       {configOpen && (
                         <div className="mt-2.5 space-y-3 pt-2 border-t border-slate-100">
                           {stats.isPdf && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                              <div>
-                                <span className="block text-[11px] font-bold text-slate-700 mb-1">
+                            <div>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <span className="text-[11px] font-bold text-slate-700 shrink-0">
                                   Đầu ra
                                 </span>
-                                <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl">
-                                  {(['epub', 'pdf'] as PdfOutputFormat[]).map((fmt) => (
-                                    <button
-                                      key={fmt}
-                                      type="button"
-                                      disabled={lockedConfig || isPackaging}
-                                      onClick={() =>
-                                        void updateQueuedJobConfig(job.jobId, {
-                                          pdfOutputFormat: fmt,
-                                        })
-                                      }
-                                      className={`min-h-[38px] rounded-lg text-xs font-bold uppercase transition ${
-                                        outFmt === fmt
-                                          ? 'bg-white text-[#0284C7] shadow-xs'
-                                          : 'text-slate-600'
-                                      } disabled:opacity-60`}
-                                    >
-                                      {fmt}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-
-                              <div>
-                                <span className="block text-[11px] font-bold text-slate-700 mb-1">
-                                  Xử lý
+                                <span className="text-[11px] font-semibold text-slate-500 tabular-nums truncate">
+                                  Tự động: {stats.pdfTextPagesCount} tr chữ · {stats.pdfVisionPagesCount} tr Vision
                                 </span>
-                                <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl">
-                                  {(
-                                    [
-                                      { id: 'hybrid-digital', label: 'Tối ưu Digital' },
-                                      { id: 'full-vision', label: 'Vision toàn trang' },
-                                    ] as const
-                                  ).map((opt) => (
-                                    <button
-                                      key={opt.id}
-                                      type="button"
-                                      disabled={lockedConfig || stats.completedChunks > 0}
-                                      onClick={() =>
-                                        void updateQueuedJobConfig(job.jobId, {
-                                          pdfProcessingMode: opt.id,
-                                        })
-                                      }
-                                      className={`min-h-[38px] px-2 rounded-lg text-xs font-bold truncate transition ${
-                                        procMode === opt.id
-                                          ? 'bg-white text-[#0284C7] shadow-xs'
-                                          : 'text-slate-600'
-                                      } disabled:opacity-60`}
-                                    >
-                                      {opt.label}
-                                    </button>
-                                  ))}
-                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl">
+                                {(['epub', 'pdf'] as PdfOutputFormat[]).map((fmt) => (
+                                  <button
+                                    key={fmt}
+                                    type="button"
+                                    disabled={lockedConfig || isPackaging}
+                                    onClick={() =>
+                                      void updateQueuedJobConfig(job.jobId, {
+                                        pdfOutputFormat: fmt,
+                                      })
+                                    }
+                                    className={`min-h-[38px] rounded-lg text-xs font-bold uppercase transition ${
+                                      outFmt === fmt
+                                        ? 'bg-white text-[#0284C7] shadow-xs'
+                                        : 'text-slate-600'
+                                    } disabled:opacity-60`}
+                                  >
+                                    {fmt}
+                                  </button>
+                                ))}
                               </div>
                             </div>
                           )}

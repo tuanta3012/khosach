@@ -21,13 +21,71 @@ import { resolveCategoryForSave, syncCategoriesWithBooks } from './utils/categor
 import { Navbar, NavTabType } from './components/Navbar';
 import { BookTableView } from './components/BookTableView';
 import { SplashScreen } from './components/SplashScreen';
-const BatchScanner = lazy(() => import('./components/BatchScanner').then((module) => ({ default: module.BatchScanner })));
-const EpubTranslatorView = lazy(() => import('./components/EpubTranslatorView').then((module) => ({ default: module.EpubTranslatorView })));
-const AddEditBookModal = lazy(() => import('./components/AddEditBookModal').then((module) => ({ default: module.AddEditBookModal })));
-const DataSyncModal = lazy(() => import('./components/DataSyncModal').then((module) => ({ default: module.DataSyncModal })));
-const SettingsModal = lazy(() => import('./components/SettingsModal').then((module) => ({ default: module.SettingsModal })));
-const FamilyShareModal = lazy(() => import('./components/FamilyShareModal').then((module) => ({ default: module.FamilyShareModal })));
-const AppUpdateModal = lazy(() => import('./components/AppUpdateModal').then((module) => ({ default: module.AppUpdateModal })));
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  factory: () => Promise<{ default: T }>,
+  moduleKey: string
+) {
+  return lazy(async () => {
+    const storageKey = `lazy_retry_reloaded_${moduleKey}`;
+    try {
+      const mod = await factory();
+      try {
+        sessionStorage.removeItem(storageKey);
+      } catch {}
+      return mod;
+    } catch (firstErr) {
+      for (const delay of [350, 900]) {
+        await new Promise((r) => setTimeout(r, delay));
+        try {
+          const mod = await factory();
+          try {
+            sessionStorage.removeItem(storageKey);
+          } catch {}
+          return mod;
+        } catch {}
+      }
+
+      try {
+        if (!sessionStorage.getItem(storageKey)) {
+          sessionStorage.setItem(storageKey, '1');
+          window.location.reload();
+          return new Promise<{ default: T }>(() => {});
+        }
+      } catch {}
+
+      throw firstErr;
+    }
+  });
+}
+
+const BatchScanner = lazyWithRetry(
+  () => import('./components/BatchScanner').then((module) => ({ default: module.BatchScanner })),
+  'BatchScanner'
+);
+const EpubTranslatorView = lazyWithRetry(
+  () => import('./components/EpubTranslatorView').then((module) => ({ default: module.EpubTranslatorView })),
+  'EpubTranslatorView'
+);
+const AddEditBookModal = lazyWithRetry(
+  () => import('./components/AddEditBookModal').then((module) => ({ default: module.AddEditBookModal })),
+  'AddEditBookModal'
+);
+const DataSyncModal = lazyWithRetry(
+  () => import('./components/DataSyncModal').then((module) => ({ default: module.DataSyncModal })),
+  'DataSyncModal'
+);
+const SettingsModal = lazyWithRetry(
+  () => import('./components/SettingsModal').then((module) => ({ default: module.SettingsModal })),
+  'SettingsModal'
+);
+const FamilyShareModal = lazyWithRetry(
+  () => import('./components/FamilyShareModal').then((module) => ({ default: module.FamilyShareModal })),
+  'FamilyShareModal'
+);
+const AppUpdateModal = lazyWithRetry(
+  () => import('./components/AppUpdateModal').then((module) => ({ default: module.AppUpdateModal })),
+  'AppUpdateModal'
+);
 import { useToast } from './context/ToastContext';
 import { setupBackButtonListener, registerBackButtonHandler } from './services/backButtonService';
 import { useAutoUpdate } from './hooks/useAutoUpdate';
@@ -443,6 +501,10 @@ export default function App() {
   const syncWithGoogleDrive = useCallback(
     async (currentBooks: BookRecord[]): Promise<BookRecord[]> => {
       if (appMode !== 'online') return currentBooks;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        log.info('[Sync] Thiết bị đang ngoại tuyến, giữ nguyên dữ liệu trên máy.');
+        return currentBooks;
+      }
 
       const token = await getAccessToken();
       if (!token) {
@@ -626,17 +688,19 @@ export default function App() {
         return syncRes.mergedBooks;
       } catch (err: any) {
         const errMsg = err?.message || String(err);
-        log.error('[Sync] Đồng bộ Google Drive gặp lỗi:', errMsg);
-        if (
+        const isNetworkErr =
           errMsg.includes('Failed to fetch') ||
           errMsg.includes('NetworkError') ||
           errMsg.includes('network') ||
           errMsg.includes('Load failed') ||
-          err instanceof TypeError
-        ) {
+          err instanceof TypeError;
+        if (isNetworkErr) {
+          log.warn('[Sync] Không thể kết nối tới Google Drive (mạng/CORS):', errMsg);
           showToast('⚠️ Mất kết nối mạng hoặc không thể kết nối tới Google Drive. Đang sử dụng dữ liệu trên thiết bị.', 'warning');
           return currentBooks;
-        } else if (
+        }
+        log.error('[Sync] Đồng bộ Google Drive gặp lỗi:', errMsg);
+        if (
           errMsg.includes('FILE_TRASHED') ||
           errMsg.includes('đã bị xóa')
         ) {
@@ -1382,6 +1446,10 @@ export default function App() {
             onBatchUpdateBooks={handleBatchUpdateBooks}
             onOpenAddModal={() => {
               setEditingBook(null);
+              setIsAddEditModalOpen(true);
+            }}
+            onOpenEditModal={(book) => {
+              setEditingBook(book);
               setIsAddEditModalOpen(true);
             }}
             onOpenImportModal={() => setIsSyncModalOpen(true)}

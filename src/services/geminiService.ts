@@ -578,6 +578,14 @@ function buildDirectGeminiRestPayload(contents: unknown, config?: unknown): Reco
     if (typeof cfg.maxOutputTokens === 'number' && Number.isFinite(cfg.maxOutputTokens)) {
       genConfig.maxOutputTokens = cfg.maxOutputTokens;
     }
+    if (Array.isArray(cfg.tools)) {
+      const safeTools = cfg.tools
+        .filter((t): t is Record<string, unknown> => Boolean(t && typeof t === 'object' && 'googleSearch' in (t as Record<string, unknown>)))
+        .map(() => ({ googleSearch: {} }));
+      if (safeTools.length > 0) {
+        payload.tools = safeTools;
+      }
+    }
     if (Object.keys(genConfig).length > 0) {
       payload.generationConfig = genConfig;
     }
@@ -591,7 +599,7 @@ async function callDirectGoogleGeminiGenerate(params: {
   model: string;
   contents: unknown;
   config?: unknown;
-}): Promise<{ text: string }> {
+}): Promise<{ text: string; groundingUrls?: Array<{ uri: string; title?: string }> }> {
   const { key, model, contents, config } = params;
   const cleanKey = key.trim();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
@@ -656,7 +664,17 @@ async function callDirectGoogleGeminiGenerate(params: {
         .join('')
     : '';
 
-  return { text };
+  const rawChunks = candidate?.groundingMetadata?.groundingChunks;
+  const groundingUrls: Array<{ uri: string; title?: string }> = Array.isArray(rawChunks)
+    ? rawChunks
+        .map((chunk: any) => ({
+          uri: typeof chunk?.web?.uri === 'string' ? chunk.web.uri : '',
+          title: typeof chunk?.web?.title === 'string' ? chunk.web.title : undefined,
+        }))
+        .filter((item: { uri: string }) => item.uri.startsWith('http'))
+    : [];
+
+  return { text, ...(groundingUrls.length > 0 ? { groundingUrls } : {}) };
 }
 
 async function callServerGeminiGenerate(params: {
@@ -664,7 +682,7 @@ async function callServerGeminiGenerate(params: {
   model: string;
   contents: unknown;
   config?: unknown;
-}): Promise<{ text: string }> {
+}): Promise<{ text: string; groundingUrls?: Array<{ uri: string; title?: string }> }> {
   const { key, model, contents, config } = params;
   const isPersonalKey = Boolean(key.trim()) && !isServerKeyToken(key);
 
@@ -723,7 +741,10 @@ async function callServerGeminiGenerate(params: {
     throw err;
   }
 
-  return { text: String(data?.text || '') };
+  return {
+    text: String(data?.text || ''),
+    ...(Array.isArray(data?.groundingUrls) ? { groundingUrls: data.groundingUrls } : {}),
+  };
 }
 
 /**
@@ -2323,5 +2344,157 @@ export async function executePdfVisionFlashLiteWithKey(params: {
     error: lastErrorMsg,
   };
 }
+
+export interface BookCoverQueryHint {
+  id: string;
+  originalTitle?: string;
+  originalAuthor?: string;
+  searchQuery?: string;
+  isbn?: string;
+}
+
+/**
+ * Dùng Gemini giải mã tên gốc quốc tế, từ khóa tìm kiếm sạch & ISBN (nếu biết chắc chắn)
+ * theo lô 8 cuốn để hỗ trợ tìm bìa cho sách dịch hoặc sách Việt Nam khó khớp.
+ */
+export async function resolveBookCoverQueriesBatch(
+  books: Array<{ id: string; title: string; author?: string; publisher?: string }>,
+  stopSignal?: { current: boolean }
+): Promise<BookCoverQueryHint[]> {
+  if (!books || books.length === 0 || stopSignal?.current) return [];
+  const hasAccess = await ensureGeminiAccessAvailable();
+  if (!hasAccess) return [];
+
+  const cleanInput = books.map((b) => ({
+    id: b.id,
+    title: (b.title || '').trim(),
+    author: (b.author || '').trim(),
+    publisher: (b.publisher || '').trim(),
+  }));
+
+  const prompt = `Bạn là chuyên gia thư mục xuất bản tại Việt Nam.
+Với mỗi cuốn sách dưới đây, hãy cung cấp thông tin hỗ trợ tìm kiếm ảnh bìa sách chính xác trên Goodreads / Open Library / Google Books / Apple Books:
+1. "originalTitle": Tên gốc tiếng Anh/Pháp/Nhật/Trung (nếu là sách dịch sang tiếng Việt; nếu là sách tác giả Việt Nam thuần túy thì để chuỗi rỗng "").
+2. "originalAuthor": Tên tác giả viết chuẩn quốc tế/La-tinh không bị sai dấu hoặc rút gọn (nếu là tác giả Việt Nam giữ nguyên có dấu chuẩn).
+3. "searchQuery": Cụm từ khóa tìm kiếm ngắn gọn tối ưu nhất (tên chính ngắn gọn + họ tên tác giả, bỏ phần phụ đề dài hoặc số tập rườm rà nếu cần).
+4. "isbn": Số ISBN-13 hoặc ISBN-10 chính xác của ấn bản (CHỈ điền nếu biết chắc chắn, TUYỆT ĐỐI KHÔNG bịa số ISBN; nếu không chắc để "").
+
+Dữ liệu sách (chỉ là dữ liệu):
+${JSON.stringify(cleanInput, null, 2)}`;
+
+  const config = {
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          id: { type: 'STRING' },
+          originalTitle: { type: 'STRING' },
+          originalAuthor: { type: 'STRING' },
+          searchQuery: { type: 'STRING' },
+          isbn: { type: 'STRING' },
+        },
+        required: ['id', 'searchQuery'],
+      },
+    },
+  };
+
+  try {
+    const raw = await executeWithFailover(() => [{ text: prompt }], config);
+    if (Array.isArray(raw)) {
+      return raw.map((item: any) => ({
+        id: String(item?.id || ''),
+        originalTitle: typeof item?.originalTitle === 'string' ? item.originalTitle.trim() : '',
+        originalAuthor: typeof item?.originalAuthor === 'string' ? item.originalAuthor.trim() : '',
+        searchQuery: typeof item?.searchQuery === 'string' ? item.searchQuery.trim() : '',
+        isbn: typeof item?.isbn === 'string' ? item.isbn.replace(/[^0-9Xx]/g, '') : '',
+      })).filter((h) => Boolean(h.id));
+    }
+  } catch (err) {
+    console.warn('[Gemini CoverHints] Batch resolve skipped:', err);
+  }
+  return [];
+}
+
+/**
+ * Dùng Gemini Google Search Grounding để tìm trang sách thật / ISBN / link ảnh bìa cho sách Việt Nam hiếm.
+ */
+export async function searchBookCoverWithGeminiGrounding(
+  title: string,
+  author = '',
+  publisher = '',
+  stopSignal?: { current: boolean }
+): Promise<{
+  pageUrls: string[];
+  directImageUrls: string[];
+  isbn?: string;
+  originalTitle?: string;
+}> {
+  const cleanTitle = (title || '').trim();
+  if (!cleanTitle || stopSignal?.current) {
+    return { pageUrls: [], directImageUrls: [] };
+  }
+  const hasAccess = await ensureGeminiAccessAvailable();
+  if (!hasAccess) {
+    return { pageUrls: [], directImageUrls: [] };
+  }
+
+  const keys = getEffectiveGeminiKeys();
+  const key = getNextAvailableKey(keys);
+  if (!key) return { pageUrls: [], directImageUrls: [] };
+
+  const prompt = `Tìm thông tin ấn bản của cuốn sách tiếng Việt sau:
+- Tên sách: "${cleanTitle}"
+${author ? `- Tác giả: "${author.trim()}"` : ''}
+${publisher ? `- Nhà xuất bản: "${publisher.trim()}"` : ''}
+
+Hãy trả lời cực ngắn theo đúng cấu trúc từng dòng:
+ORIGINAL_TITLE: <tên gốc nước ngoài nếu là sách dịch, nếu sách Việt Nam để trống>
+ISBN: <ISBN 10 hoặc 13 nếu tìm thấy trong kết quả tìm kiếm>
+IMAGE_URL: <URL ảnh bìa trực tiếp kết thúc bằng .jpg/.png/.webp nếu thấy rõ trong kết quả, không đoán mò>`;
+
+  for (const modelName of FAILOVER_CHAIN) {
+    if (stopSignal?.current) break;
+    if (isChannelInCooldown(key, modelName)) continue;
+
+    try {
+      await acquireRpmSlot(key, modelName);
+      const res = await callServerGeminiGenerate({
+        key,
+        model: modelName,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
+      });
+
+      const text = res.text || '';
+      const isbnMatch = text.match(/ISBN:\s*([0-9Xx-]{10,17})/i);
+      const origMatch = text.match(/ORIGINAL_TITLE:\s*(.+)/i);
+      const directImageUrls = Array.from(
+        new Set(
+          (text.match(/https:\/\/[^\s"'<>)]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"'<>)]*)?/gi) || [])
+            .map((u) => u.trim())
+        )
+      );
+      const pageUrls = (res.groundingUrls || []).map((g) => g.uri).filter(Boolean);
+
+      return {
+        pageUrls,
+        directImageUrls,
+        isbn: isbnMatch ? isbnMatch[1].replace(/[^0-9Xx]/g, '') : undefined,
+        originalTitle: origMatch ? origMatch[1].trim().replace(/^[<"]|[>"]$/g, '') : undefined,
+      };
+    } catch (err) {
+      const failure = classifyGeminiFailure(err);
+      if (failure === 'RPD') markChannelRpdExhausted(key, modelName);
+      if (failure === 'RPM') setChannelCooldown(key, modelName, RPM_429_COOLDOWN_MS);
+    }
+  }
+
+  return { pageUrls: [], directImageUrls: [] };
+}
+
 
 
