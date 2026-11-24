@@ -14,7 +14,6 @@
  *    - Callback cập nhật tiến độ chi tiết theo thời gian thực.
  */
 
-import { GoogleGenAI } from '@google/genai';
 import { 
   BatchNormalizeFailure,
   BatchNormalizeResult,
@@ -90,11 +89,12 @@ const FAILOVER_CHAIN: GeminiModelId[] = [
   'gemini-3.1-flash-lite',
 ];
 
-const RPM_LIMIT = 15;
+const RPM_LIMIT = 14; // Luôn chừa vùng đệm an toàn dưới trần 15 RPM của Google Free Tier
 const RPD_LIMIT = 500;
-const RPM_WINDOW_MS = 60000;
-const MIN_REQUEST_INTERVAL_MS = Math.ceil(RPM_WINDOW_MS / RPM_LIMIT); // 4000ms: giãn cách giữa 2 cuộc gọi cùng 1 model (15 RPM)
-const MIN_INTERLEAVE_INTERVAL_MS = 2000; // 2000ms: lệch pha giữa các cuộc gọi trên cùng 1 Key (nhịp 30 RPM mượt mà)
+const RPM_WINDOW_MS = 63_000; // Cửa sổ 63s bù trễ mạng & lệch đồng hồ
+const MIN_REQUEST_INTERVAL_MS = 4_400; // ~13.6 RPM: giãn cách an toàn giữa 2 cuộc gọi cùng 1 model
+const MIN_INTERLEAVE_INTERVAL_MS = 2_200; // 2200ms: lệch pha giữa các model trên cùng 1 Key
+const RPM_429_COOLDOWN_MS = 18_000;
 const RPM_SCHEDULER_STORAGE_KEY = 'gemini_rpm_scheduler_v1';
 const RPD_STATE_STORAGE_KEY = 'gemini_rpd_state_v1';
 
@@ -111,9 +111,15 @@ export function isChannelInCooldown(key: string, model: string): boolean {
   return Date.now() < cooldownUntil;
 }
 
-export function setChannelCooldown(key: string, model: string, durationMs = MIN_REQUEST_INTERVAL_MS): void {
+export function setChannelCooldown(key: string, model: string, durationMs = RPM_429_COOLDOWN_MS): void {
+  const until = Date.now() + durationMs;
   const channelFingerprint = `${fingerprintKey(key)}_${model}`;
-  channelCooldownMap.set(channelFingerprint, Date.now() + durationMs);
+  channelCooldownMap.set(channelFingerprint, Math.max(channelCooldownMap.get(channelFingerprint) || 0, until));
+
+  const mem = schedulerMemoryStateMap.get(channelFingerprint);
+  if (mem) {
+    mem.nextRequestAt = Math.max(mem.nextRequestAt || 0, until);
+  }
 }
 
 function getPacificDateKey(timestamp = Date.now()): string {
@@ -254,15 +260,109 @@ export function getNextAvailableKey(keys: string[], excludedKeys: ReadonlySet<st
  * LƯU TRỮ VÀ TRUY VẤN DANH SÁCH API KEYS DO NGƯỜI DÙNG CUNG CẤP
  * Hoàn toàn không lưu bất kỳ API Key nào trong mã nguồn.
  */
+const API_BASE = ((import.meta as unknown as { env?: Record<string, string> })?.env?.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const SERVER_KEY_PREFIX = '__SERVER_KEY_';
+
+export function isServerKeyToken(key: string): boolean {
+  return key.startsWith(SERVER_KEY_PREFIX);
+}
+
+function parseServerKeySlot(key: string): number {
+  const raw = key.slice(SERVER_KEY_PREFIX.length, -2);
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+let serverStatusCache = {
+  checked: false,
+  serverConfigured: false,
+  serverKeyCount: 0,
+};
+let serverStatusPromise: Promise<{ serverConfigured: boolean; serverKeyCount: number }> | null = null;
+
+export async function refreshServerGeminiStatus(): Promise<{
+  serverConfigured: boolean;
+  serverKeyCount: number;
+}> {
+  if (serverStatusPromise) return serverStatusPromise;
+  serverStatusPromise = (async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/gemini/status`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const prevConfigured = serverStatusCache.serverConfigured;
+        const prevCount = serverStatusCache.serverKeyCount;
+        serverStatusCache = {
+          checked: true,
+          serverConfigured: Boolean(data?.serverConfigured),
+          serverKeyCount: Number(data?.serverKeyCount) || (data?.serverConfigured ? 1 : 0),
+        };
+        if (
+          typeof window !== 'undefined' &&
+          (prevConfigured !== serverStatusCache.serverConfigured || prevCount !== serverStatusCache.serverKeyCount)
+        ) {
+          window.dispatchEvent(new CustomEvent('gemini-keys-updated'));
+        }
+        return {
+          serverConfigured: serverStatusCache.serverConfigured,
+          serverKeyCount: serverStatusCache.serverKeyCount,
+        };
+      }
+    } catch {
+      // Ignore network errors when backend is unreachable (e.g. offline native build)
+    } finally {
+      serverStatusPromise = null;
+    }
+    serverStatusCache.checked = true;
+    return {
+      serverConfigured: serverStatusCache.serverConfigured,
+      serverKeyCount: serverStatusCache.serverKeyCount,
+    };
+  })();
+  return serverStatusPromise;
+}
+
+if (typeof window !== 'undefined') {
+  void refreshServerGeminiStatus();
+}
+
+export function getServerVirtualKeys(): string[] {
+  if (!serverStatusCache.serverConfigured || serverStatusCache.serverKeyCount <= 0) {
+    return [];
+  }
+  return Array.from({ length: serverStatusCache.serverKeyCount }, (_, i) => `${SERVER_KEY_PREFIX}${i}__`);
+}
+
+export function getEffectiveGeminiKeys(): string[] {
+  const personal = getStoredGeminiApiKeys();
+  if (personal.length > 0) return personal;
+  return getServerVirtualKeys();
+}
+
+export async function ensureGeminiAccessAvailable(): Promise<boolean> {
+  if (getStoredGeminiApiKeys().length > 0) return true;
+  if (!serverStatusCache.checked) {
+    await refreshServerGeminiStatus();
+  }
+  return serverStatusCache.serverConfigured;
+}
+
 export function getStoredGeminiApiKeys(): string[] {
   try {
     const raw = localStorage.getItem(KEYS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const cleanList = parsed
-          .map((k: string) => String(k || '').trim())
-          .filter(Boolean);
+        const cleanList = Array.from(
+          new Set(
+            parsed
+              .map((k: string) => String(k || '').trim())
+              .filter(Boolean)
+          )
+        );
         return cleanList;
       }
     }
@@ -280,13 +380,16 @@ export function getStoredGeminiApiKeys(): string[] {
 
 export function saveStoredGeminiApiKeys(keys: string[]): void {
   try {
-    const cleanKeys = keys.map(k => k.trim()).filter(Boolean);
+    const cleanKeys = Array.from(new Set(keys.map(k => k.trim()).filter(Boolean)));
     if (cleanKeys.length > 0) {
       localStorage.setItem(KEYS_STORAGE_KEY, JSON.stringify(cleanKeys));
       localStorage.setItem('custom_gemini_api_key', cleanKeys[0]);
     } else {
       localStorage.removeItem(KEYS_STORAGE_KEY);
       localStorage.removeItem('custom_gemini_api_key');
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('gemini-keys-updated'));
     }
   } catch (err) {
     console.error('[GeminiService] Lỗi lưu API Key:', err);
@@ -325,6 +428,18 @@ function getErrorText(err: unknown): string {
 type GeminiFailureKind = 'RPD' | 'RPM' | 'AUTH' | 'TRANSIENT' | 'NON_RETRYABLE' | 'OTHER';
 
 function classifyGeminiFailure(err: unknown): GeminiFailureKind {
+  const serverKind = (err as { failureKind?: string } | null)?.failureKind;
+  if (
+    serverKind === 'RPD' ||
+    serverKind === 'RPM' ||
+    serverKind === 'AUTH' ||
+    serverKind === 'TRANSIENT' ||
+    serverKind === 'NON_RETRYABLE' ||
+    serverKind === 'OTHER'
+  ) {
+    return serverKind;
+  }
+
   const errMsg = getErrorText(err);
 
   if (
@@ -356,7 +471,7 @@ export function isKeyInCooldown(key: string): boolean {
 }
 
 export function getDynamicApiQuotaMetrics(): KeyQuotaMetrics {
-  const keys = getStoredGeminiApiKeys();
+  const keys = getEffectiveGeminiKeys();
   const keyCount = keys.length;
   const healthyCount = keys.filter(k => !isKeyInCooldown(k)).length;
   const effectiveCount = Math.max(1, healthyCount || keyCount);
@@ -375,14 +490,55 @@ export function getDynamicApiQuotaMetrics(): KeyQuotaMetrics {
   };
 }
 
+async function callServerGeminiGenerate(params: {
+  key: string;
+  model: string;
+  contents: unknown;
+  config?: unknown;
+}): Promise<{ text: string }> {
+  const { key, model, contents, config } = params;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const body: Record<string, unknown> = {
+    model,
+    contents,
+    ...(config ? { config } : {}),
+  };
+
+  if (isServerKeyToken(key)) {
+    body.keySlotIndex = parseServerKeySlot(key);
+  } else if (key.trim()) {
+    headers['x-gemini-api-key'] = key.trim();
+  }
+
+  const resp = await fetch(`${API_BASE}/api/gemini/generate`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const err: Error & {
+      status?: number;
+      failureKind?: string;
+      retryAfterMs?: number;
+    } = new Error(
+      data?.error || `HTTP ${resp.status}: Lỗi gọi Gemini API từ máy chủ.`
+    );
+    err.status = resp.status;
+    if (data?.failureKind) err.failureKind = data.failureKind;
+    if (typeof data?.retryAfterMs === 'number') err.retryAfterMs = data.retryAfterMs;
+    throw err;
+  }
+
+  return { text: String(data?.text || '') };
+}
+
 /**
- * Điều tiết tốc độ gọi API độc lập cho từng model (15 RPM) VÀ lệch pha 2.0 giây giữa các request trên cùng 1 Key.
- * Cơ chế Lệch Pha (Phase Staggering):
- * - Kênh Model A (3.5 Flash-Lite): khoảng cách tối thiểu giữa 2 lần gọi là 4000ms (15 RPM).
- * - Kênh Model B (3.1 Flash-Lite): khoảng cách tối thiểu giữa 2 lần gọi là 4000ms (15 RPM).
- * - Khoảng cách giữa BẤT KỲ 2 request nào trên cùng 1 Key là tối thiểu 2000ms (Lệch pha).
- * -> Kết quả: Nhịp bắn request đều đặn mỗi 2 giây luân phiên giữa 2 model. Đạt chính xác 30 RPM, 
- *    100% không bao giờ bắn đồng thời 2 model cùng lúc, triệt tiêu xung đột mạng/RAM trên điện thoại di động!
+ * Điều tiết tốc độ gọi API an toàn độc lập cho từng Key + Model (tối đa 14 RPM / cửa sổ 63s / giãn cách >= 4.4s)
+ * và lệch pha 2.2s giữa 2 model trên cùng 1 Key.
  */
 async function acquireRpmSlot(key: string, model: string): Promise<void> {
   const keyFp = fingerprintKey(key);
@@ -410,15 +566,23 @@ async function acquireRpmSlot(key: string, model: string): Promise<void> {
 
     while (true) {
       const now = Date.now();
-      // 1. Quota trần 15 RPM trong cửa sổ trượt 60 giây của riêng model này
+      // 1. Quota an toàn 14 RPM trong cửa sổ trượt 63 giây
       timestamps = timestamps.filter((timestamp) => now - timestamp < RPM_WINDOW_MS);
       const windowWaitUntil = timestamps.length >= RPM_LIMIT
         ? timestamps[0] + RPM_WINDOW_MS
         : 0;
 
-      // 2. Khoảng cách tối thiểu 4000ms giữa 2 lần gọi của cùng 1 model (15 RPM)
-      // 3. Khoảng cách LỆCH PHA tối thiểu 2000ms giữa bất kỳ cuộc gọi nào trên cùng 1 Key
-      const scheduledAt = Math.max(now, windowWaitUntil, nextChannelRequestAt, nextGlobalRequestAt);
+      // 2. Tôn trọng cả cooldown phát sinh từ lỗi 429 gần nhất của kênh
+      const explicitCooldownUntil = channelCooldownMap.get(channelFingerprint) || 0;
+
+      // 3. Khoảng cách tối thiểu 4400ms giữa 2 lần gọi cùng model, và lệch pha 2200ms giữa 2 model trên cùng Key
+      const scheduledAt = Math.max(
+        now,
+        windowWaitUntil,
+        nextChannelRequestAt,
+        nextGlobalRequestAt,
+        explicitCooldownUntil
+      );
 
       if (scheduledAt > now) {
         await new Promise((resolve) => setTimeout(resolve, scheduledAt - now));
@@ -450,7 +614,7 @@ async function acquireRpmSlot(key: string, model: string): Promise<void> {
     }
   };
 
-  // Dùng Web Locks API trên Key Fingerprint để đồng bộ an toàn giữa các luồng/worker
+  // Dùng Web Locks API trên Key Fingerprint để đồng bộ an toàn giữa các luồng/tab
   const lockName = `gemini-api-rpm-scheduler-${keyFp}`;
   if (typeof navigator !== 'undefined' && navigator.locks) {
     await navigator.locks.request(lockName, reserveSlot);
@@ -471,26 +635,6 @@ async function acquireRpmSlot(key: string, model: string): Promise<void> {
   }
 }
 
-/**
- * Kiểm tra Safety Block và Finish Reason từ phản hồi của Google
- */
-function checkSafetyBlockReason(response: any): void {
-  if (!response) return;
-
-  const candidate = response.candidates?.[0];
-  if (candidate) {
-    const finishReason = candidate.finishReason;
-    if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
-      throw new Error(`GEMINI_NON_RETRYABLE: Yêu cầu bị từ chối bởi Google AI (Lý do: ${finishReason}).`);
-    }
-  }
-
-  const blockReason = response.promptFeedback?.blockReason;
-  if (blockReason) {
-    throw new Error(`GEMINI_NON_RETRYABLE: Nội dung bị chặn bởi bộ lọc an toàn Google AI (Lý do: ${blockReason}).`);
-  }
-}
-
 // Bộ đếm lượt xoay tua model độc lập theo từng API Key (đảm bảo mỗi Key đều luân phiên xen kẽ 3.5 & 3.1)
 const keyModelTurnMap = new Map<string, number>();
 
@@ -504,9 +648,12 @@ export async function executeWithFailover(
   overridePreferredModel?: string,
   options: { keys?: string[] } = {}
 ): Promise<any> {
-  const keys = (options.keys || getStoredGeminiApiKeys()).map((key) => key.trim()).filter(Boolean);
+  if (!options.keys && getStoredGeminiApiKeys().length === 0 && !serverStatusCache.checked) {
+    await refreshServerGeminiStatus();
+  }
+  const keys = (options.keys || getEffectiveGeminiKeys()).map((key) => key.trim()).filter(Boolean);
   if (keys.length === 0) {
-    throw new Error('Chưa thiết lập Gemini API Key trong phần Cài đặt.');
+    throw new Error('Chưa thiết lập Gemini API Key trên máy chủ hoặc trong phần Cài đặt.');
   }
 
   let lastError: unknown = null;
@@ -529,7 +676,6 @@ export async function executeWithFailover(
     }
     attemptedKeys.add(key);
     const keyState = refreshPersistedRpdState(key);
-    const ai = new GoogleGenAI({ apiKey: key });
 
     // Xác định thứ tự model thử nghiệm cho RIÊNG API Key này (Interleaving xoay tua độc lập theo từng Key)
     // Đảm bảo Key 1 và Key 2 đều luân phiên xen kẽ 3.5 và 3.1 độc lập, không bị khoá chặt vào 1 model duy nhất
@@ -568,12 +714,12 @@ export async function executeWithFailover(
       while (transientAttempts < 2) {
         try {
           await acquireRpmSlot(key, modelName);
-          const response = await ai.models.generateContent({
+          const response = await callServerGeminiGenerate({
+            key,
             model: modelName,
             contents: buildContents(),
             config,
           });
-          checkSafetyBlockReason(response);
           const textOutput = response?.text;
           if (!textOutput) throw new Error('Gemini trả về phản hồi rỗng.');
 
@@ -587,7 +733,7 @@ export async function executeWithFailover(
         } catch (err: unknown) {
           lastError = err;
           const failure = classifyGeminiFailure(err);
-          console.warn(`[Gemini Failover] Model ${modelName}, key ${key.slice(0, 6)}... (${failure}):`, err);
+          console.warn(`[Gemini Failover] Model ${modelName}, slot ${isServerKeyToken(key) ? key : `${key.slice(0, 6)}...`} (${failure}):`, err);
 
           if (failure === 'RPD') {
             markChannelRpdExhausted(key, modelName);
@@ -607,9 +753,9 @@ export async function executeWithFailover(
             continue;
           }
           if (failure === 'RPM') {
-            // Model này bị trả mã lỗi 429/RPM -> đánh dấu cooldown cho model này
-            // và ngay lập tức failover sang model còn lại mà không làm đứt đoạn tác vụ!
-            setChannelCooldown(key, modelName, MIN_REQUEST_INTERVAL_MS);
+            const rpmErr = err as { retryAfterMs?: number };
+            const cooldownMs = Math.max(RPM_429_COOLDOWN_MS, rpmErr?.retryAfterMs || 0);
+            setChannelCooldown(key, modelName, cooldownMs);
             break;
           }
           break;
@@ -626,12 +772,11 @@ export async function executeWithFailover(
   }
 
   const errMessage = lastError instanceof Error ? lastError.message : 'Tất cả các API Keys hiện có đều đang bị giới hạn hoặc không khả dụng.';
-  throw new Error(`[Gemini SDK] ${errMessage}`);
+  throw new Error(`[Gemini Proxy] ${errMessage}`);
 }
 
 /**
- * KIỂM TRA TÍNH HỢP LỆ VÀ KẾT NỐI CỦA MỘT GEMINI API KEY
- * Thực thi trực tiếp 100% Client-Side.
+ * KIỂM TRA TÍNH HỢP LỆ VÀ KẾT NỐI CỦA MỘT GEMINI API KEY QUA MÁY CHỦ
  */
 export async function testGeminiApiKey(
   candidateKey: string
@@ -646,27 +791,22 @@ export async function testGeminiApiKey(
   }
 
   try {
-    const response = await executeWithFailover(
-      () => 'Ping test. Reply with word OK.',
-      undefined,
-      FAILOVER_CHAIN[0],
-      { keys: [cleanKey] }
-    );
-    if (response) {
-      return { success: true, message: 'Key hoạt động tốt.' };
+    const resp = await fetch(`${API_BASE}/api/gemini/test-key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: cleanKey }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data?.success) {
+      return { success: true, message: data.message || 'Key hoạt động tốt.' };
     }
-  } catch (err: unknown) {
-    const failure = classifyGeminiFailure(err);
-    if (failure === 'RPD' || failure === 'RPM') {
-      return { success: false, message: 'Key hết hạn ngạch. Chờ hoặc thay key mới.' };
-    }
-    if (failure === 'AUTH') {
-      return { success: false, message: 'Key không hợp lệ. Vui lòng thay key mới.' };
-    }
+    return {
+      success: false,
+      message: data?.message || 'Key lỗi. Chờ hoặc thay key mới.',
+    };
+  } catch {
     return { success: false, message: 'Key lỗi. Chờ hoặc thay key mới.' };
   }
-
-  return { success: false, message: 'Key lỗi. Chờ hoặc thay key mới.' };
 }
 
 export async function testAllGeminiApiKeys(
@@ -807,7 +947,8 @@ export async function scanImages(
     imageBatches.push(images.slice(i, i + MICRO_BATCH_SIZE));
   }
 
-  const keys = getStoredGeminiApiKeys();
+  await ensureGeminiAccessAvailable();
+  const keys = getEffectiveGeminiKeys();
   const concurrency = Math.max(1, Math.min(Math.max(1, keys.length) * 2, 4)); // Tối đa 4 luồng song song (mỗi key mở 2 kênh: 3.5 và 3.1)
 
   console.log(`[Gemini Vision] Bắt đầu phân tích ${images.length} ảnh (${imageBatches.length} lô nhỏ) với ${concurrency} luồng lệch pha...`);
@@ -1217,7 +1358,8 @@ export async function batchNormalize(
     chunks.push(books.slice(i, i + CHUNK_SIZE));
   }
 
-  const keys = getStoredGeminiApiKeys();
+  await ensureGeminiAccessAvailable();
+  const keys = getEffectiveGeminiKeys();
   const concurrency = Math.max(1, Math.min(Math.max(1, keys.length) * 2, 4)); // Tối đa 4 luồng song song (mỗi key mở 2 kênh: 3.5 và 3.1)
 
   console.log(`[Gemini Normalizer] Bắt đầu chuẩn hóa song song ${chunks.length} lô (${books.length} cuốn) với ${concurrency} luồng lệch pha...`);
@@ -1318,8 +1460,8 @@ export async function normalizeSingleBook(
   if (!book || !book.title?.trim()) {
     return { success: false, error: 'Tên sách không được để trống.' };
   }
-  const keys = getStoredGeminiApiKeys();
-  if (keys.length === 0) {
+  const hasAccess = await ensureGeminiAccessAvailable();
+  if (!hasAccess) {
     return { success: false, error: 'Chưa có Gemini API Key. Vui lòng thêm Key trong Cài đặt.' };
   }
 
@@ -1438,7 +1580,8 @@ export async function reclassifyBookCategories(
     chunks.push(books.slice(i, i + CHUNK_SIZE));
   }
 
-  const keys = getStoredGeminiApiKeys();
+  await ensureGeminiAccessAvailable();
+  const keys = getEffectiveGeminiKeys();
   const concurrency = Math.max(1, Math.min(Math.max(1, keys.length) * 2, 4));
 
   const allUpdates: ReclassifyCategoriesItem[] = [];
@@ -1536,3 +1679,397 @@ export function getCustomGeminiApiKey(): string {
 export function clearCustomGeminiApiKey(): void {
   saveStoredGeminiApiKeys([]);
 }
+
+export const EPUB_TRANSLATION_MODEL = 'gemini-3.5-flash-lite' as const;
+export const EPUB_BACKUP_MODEL = 'gemini-3.1-flash-lite' as const;
+const EPUB_MODEL_CHAIN = [EPUB_TRANSLATION_MODEL, EPUB_BACKUP_MODEL] as const;
+
+/**
+ * Lấy danh sách các Gemini API Key hợp lệ đang sẵn sàng chạy dịch EPUB
+ * (ít nhất 1 trong 2 model 3.5-flash-lite hoặc dự phòng 3.1-flash-lite chưa cạn RPD và không bị khóa tạm).
+ */
+export function getAvailableEpubTranslationKeys(): string[] {
+  const allKeys = getEffectiveGeminiKeys();
+  return allKeys.filter((key) => {
+    const state = refreshPersistedRpdState(key);
+    if (state.isRpdExhausted) return false;
+    if (Date.now() < state.cooldownUntil) return false;
+    return EPUB_MODEL_CHAIN.some((m) => !isChannelRpdExhausted(key, m));
+  });
+}
+
+export function getEpubKeyDiagnostics(): {
+  totalKeys: number;
+  readyKeys: number;
+  cooldownKeys: number;
+  usingServerKey: boolean;
+} {
+  const personalKeys = getStoredGeminiApiKeys();
+  const allKeys = personalKeys.length > 0 ? personalKeys : getServerVirtualKeys();
+  const ready = getAvailableEpubTranslationKeys();
+  return {
+    totalKeys: allKeys.length,
+    readyKeys: ready.length,
+    cooldownKeys: Math.max(0, allKeys.length - ready.length),
+    usingServerKey: personalKeys.length === 0 && serverStatusCache.serverConfigured,
+  };
+}
+
+export interface EpubFlashLiteCallResult {
+  success: boolean;
+  data?: any;
+  usedModel?: string;
+  aborted?: boolean;
+  keyExhausted?: boolean;
+  rateLimited?: boolean;
+  retryable?: boolean;
+  error?: string;
+}
+
+function parseEpubJsonOutput(rawText: string): unknown {
+  const trimmed = rawText.trim();
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
+  return JSON.parse(candidate);
+}
+
+/**
+ * Thực thi 1 request dịch chunk EPUB qua máy chủ (/api/gemini/generate).
+ * Ưu tiên gemini-3.5-flash-lite và tự động chuyển sang gemini-3.1-flash-lite khi quá tải, lỗi rỗng hoặc chạm quota.
+ */
+export async function executeEpubFlashLiteWithKey(params: {
+  key: string;
+  systemInstruction: string;
+  promptText: string;
+  responseSchema?: any;
+  preferredModels?: string[];
+  stopSignal?: { current: boolean };
+}): Promise<EpubFlashLiteCallResult> {
+  const { key, systemInstruction, promptText, responseSchema, preferredModels, stopSignal } = params;
+  const cleanKey = (key || '').trim();
+  if (!cleanKey) {
+    return { success: false, keyExhausted: true, retryable: true, error: 'API Key không hợp lệ.' };
+  }
+
+  if (stopSignal?.current) {
+    return { success: false, aborted: true, retryable: true };
+  }
+
+  const keyState = refreshPersistedRpdState(cleanKey);
+  const requestedChain = preferredModels?.length ? preferredModels : [...EPUB_MODEL_CHAIN];
+  const availableModels = requestedChain.filter((m) => !isChannelRpdExhausted(cleanKey, m));
+
+  if (keyState.isRpdExhausted || availableModels.length === 0) {
+    return {
+      success: false,
+      keyExhausted: true,
+      retryable: true,
+      error: 'API Key đã đạt giới hạn RPD trong ngày trên cả 3.5 và 3.1 Flash Lite.',
+    };
+  }
+
+  // Ưu tiên model KHÔNG đang cooldown RPM lên trước (ví dụ 3.5 đang bận -> chạy ngay 3.1 backup)
+  const prioritizedModels = [
+    ...availableModels.filter((m) => !isChannelInCooldown(cleanKey, m)),
+    ...availableModels.filter((m) => isChannelInCooldown(cleanKey, m)),
+  ];
+
+  const keyLabel = isServerKeyToken(cleanKey) ? 'Key máy chủ' : `Key ${cleanKey.slice(0, 6)}...`;
+  let lastErrorMsg = 'Không thể nhận phản hồi từ Gemini.';
+  let sawRateLimit = false;
+  let sawNonRateLimitRetryable = false;
+  let allNonRetryable = true;
+
+  for (const modelName of prioritizedModels) {
+    if (stopSignal?.current) {
+      return { success: false, aborted: true, retryable: true };
+    }
+
+    try {
+      await acquireRpmSlot(cleanKey, modelName);
+      if (stopSignal?.current) {
+        return { success: false, aborted: true, retryable: true };
+      }
+
+      const config: Record<string, any> = {
+        systemInstruction,
+      };
+      if (responseSchema) {
+        config.responseMimeType = 'application/json';
+        config.responseSchema = responseSchema;
+      }
+
+      const response = await callServerGeminiGenerate({
+        key: cleanKey,
+        model: modelName,
+        contents: [{ role: 'user', parts: [{ text: promptText }] }],
+        config,
+      });
+
+      const textOutput = response?.text;
+      if (!textOutput || !textOutput.trim()) {
+        lastErrorMsg = `Gemini (${modelName}) trả về phản hồi rỗng.`;
+        sawNonRateLimitRetryable = true;
+        allNonRetryable = false;
+        console.warn(`[EPUB Gemini] ${modelName} trả về phản hồi rỗng, tự động chuyển model dự phòng nếu có...`);
+        continue;
+      }
+
+      if (responseSchema) {
+        const parsed = parseEpubJsonOutput(textOutput);
+        keyState.backoffFactor = 0;
+        keyState.cooldownUntil = 0;
+        return { success: true, data: parsed, usedModel: modelName };
+      }
+
+      keyState.backoffFactor = 0;
+      keyState.cooldownUntil = 0;
+      return { success: true, data: textOutput.trim(), usedModel: modelName };
+    } catch (err: unknown) {
+      const failure = classifyGeminiFailure(err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      lastErrorMsg = errMsg;
+
+      console.warn(`[EPUB Gemini] Model ${modelName} (${failure}):`, errMsg);
+
+      if (failure === 'RPD') {
+        markChannelRpdExhausted(cleanKey, modelName);
+        sawNonRateLimitRetryable = true;
+        allNonRetryable = false;
+        continue;
+      }
+
+      if (failure === 'AUTH') {
+        keyState.cooldownUntil = Date.now() + 15 * 60_000;
+        return {
+          success: false,
+          keyExhausted: true,
+          retryable: true,
+          error: `${keyLabel} không hợp lệ hoặc bị từ chối quyền.`,
+        };
+      }
+
+      if (failure === 'RPM') {
+        const rpmErr = err as { retryAfterMs?: number };
+        const cooldownMs = Math.max(RPM_429_COOLDOWN_MS, rpmErr?.retryAfterMs || 0);
+        setChannelCooldown(cleanKey, modelName, cooldownMs);
+        sawRateLimit = true;
+        allNonRetryable = false;
+        lastErrorMsg = 'Key tạm thời chạm ngưỡng RPM, đang giãn nhịp & chuyển model dự phòng...';
+        continue;
+      }
+
+      if (failure === 'NON_RETRYABLE') {
+        // Nếu model đầu từ chối hoặc gặp safety filter, vẫn cho model dự phòng thử lại trước khi bỏ cuộc
+        continue;
+      }
+
+      sawNonRateLimitRetryable = true;
+      allNonRetryable = false;
+    }
+  }
+
+  const remainingAvailable = EPUB_MODEL_CHAIN.some((m) => !isChannelRpdExhausted(cleanKey, m));
+  if (!remainingAvailable) {
+    markKeyRpdExhausted(cleanKey);
+    return {
+      success: false,
+      keyExhausted: true,
+      retryable: true,
+      error: `${keyLabel} đã hết hạn ngạch ngày (RPD) trên cả 3.5 và 3.1 Flash Lite.`,
+    };
+  }
+
+  return {
+    success: false,
+    rateLimited: sawRateLimit && !sawNonRateLimitRetryable,
+    retryable: !allNonRetryable,
+    error: lastErrorMsg,
+  };
+}
+
+/**
+ * Thực thi 1 request dịch trang PDF Digital bằng AI Vision (kèm ảnh trang + lớp text neo)
+ * qua máy chủ (/api/gemini/generate), dùng chung bộ điều tiết RPM/RPD và cơ chế 3.5 -> 3.1 failover.
+ */
+export async function executePdfVisionFlashLiteWithKey(params: {
+  key: string;
+  systemInstruction: string;
+  promptText: string;
+  imageBase64: string;
+  imageMimeType?: string;
+  responseSchema?: any;
+  preferredModels?: string[];
+  stopSignal?: { current: boolean };
+}): Promise<EpubFlashLiteCallResult> {
+  const {
+    key,
+    systemInstruction,
+    promptText,
+    imageBase64,
+    imageMimeType = 'image/jpeg',
+    responseSchema,
+    preferredModels,
+    stopSignal,
+  } = params;
+
+  const cleanKey = (key || '').trim();
+  if (!cleanKey) {
+    return { success: false, keyExhausted: true, retryable: true, error: 'API Key không hợp lệ.' };
+  }
+  if (stopSignal?.current) {
+    return { success: false, aborted: true, retryable: true };
+  }
+
+  let cleanBase64 = imageBase64;
+  let resolvedMime = imageMimeType;
+  if (cleanBase64.includes(';base64,')) {
+    const split = cleanBase64.split(';base64,');
+    resolvedMime = split[0].replace('data:', '') || resolvedMime;
+    cleanBase64 = split[1];
+  }
+
+  const keyState = refreshPersistedRpdState(cleanKey);
+  const requestedChain = preferredModels?.length ? preferredModels : [...EPUB_MODEL_CHAIN];
+  const availableModels = requestedChain.filter((m) => !isChannelRpdExhausted(cleanKey, m));
+
+  if (keyState.isRpdExhausted || availableModels.length === 0) {
+    return {
+      success: false,
+      keyExhausted: true,
+      retryable: true,
+      error: 'API Key đã đạt giới hạn RPD trong ngày trên cả 3.5 và 3.1 Flash Lite.',
+    };
+  }
+
+  const prioritizedModels = [
+    ...availableModels.filter((m) => !isChannelInCooldown(cleanKey, m)),
+    ...availableModels.filter((m) => isChannelInCooldown(cleanKey, m)),
+  ];
+
+  const keyLabel = isServerKeyToken(cleanKey) ? 'Key máy chủ' : `Key ${cleanKey.slice(0, 6)}...`;
+  let lastErrorMsg = 'Không thể nhận phản hồi từ Gemini Vision.';
+  let sawRateLimit = false;
+  let sawNonRateLimitRetryable = false;
+  let allNonRetryable = true;
+
+  for (const modelName of prioritizedModels) {
+    if (stopSignal?.current) {
+      return { success: false, aborted: true, retryable: true };
+    }
+
+    try {
+      await acquireRpmSlot(cleanKey, modelName);
+      if (stopSignal?.current) {
+        return { success: false, aborted: true, retryable: true };
+      }
+
+      const config: Record<string, any> = {
+        systemInstruction,
+      };
+      if (responseSchema) {
+        config.responseMimeType = 'application/json';
+        config.responseSchema = responseSchema;
+      }
+
+      const response = await callServerGeminiGenerate({
+        key: cleanKey,
+        model: modelName,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: promptText },
+              {
+                inlineData: {
+                  data: cleanBase64,
+                  mimeType: resolvedMime,
+                },
+              },
+            ],
+          },
+        ],
+        config,
+      });
+
+      const textOutput = response?.text;
+      if (!textOutput || !textOutput.trim()) {
+        lastErrorMsg = `Gemini Vision (${modelName}) trả về phản hồi rỗng.`;
+        sawNonRateLimitRetryable = true;
+        allNonRetryable = false;
+        continue;
+      }
+
+      if (responseSchema) {
+        const parsed = parseEpubJsonOutput(textOutput);
+        keyState.backoffFactor = 0;
+        keyState.cooldownUntil = 0;
+        return { success: true, data: parsed, usedModel: modelName };
+      }
+
+      keyState.backoffFactor = 0;
+      keyState.cooldownUntil = 0;
+      return { success: true, data: textOutput.trim(), usedModel: modelName };
+    } catch (err: unknown) {
+      const failure = classifyGeminiFailure(err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      lastErrorMsg = errMsg;
+
+      console.warn(`[PDF Vision Gemini] Model ${modelName} (${failure}):`, errMsg);
+
+      if (failure === 'RPD') {
+        markChannelRpdExhausted(cleanKey, modelName);
+        sawNonRateLimitRetryable = true;
+        allNonRetryable = false;
+        continue;
+      }
+
+      if (failure === 'AUTH') {
+        keyState.cooldownUntil = Date.now() + 15 * 60_000;
+        return {
+          success: false,
+          keyExhausted: true,
+          retryable: true,
+          error: `${keyLabel} không hợp lệ hoặc bị từ chối quyền.`,
+        };
+      }
+
+      if (failure === 'RPM') {
+        const rpmErr = err as { retryAfterMs?: number };
+        const cooldownMs = Math.max(RPM_429_COOLDOWN_MS, rpmErr?.retryAfterMs || 0);
+        setChannelCooldown(cleanKey, modelName, cooldownMs);
+        sawRateLimit = true;
+        allNonRetryable = false;
+        lastErrorMsg = 'Key tạm thời chạm ngưỡng RPM, đang giãn nhịp & chuyển model dự phòng...';
+        continue;
+      }
+
+      if (failure === 'NON_RETRYABLE') {
+        continue;
+      }
+
+      sawNonRateLimitRetryable = true;
+      allNonRetryable = false;
+    }
+  }
+
+  const remainingAvailable = EPUB_MODEL_CHAIN.some((m) => !isChannelRpdExhausted(cleanKey, m));
+  if (!remainingAvailable) {
+    markKeyRpdExhausted(cleanKey);
+    return {
+      success: false,
+      keyExhausted: true,
+      retryable: true,
+      error: `${keyLabel} đã hết hạn ngạch ngày (RPD) trên cả 3.5 và 3.1 Flash Lite.`,
+    };
+  }
+
+  return {
+    success: false,
+    rateLimited: sawRateLimit && !sawNonRateLimitRetryable,
+    retryable: !allNonRetryable,
+    error: lastErrorMsg,
+  };
+}
+
+

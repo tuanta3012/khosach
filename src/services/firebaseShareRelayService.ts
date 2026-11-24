@@ -1,11 +1,6 @@
-import { getApps, getApp, initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { getSharedFirestore, isDeviceOffline } from './firebaseDb';
 import { log } from '../utils/logger';
-
-// Khởi tạo an toàn Firestore instance dùng chung với database ID đã cấu hình
-const getFirebaseApp = () => (getApps().length > 0 ? getApp() : initializeApp(firebaseConfig));
-const db = getFirestore(getFirebaseApp(), 'ai-studio-khosach-0ef0f956-9e92-4b96-aab6-0adefe2a1acc');
 
 export interface AssignedShareRecord {
   assignedFileId: string;
@@ -67,8 +62,11 @@ export async function publishAssignedFile(
     if (options?.onlyIfMissingOrChanged && publishedRelaySignatureCache.get(emailKey) === signature) {
       return true;
     }
+    if (isDeviceOffline()) {
+      return false;
+    }
 
-    const docRef = doc(db, 'assigned_shares', emailKey);
+    const docRef = doc(getSharedFirestore(), 'assigned_shares', emailKey);
     let existingCreatedAt: number | undefined;
 
     if (options?.onlyIfMissingOrChanged) {
@@ -185,9 +183,9 @@ export async function consumeAssignedFileForMember(
 ): Promise<AssignedShareRecord | null> {
   try {
     const emailKey = sanitizeEmailKey(memberEmail);
-    if (!emailKey) return null;
+    if (!emailKey || isDeviceOffline()) return null;
 
-    const docRef = doc(db, 'assigned_shares', emailKey);
+    const docRef = doc(getSharedFirestore(), 'assigned_shares', emailKey);
     const snap = await getDoc(docRef);
 
     if (!snap.exists()) {
@@ -229,9 +227,9 @@ export async function consumeAssignedFileForMember(
 export async function removeAssignedFileForMember(memberEmail: string): Promise<void> {
   try {
     const emailKey = sanitizeEmailKey(memberEmail);
-    if (!emailKey) return;
+    if (!emailKey || isDeviceOffline()) return;
     publishedRelaySignatureCache.delete(emailKey);
-    const docRef = doc(db, 'assigned_shares', emailKey);
+    const docRef = doc(getSharedFirestore(), 'assigned_shares', emailKey);
     await deleteDoc(docRef);
     log.info(`[ShareRelay] Đã xóa bản ghi gán file cho ${memberEmail} trên Firestore`);
   } catch (err) {

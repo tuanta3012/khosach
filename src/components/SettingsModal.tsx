@@ -33,7 +33,7 @@ import {
   getStoredGeminiApiKeys,
   saveStoredGeminiApiKeys,
   testGeminiApiKey,
-  getDynamicApiQuotaMetrics,
+  ensureGeminiAccessAvailable,
 } from '../services/geminiService';
 import {
   groupDuplicateBooksAsync,
@@ -209,17 +209,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleAddKey = async () => {
-    const clean = newKeyInput.trim();
-    if (!clean) return;
-    if (apiKeys.includes(clean)) {
+    const parsedCandidates = newKeyInput
+      .split(/[,;\r\n]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (parsedCandidates.length === 0) return;
+
+    const existingSet = new Set(apiKeys);
+    const newlyAdded: string[] = [];
+    for (const candidate of parsedCandidates) {
+      if (!existingSet.has(candidate)) {
+        existingSet.add(candidate);
+        newlyAdded.push(candidate);
+      }
+    }
+
+    if (newlyAdded.length === 0) {
       showToast('API Key này đã tồn tại trong danh sách!', 'warning');
       return;
     }
-    const updatedKeys = [...apiKeys, clean];
+
+    const updatedKeys = [...apiKeys, ...newlyAdded];
     saveStoredGeminiApiKeys(updatedKeys);
     setApiKeys(updatedKeys);
-    setNewKeyInput(''); // Xóa trắng ô gõ phím sau khi hoàn thành
+    setNewKeyInput(''); // Xóa trắng ô nhập sau khi hoàn thành
     await onSaveSettings({ ...settings, geminiApiKeys: updatedKeys });
+
+    if (newlyAdded.length > 1) {
+      showToast(`Đã thêm ${newlyAdded.length} Gemini API Key mới!`, 'success');
+    }
 
     // Tự động đồng bộ lên Google Sheet Config nếu người dùng là Admin hoặc Editor
     if (
@@ -243,9 +262,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         }
       }).catch(() => {});
     }
-    
-    // Tự động kiểm tra ngay lập tức khi vừa nhập xong
-    handleTestSingleKey(clean);
+
+    // Tự động kiểm tra các key vừa thêm
+    if (newlyAdded.length === 1) {
+      handleTestSingleKey(newlyAdded[0]);
+    } else {
+      Promise.all(newlyAdded.map((k) => handleTestSingleKey(k, true))).catch(() => {});
+    }
   };
 
   const handleDeleteKey = async (keyToDelete: string) => {
@@ -313,7 +336,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       storedKeys = getStoredGeminiApiKeys();
     }
 
-    if (storedKeys.length === 0) {
+    const hasAccess = storedKeys.length > 0 || (await ensureGeminiAccessAvailable());
+    if (!hasAccess) {
       showToast('Vui lòng thêm và lưu ít nhất 1 Gemini API Key trước khi hiệu chỉnh kho!', 'warning');
       return;
     }
@@ -1066,7 +1090,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {/* Ô nhập Key mới - Luôn hiển thị để thêm bao nhiêu tuỳ ý */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10.5px] font-bold text-slate-500">Thêm Key</span>
+                      <span className="text-[10.5px] font-bold text-slate-500">
+                        Thêm Key (dán từng key hoặc nhiều key cách nhau dấu phẩy)
+                      </span>
                       <a
                         href="https://aistudio.google.com/app/apikey"
                         target="_blank"
@@ -1085,14 +1111,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     >
                       <div className="relative flex-1">
                         <input
-                          type="search"
+                          type="text"
                           name="nomatch_key"
                           id="book-api-input-search"
                           autoComplete="new-password"
                           autoCorrect="off"
                           autoCapitalize="none"
                           spellCheck={false}
-                          inputMode="search"
+                          inputMode="text"
                           data-lpignore="true"
                           data-1p-ignore="true"
                           data-form-type="other"
@@ -1104,7 +1130,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               handleAddKey();
                             }
                           }}
-                          placeholder="Dán API Key..."
+                          placeholder="Dán 1 hoặc nhiều Key (cách nhau dấu phẩy)..."
                           className="w-full px-3 py-1.5 text-xs bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#653f96] rounded-xl focus:ring-2 focus:ring-[#653f96]/20 focus:outline-none transition font-medium text-slate-800"
                         />
                         {newKeyInput && (

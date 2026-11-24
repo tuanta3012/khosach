@@ -28,7 +28,7 @@ import { registerBackButtonHandler } from "../services/backButtonService";
 import {
   normalizeSingleBook,
   reclassifyBookCategories,
-  getStoredGeminiApiKeys,
+  ensureGeminiAccessAvailable,
 } from "../utils/geminiService";
 
 interface BookTableViewProps {
@@ -325,7 +325,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       showToast('⚠️ Bạn đang ở chế độ CHỈ XEM (Viewer). Không có quyền hiệu chỉnh sách!', 'warning');
       return;
     }
-    if (getStoredGeminiApiKeys().length === 0) {
+    if (!(await ensureGeminiAccessAvailable())) {
       showToast('Vui lòng thêm Gemini API Key trong Cài đặt để sử dụng AI!', 'warning');
       onOpenSettingsKey?.();
       return;
@@ -378,7 +378,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       return;
     }
     if (!onBatchUpdateBooks || books.length === 0) return;
-    if (getStoredGeminiApiKeys().length === 0) {
+    if (!(await ensureGeminiAccessAvailable())) {
       showToast('Vui lòng thêm Gemini API Key trong Cài đặt để phân loại bằng AI!', 'warning');
       onOpenSettingsKey?.();
       return;

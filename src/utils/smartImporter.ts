@@ -4,7 +4,7 @@ import JSZip from 'jszip';
 import { inflateRaw } from 'pako';
 import { BookRecord } from '../types';
 import { checkDuplicateBook, removeVietnameseTones } from './fuzzyMatcher';
-import { executeWithFailover, GEMINI_BOOK_CATEGORIES, getStoredGeminiApiKeys } from '../services/geminiService';
+import { executeWithFailover, GEMINI_BOOK_CATEGORIES, ensureGeminiAccessAvailable } from '../services/geminiService';
 import { sanitizeSingleCategory, smartDriveFetch } from './driveSyncClient';
 
 // Configure PDF.js worker
@@ -509,7 +509,7 @@ export async function processSheetRows(
   let mapping: ColumnMapping | undefined;
   let isAiAssisted = false;
   let aiReasoning = '';
-  const hasApiKey = getStoredGeminiApiKeys().length > 0;
+  const hasApiKey = await ensureGeminiAccessAvailable();
 
   // Nếu có API Key đang hoạt động: Tự động quét AI vài dòng đầu trang/mỗi sheet để xác định đúng loại cột
   if (hasApiKey) {

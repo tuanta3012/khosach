@@ -14,10 +14,11 @@ import {
   FileSpreadsheet,
   UploadCloud,
   Smartphone,
+  Languages,
 } from 'lucide-react';
 import { AuthUser } from '../types';
 
-export type NavTabType = 'table' | 'scanner';
+export type NavTabType = 'table' | 'scanner' | 'translator';
 
 export interface NavbarProps {
   currentTab: NavTabType;
@@ -233,6 +234,18 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </div>
                 <span>Quét AI</span>
               </button>
+
+              <button
+                onClick={() => onTabChange('translator')}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition ${
+                  currentTab === 'translator'
+                    ? 'bg-[#10B981] text-white shadow-xs'
+                    : 'text-sky-100/80 hover:text-white hover:bg-sky-600/60'
+                }`}
+              >
+                <Languages className="w-3.5 h-3.5" />
+                <span>Dịch Sách</span>
+              </button>
             </div>
 
             {/* Direct Login / Logout & Account Access */}
@@ -340,33 +353,35 @@ export const Navbar: React.FC<NavbarProps> = ({
       </header>
 
       {/* Bottom Navigation Dock for Mobile - Tông màu Xanh Dương Hiện Đại (#0284C7) */}
-      <nav className="xl:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0284C7]/95 backdrop-blur-md border-t border-sky-700/80 px-4 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
+      <nav className="xl:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0284C7]/95 backdrop-blur-md border-t border-sky-700/80 px-3 pt-1.5 pb-[max(0.4rem,env(safe-area-inset-bottom,0px))] shadow-2xl">
         <div className="flex items-center justify-around max-w-md mx-auto h-12">
           {/* 1. Kho Sách */}
           <button
             onClick={() => onTabChange('table')}
             title="Kho Sách"
-            className={`p-1 rounded-lg transition-all duration-150 active:scale-95 ${
+            aria-label="Kho Sách"
+            className={`min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 rounded-lg transition-all duration-150 active:scale-95 ${
               currentTab === 'table'
                 ? 'text-white bg-[#10B981] font-bold shadow-xs'
                 : 'text-sky-100/80 hover:text-white hover:bg-sky-600/50'
             }`}
           >
-            <Layers className="w-[23.4px] h-[23.4px]" />
+            <Layers className="w-[22px] h-[22px]" />
           </button>
 
           {/* 2. Quét AI */}
           <button
             onClick={() => onTabChange('scanner')}
             title="Quét AI"
-            className={`p-1 rounded-lg transition-all duration-150 active:scale-95 ${
+            aria-label="Quét AI"
+            className={`min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 rounded-lg transition-all duration-150 active:scale-95 ${
               currentTab === 'scanner'
                 ? 'text-white bg-[#10B981] font-bold shadow-xs'
                 : 'text-sky-100/80 hover:text-white hover:bg-sky-600/50'
             }`}
           >
             <div className="relative inline-flex items-center justify-center">
-              <Camera className="w-[23.4px] h-[23.4px]" />
+              <Camera className="w-[22px] h-[22px]" />
               <span className="absolute -top-1 -right-1.5 bg-[#F59E0B] text-slate-950 text-[6.5px] font-black px-0.5 rounded leading-tight shadow-xs">
                 AI
               </span>
@@ -377,18 +392,34 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={onOpenAddModal}
             title="Thêm Sách"
-            className="p-1 rounded-lg text-[#F59E0B] hover:text-amber-300 transition-all duration-150 active:scale-95"
+            aria-label="Thêm Sách"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 rounded-lg text-[#F59E0B] hover:text-amber-300 transition-all duration-150 active:scale-95"
           >
-            <PlusCircle className="w-[23.4px] h-[23.4px]" />
+            <PlusCircle className="w-[22px] h-[22px]" />
           </button>
 
           {/* 4. Đồng Bộ / Xuất Nhập */}
           <button
             onClick={onOpenSyncModal}
             title="Đồng Bộ"
-            className="p-1 rounded-lg text-sky-100/80 hover:text-white hover:bg-sky-600/50 transition-all duration-150 active:scale-95"
+            aria-label="Đồng Bộ"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 rounded-lg text-sky-100/80 hover:text-white hover:bg-sky-600/50 transition-all duration-150 active:scale-95"
           >
-            <ArrowUpDown className="w-[23.4px] h-[23.4px]" />
+            <ArrowUpDown className="w-[22px] h-[22px]" />
+          </button>
+
+          {/* 5. Dịch Sách EPUB (ngoài cùng bên phải) */}
+          <button
+            onClick={() => onTabChange('translator')}
+            title="Dịch Sách EPUB"
+            aria-label="Dịch Sách EPUB"
+            className={`min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 rounded-lg transition-all duration-150 active:scale-95 ${
+              currentTab === 'translator'
+                ? 'text-white bg-[#10B981] font-bold shadow-xs'
+                : 'text-sky-100/80 hover:text-white hover:bg-sky-600/50'
+            }`}
+          >
+            <Languages className="w-[22px] h-[22px]" />
           </button>
         </div>
       </nav>

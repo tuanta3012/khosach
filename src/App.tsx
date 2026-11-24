@@ -22,6 +22,7 @@ import { Navbar, NavTabType } from './components/Navbar';
 import { BookTableView } from './components/BookTableView';
 import { SplashScreen } from './components/SplashScreen';
 const BatchScanner = lazy(() => import('./components/BatchScanner').then((module) => ({ default: module.BatchScanner })));
+const EpubTranslatorView = lazy(() => import('./components/EpubTranslatorView').then((module) => ({ default: module.EpubTranslatorView })));
 const AddEditBookModal = lazy(() => import('./components/AddEditBookModal').then((module) => ({ default: module.AddEditBookModal })));
 const DataSyncModal = lazy(() => import('./components/DataSyncModal').then((module) => ({ default: module.DataSyncModal })));
 const SettingsModal = lazy(() => import('./components/SettingsModal').then((module) => ({ default: module.SettingsModal })));
@@ -116,12 +117,13 @@ export default function App() {
     })();
   }, []);
 
-  // Tự động kiểm tra và cập nhật quy tắc đồng thuận từ Cloud Firestore đúng 1 lần duy nhất khi mở app
+  // Tự động kiểm tra và cập nhật quy tắc đồng thuận từ Cloud Firestore khi đang ở chế độ Online
   useEffect(() => {
+    if (appMode !== 'online') return;
     syncStartupCloudRulesOnce().catch((err) => {
       console.warn('[CurationLearning] Startup cloud sync silent warning:', err);
     });
-  }, []);
+  }, [appMode]);
 
   // User Auth & Google Spreadsheet Info
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
@@ -1403,6 +1405,12 @@ export default function App() {
               setIsSettingsModalOpen(true);
             }}
           />
+          </Suspense>
+        )}
+
+        {currentTab === 'translator' && (
+          <Suspense fallback={<div className="py-8 text-center text-sm text-slate-500">Đang tải trình dịch EPUB...</div>}>
+            <EpubTranslatorView />
           </Suspense>
         )}
       </main>

@@ -25,7 +25,6 @@ import {
   getKnownSpreadsheets
 } from '../services/driveSyncService';
 import { getLocalStorageHealth } from '../utils/localBooksStorage';
-import { getStoredGeminiApiKeys } from '../services/geminiService';
 
 interface DataSyncModalProps {
   isOpen: boolean;

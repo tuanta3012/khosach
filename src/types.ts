@@ -229,3 +229,173 @@ export interface ConsensusRule {
   confidenceRate: number;
   updatedAt: number;
 }
+
+export type EpubGenreId =
+  | 'van-hoc'
+  | 'cong-nghe'
+  | 'y-khoa'
+  | 'kinh-te'
+  | 'khoa-hoc'
+  | 'lich-su-triet'
+  | 'tam-ly-ky-nang'
+  | 'giao-trinh'
+  | 'tong-hop';
+
+export interface EpubGenreConfig {
+  id: EpubGenreId;
+  label: string;
+  shortDesc: string;
+  libraryCategoryHint: string;
+  stylePrompt: string;
+}
+
+export interface SerializedInlineTag {
+  id: number;
+  tagName: string;
+  attrs: Array<[string, string]>;
+  isVoid: boolean;
+}
+
+export interface EpubTranslatableSegment {
+  segId: number;
+  filePath: string;
+  kind: 'opf-title' | 'ncx-text' | 'html-block';
+  tokenText: string;
+  tagRegistry: SerializedInlineTag[];
+  charLength: number;
+}
+
+export interface EpubTranslationChunk {
+  chunkIndex: number;
+  filePath: string;
+  segmentIds: number[];
+  totalChars: number;
+}
+
+export interface ParsedEpubData {
+  opfPath: string;
+  opfDir: string;
+  ncxPath?: string;
+  navPath?: string;
+  spineFilePaths: string[];
+  bookTitle: string;
+  bookAuthor: string;
+  bookPublisher: string;
+  bookLanguage: string;
+  segments: EpubTranslatableSegment[];
+  chunks: EpubTranslationChunk[];
+}
+
+export type PdfOutputFormat = 'epub' | 'pdf';
+export type PdfProcessingMode = 'hybrid-digital' | 'full-vision';
+
+export type PdfBlockTag =
+  | 'h1'
+  | 'h2'
+  | 'h3'
+  | 'p'
+  | 'blockquote'
+  | 'ul'
+  | 'ol'
+  | 'pre'
+  | 'table'
+  | 'figure';
+
+export interface PdfTranslatedBlock {
+  tag: PdfBlockTag;
+  html: string;
+}
+
+export interface PdfExtractedAsset {
+  assetId: string;
+  pageNumber: number;
+  fileName: string;
+  mimeType: 'image/png' | 'image/jpeg';
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+export interface PdfPreParsedBlock {
+  blockId: number;
+  tag: PdfBlockTag;
+  text: string;
+  isFigure?: boolean;
+  assetId?: string;
+}
+
+export interface PdfParsedPage {
+  pageNumber: number;
+  chapterIndex: number;
+  chapterTitle: string;
+  rawDigitalText: string;
+  requiresVision: boolean;
+  hasFigures: boolean;
+  hasTables: boolean;
+  isMultiColumn: boolean;
+  assetIds: string[];
+  blocks: PdfPreParsedBlock[];
+}
+
+export interface PdfChapterInfo {
+  chapterIndex: number;
+  title: string;
+  startPage: number;
+  endPage: number;
+}
+
+export interface ParsedPdfData {
+  bookTitle: string;
+  bookAuthor: string;
+  bookPublisher: string;
+  totalPages: number;
+  chapters: PdfChapterInfo[];
+  pages: PdfParsedPage[];
+  assets: Record<string, PdfExtractedAsset>;
+  visionPageCount: number;
+  textOnlyPageCount: number;
+}
+
+export interface PdfTranslationUnit {
+  unitIndex: number;
+  kind: 'vision-page' | 'text-chunk';
+  pageNumbers: number[];
+  totalChars: number;
+}
+
+export interface EpubTranslationJob {
+  jobId: string;
+  sourceType?: 'epub' | 'pdf';
+  fileName: string;
+  fileSize: number;
+  lastModified: number;
+  genre: EpubGenreId;
+  customNotes: string;
+  epubBuffer: ArrayBuffer;
+  parsedData: ParsedEpubData;
+  translatedSegments: Record<number, string>;
+  // Hỗ trợ dịch PDF Digital (tùy chọn)
+  pdfOutputFormat?: PdfOutputFormat;
+  pdfProcessingMode?: PdfProcessingMode;
+  parsedPdfData?: ParsedPdfData;
+  pdfUnits?: PdfTranslationUnit[];
+  translatedPdfPages?: Record<number, PdfTranslatedBlock[]>;
+  completedChunkIds: number[];
+  failedChunkIds: number[];
+  status: 'idle' | 'translating' | 'paused' | 'completed' | 'error';
+  lastError?: string;
+  updatedAt: number;
+}
+
+export interface EpubTranslationProgress {
+  completedChunks: number;
+  totalChunks: number;
+  completedSegments: number;
+  totalSegments: number;
+  failedChunks: number;
+  activeWorkers: number;
+  totalKeys: number;
+  statusMessage: string;
+}
+
+

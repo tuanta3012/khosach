@@ -1,13 +1,8 @@
-import { getApps, getApp, initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { getSharedFirestore, isDeviceOffline } from './firebaseDb';
 import { BookRecord, ConsensusRule, RuleType } from '../types';
 import { canonicalizeVolume, removeVietnameseTones } from '../utils/fuzzyMatcher';
 import { saveMasterSyncStateToGoogleSheet, readMasterSyncStateFromGoogleSheet } from './driveSyncService';
-
-// Khởi tạo an toàn Firebase Firestore với database ID đã cấu hình
-const getFirebaseApp = () => (getApps().length > 0 ? getApp() : initializeApp(firebaseConfig));
-const db = getFirestore(getFirebaseApp(), 'ai-studio-khosach-0ef0f956-9e92-4b96-aab6-0adefe2a1acc');
 
 export const LEARNED_RULES_STORAGE_KEY = 'library_learned_rules_v1';
 export const CLOUD_COMMUNITY_DOC_PATH = 'community_knowledge/consensus_rules_v1';
@@ -445,9 +440,12 @@ export async function flushSessionContributionsToCloud(): Promise<boolean> {
   if (pendingSessionRuleVotes.size === 0) {
     return true;
   }
+  if (isDeviceOffline()) {
+    return false;
+  }
 
   try {
-    const docRef = doc(db, CLOUD_COMMUNITY_DOC_PATH);
+    const docRef = doc(getSharedFirestore(), CLOUD_COMMUNITY_DOC_PATH);
     const existingSnap = await getDoc(docRef);
 
     let cloudRulesMap = new Map<string, ConsensusRule>();
@@ -511,13 +509,13 @@ export async function flushSessionContributionsToCloud(): Promise<boolean> {
  * Kiểm tra và tải bảng quy tắc đồng thuận từ Cloud Firestore đúng 1 LẦN DUY NHẤT khi mở ứng dụng.
  */
 export async function syncStartupCloudRulesOnce(): Promise<void> {
-  if (hasCheckedCloudRulesThisSession) {
+  if (hasCheckedCloudRulesThisSession || isDeviceOffline()) {
     return;
   }
   hasCheckedCloudRulesThisSession = true;
 
   try {
-    const docRef = doc(db, CLOUD_COMMUNITY_DOC_PATH);
+    const docRef = doc(getSharedFirestore(), CLOUD_COMMUNITY_DOC_PATH);
     const snap = await getDoc(docRef);
 
     if (snap.exists()) {

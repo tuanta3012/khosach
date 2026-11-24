@@ -15,7 +15,14 @@ import {
 } from 'lucide-react';
 import { BookRecord, DraftBookItem } from '../types';
 import { flagDuplicateDrafts, checkDuplicateBook } from '../utils/fuzzyMatcher';
-import { scanImages, enrichBook, getStoredGeminiApiKeys, isKeyInCooldown } from '../utils/geminiService';
+import {
+  scanImages,
+  enrichBook,
+  getEffectiveGeminiKeys,
+  ensureGeminiAccessAvailable,
+  refreshServerGeminiStatus,
+  isKeyInCooldown,
+} from '../utils/geminiService';
 import { useToast } from '../context/ToastContext';
 import { ImageCropModal } from './ImageCropModal';
 import { registerBackButtonHandler } from '../services/backButtonService';
@@ -129,7 +136,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
   }, [keyAlertModal.isOpen]);
 
   const checkKeyCondition = (showToastIfError = false): boolean => {
-    const keys = getStoredGeminiApiKeys();
+    const keys = getEffectiveGeminiKeys();
     if (keys.length === 0) {
       const status = {
         hasError: true,
@@ -161,84 +168,76 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
     return true;
   };
 
-  const handleTriggerCamera = () => {
-    const keys = getStoredGeminiApiKeys();
+  const showMissingKeyPrompt = () => {
+    setKeyStatus({
+      hasError: true,
+      type: 'EMPTY',
+      message: 'Chưa có Gemini API Key.',
+    });
+    setKeyAlertModal({
+      isOpen: true,
+      type: 'EMPTY',
+      title: 'Thiếu Gemini Key',
+      message: 'Cần thêm API Key để tiếp tục.',
+    });
+    showToast('Chưa có Gemini API Key.', 'warning');
+  };
+
+  const showCooldownPrompt = () => {
+    setKeyStatus({
+      hasError: true,
+      type: 'COOLDOWN',
+      message: 'Key tạm thời bận.',
+    });
+    setKeyAlertModal({
+      isOpen: true,
+      type: 'ERROR',
+      title: 'Key không khả dụng',
+      message: 'Key gặp sự cố hoặc hết hạn ngạch.',
+    });
+    showToast('Key lỗi hoặc hết hạn.', 'warning');
+  };
+
+  const triggerWithKeyCheck = async (onReady: () => void) => {
+    let keys = getEffectiveGeminiKeys();
+    if (keys.length > 0) {
+      if (keys.every((k) => isKeyInCooldown(k))) {
+        showCooldownPrompt();
+        return;
+      }
+      onReady();
+      return;
+    }
+
+    await ensureGeminiAccessAvailable();
+    keys = getEffectiveGeminiKeys();
     if (keys.length === 0) {
-      setKeyStatus({
-        hasError: true,
-        type: 'EMPTY',
-        message: 'Chưa có Gemini API Key.',
-      });
-      setKeyAlertModal({
-        isOpen: true,
-        type: 'EMPTY',
-        title: 'Thiếu Gemini Key',
-        message: 'Cần thêm API Key để tiếp tục.',
-      });
-      showToast('Chưa có Gemini API Key.', 'warning');
+      showMissingKeyPrompt();
       return;
     }
-
-    const allInCooldown = keys.every((k) => isKeyInCooldown(k));
-    if (allInCooldown) {
-      setKeyStatus({
-        hasError: true,
-        type: 'COOLDOWN',
-        message: 'Key tạm thời bận.',
-      });
-      setKeyAlertModal({
-        isOpen: true,
-        type: 'ERROR',
-        title: 'Key không khả dụng',
-        message: 'Key gặp sự cố hoặc hết hạn ngạch.',
-      });
-      showToast('Key lỗi hoặc hết hạn.', 'warning');
+    if (keys.every((k) => isKeyInCooldown(k))) {
+      showCooldownPrompt();
       return;
     }
+    onReady();
+  };
 
-    cameraInputRef.current?.click();
+  const handleTriggerCamera = () => {
+    void triggerWithKeyCheck(() => cameraInputRef.current?.click());
   };
 
   const handleTriggerLibrary = () => {
-    const keys = getStoredGeminiApiKeys();
-    if (keys.length === 0) {
-      setKeyStatus({
-        hasError: true,
-        type: 'EMPTY',
-        message: 'Chưa có Gemini API Key.',
-      });
-      setKeyAlertModal({
-        isOpen: true,
-        type: 'EMPTY',
-        title: 'Thiếu Gemini Key',
-        message: 'Cần thêm API Key để tiếp tục.',
-      });
-      showToast('Chưa có Gemini API Key.', 'warning');
-      return;
-    }
-
-    const allInCooldown = keys.every((k) => isKeyInCooldown(k));
-    if (allInCooldown) {
-      setKeyStatus({
-        hasError: true,
-        type: 'COOLDOWN',
-        message: 'Key tạm thời bận.',
-      });
-      setKeyAlertModal({
-        isOpen: true,
-        type: 'ERROR',
-        title: 'Key không khả dụng',
-        message: 'Key gặp sự cố hoặc hết hạn ngạch.',
-      });
-      showToast('Key lỗi hoặc hết hạn.', 'warning');
-      return;
-    }
-
-    fileInputRef.current?.click();
+    void triggerWithKeyCheck(() => fileInputRef.current?.click());
   };
 
   React.useEffect(() => {
     checkKeyCondition(false);
+    void refreshServerGeminiStatus().then(() => checkKeyCondition(false));
+    const onKeysUpdated = () => checkKeyCondition(false);
+    window.addEventListener('gemini-keys-updated', onKeysUpdated);
+    return () => {
+      window.removeEventListener('gemini-keys-updated', onKeysUpdated);
+    };
   }, []);
 
   // Hàng đợi lưu lại các ảnh bị lỗi chưa bóc tách xong để Resume / Retry
@@ -374,7 +373,7 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
     if (currentFailedImages.length > 0) {
       setFailedImagesQueue((prev) => [...prev, ...currentFailedImages]);
-      const keys = getStoredGeminiApiKeys();
+      const keys = getEffectiveGeminiKeys();
       if (keys.length === 0) {
         setKeyStatus({
           hasError: true,
@@ -482,42 +481,12 @@ export const BatchScanner: React.FC<BatchScannerProps> = ({
 
   // THỬ LẠI CÁC ẢNH BỊ LỖI (RESUME)
   const handleRetryFailedImages = async () => {
-    const keys = getStoredGeminiApiKeys();
-    if (keys.length === 0) {
-      setKeyStatus({
-        hasError: true,
-        type: 'EMPTY',
-        message: 'Chưa có Gemini API Key.',
-      });
-      setKeyAlertModal({
-        isOpen: true,
-        type: 'EMPTY',
-        title: 'Thiếu Gemini Key',
-        message: 'Cần thêm API Key để tiếp tục.',
-      });
-      showToast('Chưa có Gemini API Key.', 'warning');
-      return;
-    }
-    const allInCooldown = keys.every((k) => isKeyInCooldown(k));
-    if (allInCooldown) {
-      setKeyStatus({
-        hasError: true,
-        type: 'COOLDOWN',
-        message: 'Key tạm thời bận.',
-      });
-      setKeyAlertModal({
-        isOpen: true,
-        type: 'ERROR',
-        title: 'Key không khả dụng',
-        message: 'Key gặp sự cố hoặc hết hạn ngạch.',
-      });
-      showToast('Key lỗi hoặc hết hạn.', 'warning');
-      return;
-    }
-    if (failedImagesQueue.length === 0) return;
-    const imagesToRetry = [...failedImagesQueue];
-    setFailedImagesQueue([]); // Clear queue trước khi chạy lại
-    await processImageArrayChunked(imagesToRetry);
+    await triggerWithKeyCheck(async () => {
+      if (failedImagesQueue.length === 0) return;
+      const imagesToRetry = [...failedImagesQueue];
+      setFailedImagesQueue([]); // Clear queue trước khi chạy lại
+      await processImageArrayChunked(imagesToRetry);
+    });
   };
 
   // NÚT DỪNG QUÉT CỦA NGƯỜI DÙNG
