@@ -19,9 +19,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-const MAX_TEXT_CHUNK_CHARS = 2600;
-const MAX_TEXT_CHUNK_BLOCKS = 24;
-const MAX_TEXT_CHUNK_PAGES = 4;
+const MAX_TEXT_CHUNK_CHARS = 3400;
+const MAX_TEXT_CHUNK_BLOCKS = 32;
+const MAX_TEXT_CHUNK_PAGES = 5;
 
 interface PositionedTextRun {
   str: string;
@@ -1126,7 +1126,7 @@ export async function renderPdfPageForVision(
 ): Promise<{ base64: string; mimeType: 'image/jpeg' }> {
   const page = await pdfDoc.getPage(pageNumber);
   const baseVp = page.getViewport({ scale: 1 });
-  const targetScale = Math.min(1.85, Math.max(1.0, 1120 / Math.max(1, baseVp.width)));
+  const targetScale = Math.min(1.55, Math.max(0.95, 920 / Math.max(1, baseVp.width)));
   const viewport = page.getViewport({ scale: targetScale });
 
   const canvas = document.createElement('canvas');
@@ -1146,7 +1146,7 @@ export async function renderPdfPageForVision(
       viewport,
     }).promise;
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.84);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
     const commaIdx = dataUrl.indexOf(',');
     return {
       base64: commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl,

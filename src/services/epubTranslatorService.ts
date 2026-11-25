@@ -6,10 +6,12 @@ import {
   EpubTranslationProgress,
 } from '../types';
 import {
+  buildTranslationChannelSlots,
   EPUB_BACKUP_MODEL,
   EPUB_TRANSLATION_MODEL,
   executeEpubFlashLiteWithKey,
   getAvailableEpubTranslationKeys,
+  TranslationChannelSlot,
 } from './geminiService';
 import {
   recordChunkCheckpoint,
@@ -154,6 +156,7 @@ const CHUNK_RESPONSE_SCHEMA = {
 };
 
 const MAX_RETRIES_PER_CHUNK = 5;
+const EPUB_HEDGE_DELAY_MS = 13_000;
 
 export interface RunEpubTranslationOptions {
   job: EpubTranslationJob;
@@ -178,9 +181,18 @@ export interface RunEpubTranslationResult {
   errorMessage?: string;
 }
 
+interface InFlightEpubChunkEntry {
+  chunkIdx: number;
+  startedAt: number;
+  ownerKeys: Set<string>;
+  ownerModels: Set<string>;
+  activeAttempts: number;
+  abortControllers: AbortController[];
+}
+
 /**
- * Chạy dịch song song nhiều chunk dựa trên tổng số Gemini API Key hợp lệ đang có,
- * chỉ sử dụng model gemini-3.5-flash-lite và tôn trọng quota 15 RPM/key.
+ * Chạy dịch song song nhiều chunk dựa trên tối đa 2 kênh model (3.5 + 3.1) cho mỗi API Key hợp lệ,
+ * kết hợp đánh chặn phần cuối (tail hedging) và chỉ dịch bù các đoạn còn thiếu.
  */
 export async function runParallelEpubTranslation(
   options: RunEpubTranslationOptions
@@ -237,10 +249,30 @@ export async function runParallelEpubTranslation(
   });
 
   const systemInstruction = buildEpubSystemInstruction(genre, customNotes);
+  const channelSlots: TranslationChannelSlot[] = buildTranslationChannelSlots(availableKeys, 12);
+  if (channelSlots.length === 0) {
+    return {
+      completed: false,
+      stopped: false,
+      translatedSegments,
+      completedChunkIds: Array.from(completedChunkSet),
+      failedChunkIds: job.failedChunkIds || [],
+      errorMessage: 'Không có kênh API nào khả dụng.',
+    };
+  }
+
+  const finishedSignal = { current: false };
+  const effectiveStopSignal = {
+    get current() {
+      return Boolean(stopSignal.current || finishedSignal.current);
+    },
+  };
+
   const chunkRetryCounts = new Map<number, number>();
-  const workerCount = Math.min(availableKeys.length, pendingQueue.length);
-  let activeWorkersCount = workerCount;
-  let inFlightCount = 0;
+  const inFlightChunks = new Map<number, InFlightEpubChunkEntry>();
+  const activeCheckpointWrites = new Set<Promise<void>>();
+
+  let activeWorkersCount = channelSlots.length;
   let backupUsedCount = 0;
   let lastFatalOrKeyError = '';
 
@@ -260,14 +292,14 @@ export async function runParallelEpubTranslation(
       completedSegments: countCompletedSegments(),
       totalSegments,
       failedChunks: failedChunkSet.size,
-      activeWorkers: activeWorkersCount,
+      activeWorkers: Math.max(1, activeWorkersCount),
       totalKeys: availableKeys.length,
       statusMessage,
     });
   };
 
   emitProgress(
-    `Đang khởi động ${workerCount} luồng song song (${EPUB_TRANSLATION_MODEL} · dự phòng ${EPUB_BACKUP_MODEL})...`
+    `Đang khởi động ${channelSlots.length} luồng song song (${availableKeys.length} key · 3.5 & 3.1)...`
   );
 
   const buildChunkPrompt = (items: Array<{ id: number; text: string }>) =>
@@ -286,7 +318,9 @@ export async function runParallelEpubTranslation(
 
   const translateItemsInSubBatches = async (
     items: Array<{ id: number; text: string }>,
-    apiKey: string
+    apiKey: string,
+    timeoutMs: number,
+    abortSignal: AbortSignal
   ): Promise<{
     success: boolean;
     parsedMap: Map<number, string>;
@@ -298,11 +332,11 @@ export async function runParallelEpubTranslation(
     usedBackup?: boolean;
   }> => {
     const merged = new Map<number, string>();
-    const subBatchSize = Math.max(1, Math.min(6, Math.ceil(items.length / 2)));
+    const subBatchSize = Math.max(1, Math.min(8, Math.ceil(items.length / 2)));
     let usedBackup = false;
 
     for (let offset = 0; offset < items.length; offset += subBatchSize) {
-      if (stopSignal.current) {
+      if (effectiveStopSignal.current || abortSignal.aborted) {
         return { success: false, parsedMap: merged, aborted: true, retryable: true };
       }
 
@@ -313,11 +347,13 @@ export async function runParallelEpubTranslation(
         promptText: buildChunkPrompt(subItems),
         responseSchema: CHUNK_RESPONSE_SCHEMA,
         preferredModels: [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL],
-        stopSignal,
+        timeoutMs,
+        abortSignal,
+        stopSignal: effectiveStopSignal,
       });
 
       if (res.usedModel === EPUB_BACKUP_MODEL) usedBackup = true;
-      if (stopSignal.current || res.aborted) {
+      if (effectiveStopSignal.current || abortSignal.aborted || res.aborted) {
         return { success: false, parsedMap: merged, aborted: true, retryable: true };
       }
       if (!res.success || !Array.isArray(res.data)) {
@@ -343,224 +379,399 @@ export async function runParallelEpubTranslation(
     return { success: true, parsedMap: merged, usedBackup };
   };
 
-  const runKeyWorker = async (workerIndex: number, apiKey: string) => {
-    if (workerIndex > 0) {
-      await new Promise((resolve) => setTimeout(resolve, workerIndex * 280));
-    }
+  const tryClaimHedgeChunk = (slot: TranslationChannelSlot): InFlightEpubChunkEntry | null => {
+    const now = Date.now();
+    let bestCandidate: InFlightEpubChunkEntry | null = null;
+    let oldestAge = -1;
 
-    while (!stopSignal.current) {
-      const chunkIdx = pendingQueue.shift();
-      if (chunkIdx === undefined) {
-        if (inFlightCount === 0) break;
-        await new Promise((resolve) => setTimeout(resolve, 180));
+    for (const entry of inFlightChunks.values()) {
+      if (completedChunkSet.has(entry.chunkIdx) || failedChunkSet.has(entry.chunkIdx)) {
         continue;
       }
+      const elapsed = now - entry.startedAt;
+      if (elapsed < EPUB_HEDGE_DELAY_MS) continue;
 
-      inFlightCount += 1;
-      try {
-        const chunk = job.parsedData.chunks[chunkIdx];
-        if (!chunk) continue;
+      const maxRacers = elapsed >= EPUB_HEDGE_DELAY_MS + 12_000 ? 3 : 2;
+      if (entry.activeAttempts >= maxRacers) continue;
 
-        const chunkSegments = chunk.segmentIds
-          .map((id) => segmentMap.get(id))
-          .filter((s): s is EpubTranslatableSegment => Boolean(s));
+      const canUseKey =
+        !entry.ownerKeys.has(slot.apiKey) ||
+        (availableKeys.length === 1 && !entry.ownerModels.has(slot.primaryModel));
+      if (!canUseKey) continue;
 
-        const preservedSegments = chunkSegments.filter((s) => s.kind === 'opf-title');
-        const inputItems = chunkSegments
-          .filter((s) => s.kind !== 'opf-title')
-          .map((s) => ({ id: s.segId, text: s.tokenText }));
+      if (elapsed > oldestAge) {
+        oldestAge = elapsed;
+        bestCandidate = entry;
+      }
+    }
 
-        if (inputItems.length === 0) {
-          if (preservedSegments.length > 0) {
-            const preservedUpdates: Record<number, string> = {};
-            for (const s of preservedSegments) {
-              preservedUpdates[s.segId] = s.tokenText;
-              translatedSegments[s.segId] = s.tokenText;
-            }
-            await recordChunkCheckpoint(job.jobId, chunkIdx, preservedUpdates, getElapsedMs?.());
+    return bestCandidate;
+  };
+
+  let allSettledResolved = false;
+  let resolveAllSettled!: () => void;
+  const allSettledPromise = new Promise<void>((resolve) => {
+    resolveAllSettled = () => {
+      if (allSettledResolved) return;
+      allSettledResolved = true;
+      resolve();
+    };
+  });
+
+  const checkAllDone = () => {
+    if (completedChunkSet.size + failedChunkSet.size >= totalChunks) {
+      finishedSignal.current = true;
+      resolveAllSettled();
+      return true;
+    }
+    return false;
+  };
+
+  const runChannelWorker = async (slot: TranslationChannelSlot) => {
+    const staggerMs = slot.slotIndex * (availableKeys.length >= 4 ? 140 : 280);
+    if (staggerMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, staggerMs));
+    }
+
+    try {
+      while (!effectiveStopSignal.current) {
+        if (checkAllDone()) break;
+
+        let chunkIdx = pendingQueue.shift();
+        let isHedge = false;
+        let flightEntry: InFlightEpubChunkEntry | undefined;
+        const abortCtrl = new AbortController();
+
+        if (chunkIdx !== undefined) {
+          flightEntry = {
+            chunkIdx,
+            startedAt: Date.now(),
+            ownerKeys: new Set([slot.apiKey]),
+            ownerModels: new Set([slot.primaryModel]),
+            activeAttempts: 1,
+            abortControllers: [abortCtrl],
+          };
+          inFlightChunks.set(chunkIdx, flightEntry);
+        } else {
+          const hedgeCandidate = tryClaimHedgeChunk(slot);
+          if (hedgeCandidate) {
+            isHedge = true;
+            chunkIdx = hedgeCandidate.chunkIdx;
+            hedgeCandidate.ownerKeys.add(slot.apiKey);
+            hedgeCandidate.ownerModels.add(slot.primaryModel);
+            hedgeCandidate.activeAttempts += 1;
+            hedgeCandidate.abortControllers.push(abortCtrl);
+            flightEntry = hedgeCandidate;
+          } else {
+            if (inFlightChunks.size === 0) break;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            continue;
           }
-          completedChunkSet.add(chunkIdx);
-          continue;
         }
 
-        const attemptsBefore = chunkRetryCounts.get(chunkIdx) || 0;
-
-        // Lần đầu ưu tiên 3.5 (tự failover sang 3.1 nếu 3.5 lỗi/rỗng/RPM);
-        // Từ lần thử 2 trở đi: đảo ưu tiên sang 3.1-flash-lite làm backup chủ lực;
-        // Nếu vẫn gặp khó trên chunk nhiều đoạn -> tự động chia nhỏ sub-batch để giải quyết dứt điểm.
-        let finalParsedMap: Map<number, string> | null = null;
-        let usedBackupModel = false;
-        let lastCallFailure: {
-          aborted?: boolean;
-          keyExhausted?: boolean;
-          rateLimited?: boolean;
-          retryable?: boolean;
-          error?: string;
-        } | null = null;
-
-        if (attemptsBefore >= 2 && inputItems.length > 1) {
-          const splitRes = await translateItemsInSubBatches(inputItems, apiKey);
-          if (splitRes.aborted) {
-            pendingQueue.unshift(chunkIdx);
-            break;
+        try {
+          const chunk = job.parsedData.chunks[chunkIdx];
+          if (!chunk || completedChunkSet.has(chunkIdx)) {
+            flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
+            continue;
           }
-          if (splitRes.usedBackup) usedBackupModel = true;
-          if (splitRes.success) {
-            finalParsedMap = splitRes.parsedMap;
+
+          const chunkSegments = chunk.segmentIds
+            .map((id) => segmentMap.get(id))
+            .filter((s): s is EpubTranslatableSegment => Boolean(s));
+
+          const preservedSegments = chunkSegments.filter((s) => s.kind === 'opf-title');
+          const inputItems = chunkSegments
+            .filter((s) => s.kind !== 'opf-title')
+            .map((s) => ({ id: s.segId, text: s.tokenText }));
+
+          if (inputItems.length === 0) {
+            flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
+            inFlightChunks.delete(chunkIdx);
+            if (preservedSegments.length > 0) {
+              const preservedUpdates: Record<number, string> = {};
+              for (const s of preservedSegments) {
+                preservedUpdates[s.segId] = s.tokenText;
+                translatedSegments[s.segId] = s.tokenText;
+              }
+              await recordChunkCheckpoint(job.jobId, chunkIdx, preservedUpdates, getElapsedMs?.());
+            }
+            completedChunkSet.add(chunkIdx);
+            if (checkAllDone()) break;
+            continue;
+          }
+
+          const attemptsBefore = chunkRetryCounts.get(chunkIdx) || 0;
+          const timeoutMs = isHedge ? 34_000 : 42_000;
+
+          let finalParsedMap: Map<number, string> | null = null;
+          let usedBackupModel = false;
+          let lastCallFailure: {
+            aborted?: boolean;
+            keyExhausted?: boolean;
+            rateLimited?: boolean;
+            retryable?: boolean;
+            error?: string;
+          } | null = null;
+
+          if (attemptsBefore >= 2 && inputItems.length > 1) {
+            const splitRes = await translateItemsInSubBatches(
+              inputItems,
+              slot.apiKey,
+              timeoutMs,
+              abortCtrl.signal
+            );
+            if (splitRes.aborted || effectiveStopSignal.current || abortCtrl.signal.aborted) {
+              flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
+              if (stopSignal.current && !completedChunkSet.has(chunkIdx) && !isHedge) {
+                inFlightChunks.delete(chunkIdx);
+                pendingQueue.unshift(chunkIdx);
+              }
+              break;
+            }
+            if (splitRes.usedBackup) usedBackupModel = true;
+            if (splitRes.success) {
+              finalParsedMap = splitRes.parsedMap;
+            } else {
+              lastCallFailure = splitRes;
+            }
           } else {
-            lastCallFailure = splitRes;
-          }
-        } else {
-          const preferredModels =
-            attemptsBefore >= 1
+            const preferredModels = isHedge
+              ? [
+                  slot.primaryModel === EPUB_TRANSLATION_MODEL
+                    ? EPUB_BACKUP_MODEL
+                    : EPUB_TRANSLATION_MODEL,
+                  slot.primaryModel,
+                ]
+              : attemptsBefore >= 1
               ? [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL]
-              : [EPUB_TRANSLATION_MODEL, EPUB_BACKUP_MODEL];
+              : slot.fallbackOrder;
 
-          const res = await executeEpubFlashLiteWithKey({
-            key: apiKey,
-            systemInstruction,
-            promptText: buildChunkPrompt(inputItems),
-            responseSchema: CHUNK_RESPONSE_SCHEMA,
-            preferredModels,
-            stopSignal,
-          });
+            const res = await executeEpubFlashLiteWithKey({
+              key: slot.apiKey,
+              systemInstruction,
+              promptText: buildChunkPrompt(inputItems),
+              responseSchema: CHUNK_RESPONSE_SCHEMA,
+              preferredModels,
+              timeoutMs,
+              abortSignal: abortCtrl.signal,
+              stopSignal: effectiveStopSignal,
+            });
 
-          if (stopSignal.current || res.aborted) {
-            pendingQueue.unshift(chunkIdx);
-            break;
-          }
+            if (effectiveStopSignal.current || abortCtrl.signal.aborted || res.aborted) {
+              flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
+              if (stopSignal.current && !completedChunkSet.has(chunkIdx) && !isHedge) {
+                inFlightChunks.delete(chunkIdx);
+                pendingQueue.unshift(chunkIdx);
+              }
+              break;
+            }
 
-          if (res.usedModel === EPUB_BACKUP_MODEL) usedBackupModel = true;
+            if (res.usedModel === EPUB_BACKUP_MODEL) usedBackupModel = true;
 
-          if (res.success && Array.isArray(res.data)) {
-            const parsedMap = extractValidMap(res.data);
-            const missingCount = inputItems.filter(
-              (it) => !parsedMap.has(it.id) || !parsedMap.get(it.id)
-            ).length;
+            if (res.success && Array.isArray(res.data)) {
+              const parsedMap = extractValidMap(res.data);
+              const missingItems = inputItems.filter(
+                (it) => !parsedMap.has(it.id) || !parsedMap.get(it.id)
+              );
 
-            if (missingCount > Math.max(2, Math.floor(inputItems.length * 0.2))) {
-              // Nếu 3.5 trả thiếu đoạn, chuyển ngay sang 3.1 (hoặc chia nhỏ) trước khi tính thất bại
-              if (res.usedModel === EPUB_TRANSLATION_MODEL) {
-                const backupRes = await executeEpubFlashLiteWithKey({
-                  key: apiKey,
-                  systemInstruction,
-                  promptText: buildChunkPrompt(inputItems),
-                  responseSchema: CHUNK_RESPONSE_SCHEMA,
-                  preferredModels: [EPUB_BACKUP_MODEL],
-                  stopSignal,
-                });
-                if (stopSignal.current || backupRes.aborted) {
-                  pendingQueue.unshift(chunkIdx);
-                  break;
-                }
-                if (backupRes.success && Array.isArray(backupRes.data)) {
-                  const backupMap = extractValidMap(backupRes.data);
-                  const backupMissing = inputItems.filter(
-                    (it) => !backupMap.has(it.id) || !backupMap.get(it.id)
-                  ).length;
-                  if (backupMissing < missingCount) {
-                    usedBackupModel = true;
-                    finalParsedMap = backupMap;
+              if (missingItems.length > Math.max(1, Math.floor(inputItems.length * 0.15))) {
+                // Chỉ gửi dịch bù đúng các đoạn còn thiếu (Delta Retry)
+                const deltaRes =
+                  missingItems.length <= 8
+                    ? await executeEpubFlashLiteWithKey({
+                        key: slot.apiKey,
+                        systemInstruction,
+                        promptText: buildChunkPrompt(missingItems),
+                        responseSchema: CHUNK_RESPONSE_SCHEMA,
+                        preferredModels: [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL],
+                        timeoutMs: 32_000,
+                        abortSignal: abortCtrl.signal,
+                        stopSignal: effectiveStopSignal,
+                      })
+                    : await translateItemsInSubBatches(
+                        missingItems,
+                        slot.apiKey,
+                        32_000,
+                        abortCtrl.signal
+                      );
+
+                if (effectiveStopSignal.current || abortCtrl.signal.aborted || deltaRes.aborted) {
+                  flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
+                  if (stopSignal.current && !completedChunkSet.has(chunkIdx) && !isHedge) {
+                    inFlightChunks.delete(chunkIdx);
+                    pendingQueue.unshift(chunkIdx);
                   }
-                }
-              }
-
-              if (!finalParsedMap && inputItems.length > 1) {
-                const splitRes = await translateItemsInSubBatches(inputItems, apiKey);
-                if (splitRes.aborted) {
-                  pendingQueue.unshift(chunkIdx);
                   break;
                 }
-                if (splitRes.success) {
-                  usedBackupModel = true;
-                  finalParsedMap = splitRes.parsedMap;
-                }
-              }
 
-              if (!finalParsedMap) {
-                const attemptsSoFar = attemptsBefore + 1;
-                if (attemptsSoFar < MAX_RETRIES_PER_CHUNK) {
-                  chunkRetryCounts.set(chunkIdx, attemptsSoFar);
+                if ('usedBackup' in deltaRes && deltaRes.usedBackup) usedBackupModel = true;
+                if ('usedModel' in deltaRes && deltaRes.usedModel === EPUB_BACKUP_MODEL) {
+                  usedBackupModel = true;
+                }
+
+                if (deltaRes.success) {
+                  const deltaMap =
+                    'parsedMap' in deltaRes && deltaRes.parsedMap
+                      ? deltaRes.parsedMap
+                      : extractValidMap((deltaRes as { data?: unknown }).data);
+                  deltaMap.forEach((val, keyId) => {
+                    if (val) parsedMap.set(keyId, val);
+                  });
+                }
+
+                const stillMissingCount = inputItems.filter(
+                  (it) => !parsedMap.has(it.id) || !parsedMap.get(it.id)
+                ).length;
+
+                if (
+                  stillMissingCount > Math.max(2, Math.floor(inputItems.length * 0.25)) &&
+                  attemptsBefore + 1 < MAX_RETRIES_PER_CHUNK &&
+                  flightEntry.activeAttempts <= 1
+                ) {
+                  flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
+                  inFlightChunks.delete(chunkIdx);
+                  chunkRetryCounts.set(chunkIdx, attemptsBefore + 1);
                   pendingQueue.push(chunkIdx);
                   continue;
                 }
-                finalParsedMap = parsedMap;
               }
-            } else {
+
               finalParsedMap = parsedMap;
+            } else {
+              lastCallFailure = res;
+            }
+          }
+
+          flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
+
+          if (completedChunkSet.has(chunkIdx)) {
+            continue;
+          }
+
+          if (finalParsedMap) {
+            if (usedBackupModel) backupUsedCount += 1;
+
+            completedChunkSet.add(chunkIdx);
+            failedChunkSet.delete(chunkIdx);
+            inFlightChunks.delete(chunkIdx);
+
+            for (const otherCtrl of flightEntry.abortControllers) {
+              if (otherCtrl !== abortCtrl && !otherCtrl.signal.aborted) {
+                otherCtrl.abort();
+              }
+            }
+
+            const chunkUpdates: Record<number, string> = {};
+            for (const it of inputItems) {
+              const translatedVal = finalParsedMap.get(it.id);
+              const finalVal = translatedVal && translatedVal.length > 0 ? translatedVal : it.text;
+              chunkUpdates[it.id] = finalVal;
+              translatedSegments[it.id] = finalVal;
+            }
+
+            const writePromise = recordChunkCheckpoint(
+              job.jobId,
+              chunkIdx,
+              chunkUpdates,
+              getElapsedMs?.()
+            ).finally(() => {
+              activeCheckpointWrites.delete(writePromise);
+            });
+            activeCheckpointWrites.add(writePromise);
+            await writePromise;
+
+            if (onJobStateSync && !stopSignal.current) {
+              onJobStateSync({
+                translatedSegments: { ...translatedSegments },
+                completedChunkIds: Array.from(completedChunkSet),
+                failedChunkIds: Array.from(failedChunkSet),
+              });
+            }
+
+            const backupSuffix = backupUsedCount > 0 ? ` · 3.1: ${backupUsedCount}` : '';
+            emitProgress(
+              `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (${channelSlots.length} luồng${backupSuffix})`
+            );
+            if (checkAllDone()) break;
+            continue;
+          }
+
+          if (lastCallFailure?.keyExhausted) {
+            lastFatalOrKeyError = lastCallFailure.error || 'Một API Key đã hết hạn ngạch hoặc không hợp lệ.';
+            if (flightEntry.activeAttempts === 0 && !completedChunkSet.has(chunkIdx)) {
+              inFlightChunks.delete(chunkIdx);
+              pendingQueue.unshift(chunkIdx);
+            }
+            break;
+          }
+
+          if (flightEntry.activeAttempts > 0) {
+            continue;
+          }
+
+          inFlightChunks.delete(chunkIdx);
+          const attempts = attemptsBefore + 1;
+          chunkRetryCounts.set(chunkIdx, attempts);
+
+          if (lastCallFailure?.retryable !== false && attempts < MAX_RETRIES_PER_CHUNK) {
+            if (lastCallFailure?.rateLimited) {
+              emitProgress(
+                `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (đang giãn nhịp RPM & chuyển 3.1-flash-lite)...`
+              );
+              await new Promise((resolve) => setTimeout(resolve, 3500 + attempts * 1000));
+            } else {
+              await new Promise((resolve) => setTimeout(resolve, 900 * attempts));
+            }
+            if (!completedChunkSet.has(chunkIdx) && !effectiveStopSignal.current) {
+              pendingQueue.push(chunkIdx);
             }
           } else {
-            lastCallFailure = res;
-          }
-        }
-
-        if (finalParsedMap) {
-          if (usedBackupModel) backupUsedCount += 1;
-
-          const chunkUpdates: Record<number, string> = {};
-          for (const it of inputItems) {
-            const translatedVal = finalParsedMap.get(it.id);
-            const finalVal = translatedVal && translatedVal.length > 0 ? translatedVal : it.text;
-            chunkUpdates[it.id] = finalVal;
-            translatedSegments[it.id] = finalVal;
-          }
-
-          completedChunkSet.add(chunkIdx);
-          failedChunkSet.delete(chunkIdx);
-
-          await recordChunkCheckpoint(job.jobId, chunkIdx, chunkUpdates, getElapsedMs?.());
-          if (onJobStateSync) {
-            onJobStateSync({
-              translatedSegments: { ...translatedSegments },
-              completedChunkIds: Array.from(completedChunkSet),
-              failedChunkIds: Array.from(failedChunkSet),
-            });
-          }
-
-          const backupSuffix = backupUsedCount > 0 ? ` · dự phòng 3.1: ${backupUsedCount}` : '';
-          emitProgress(
-            `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (${activeWorkersCount} luồng${backupSuffix})`
-          );
-          continue;
-        }
-
-        if (lastCallFailure?.keyExhausted) {
-          lastFatalOrKeyError = lastCallFailure.error || 'Một API Key đã hết hạn ngạch hoặc không hợp lệ.';
-          pendingQueue.unshift(chunkIdx);
-          break;
-        }
-
-        const attempts = attemptsBefore + 1;
-        chunkRetryCounts.set(chunkIdx, attempts);
-
-        if (lastCallFailure?.retryable !== false && attempts < MAX_RETRIES_PER_CHUNK) {
-          if (lastCallFailure?.rateLimited) {
+            failedChunkSet.add(chunkIdx);
+            lastFatalOrKeyError = lastCallFailure?.error || lastFatalOrKeyError;
             emitProgress(
-              `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (đang giãn nhịp RPM & chuyển 3.1-flash-lite)...`
+              `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (${failedChunkSet.size} phần lỗi)`
             );
-            await new Promise((resolve) => setTimeout(resolve, 4200 + attempts * 1200));
-          } else {
-            await new Promise((resolve) => setTimeout(resolve, 1400 * attempts));
+            if (checkAllDone()) break;
           }
-          pendingQueue.push(chunkIdx);
-        } else {
-          failedChunkSet.add(chunkIdx);
-          lastFatalOrKeyError = lastCallFailure?.error || lastFatalOrKeyError;
-          emitProgress(
-            `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (${failedChunkSet.size} phần lỗi)`
-          );
+        } catch (err: unknown) {
+          flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
+          if (effectiveStopSignal.current) break;
+          if (completedChunkSet.has(chunkIdx) || flightEntry.activeAttempts > 0) {
+            continue;
+          }
+
+          inFlightChunks.delete(chunkIdx);
+          const attempts = (chunkRetryCounts.get(chunkIdx) || 0) + 1;
+          chunkRetryCounts.set(chunkIdx, attempts);
+          lastFatalOrKeyError = err instanceof Error ? err.message : String(err);
+
+          if (attempts < MAX_RETRIES_PER_CHUNK) {
+            await new Promise((resolve) => setTimeout(resolve, 900 * attempts));
+            if (!completedChunkSet.has(chunkIdx) && !effectiveStopSignal.current) {
+              pendingQueue.push(chunkIdx);
+            }
+          } else {
+            failedChunkSet.add(chunkIdx);
+            if (checkAllDone()) break;
+          }
         }
-      } finally {
-        inFlightCount = Math.max(0, inFlightCount - 1);
+      }
+    } finally {
+      activeWorkersCount = Math.max(0, activeWorkersCount - 1);
+      if (activeWorkersCount === 0) {
+        resolveAllSettled();
       }
     }
-
-    activeWorkersCount = Math.max(0, activeWorkersCount - 1);
   };
 
-  await Promise.all(
-    availableKeys.slice(0, workerCount).map((key, idx) => runKeyWorker(idx, key))
-  );
+  const workersPromise = Promise.all(channelSlots.map((slot) => runChannelWorker(slot)));
+  await Promise.race([allSettledPromise, workersPromise]);
+  finishedSignal.current = true;
+
+  if (activeCheckpointWrites.size > 0) {
+    await Promise.allSettled(Array.from(activeCheckpointWrites));
+  }
 
   const isStopped = Boolean(stopSignal.current);
   const allCompleted =

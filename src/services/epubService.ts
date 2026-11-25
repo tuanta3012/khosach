@@ -6,8 +6,8 @@ import {
   SerializedInlineTag,
 } from '../types';
 
-const MAX_CHUNK_CHARS = 2800;
-const MAX_CHUNK_SEGMENTS = 26;
+const MAX_CHUNK_CHARS = 3500;
+const MAX_CHUNK_SEGMENTS = 32;
 
 const SKIP_TAGS = new Set([
   'SCRIPT',

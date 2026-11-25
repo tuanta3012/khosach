@@ -633,11 +633,14 @@ async function callNativeApkGeminiHttp(params: {
   model: string;
   contents: unknown;
   config?: unknown;
+  timeoutMs?: number;
 }): Promise<{ text: string; groundingUrls?: Array<{ uri: string; title?: string }> }> {
   const cleanKey = params.key.trim();
   const model = params.model.trim() || 'gemini-3.5-flash-lite';
   const endpoint = ['https://', 'generativelanguage.googleapis.com/v1beta/models/', encodeURIComponent(model), ':generateContent'].join('');
   const bodyObj = buildNativeRestRequestBody(params.contents, params.config);
+  const readTimeout = Math.max(12_000, Math.min(90_000, params.timeoutMs ?? 48_000));
+  const connectTimeout = Math.min(18_000, readTimeout);
 
   const nativeResp = await CapacitorHttp.post({
     url: endpoint,
@@ -647,8 +650,8 @@ async function callNativeApkGeminiHttp(params: {
       'x-goog-api-key': cleanKey,
     },
     data: bodyObj,
-    connectTimeout: 30_000,
-    readTimeout: 90_000,
+    connectTimeout,
+    readTimeout,
   });
 
   const status = nativeResp.status;
@@ -732,11 +735,13 @@ async function callServerGeminiGenerate(params: {
   model: string;
   contents: unknown;
   config?: unknown;
+  timeoutMs?: number;
+  abortSignal?: AbortSignal;
 }): Promise<{ text: string; groundingUrls?: Array<{ uri: string; title?: string }> }> {
-  const { key, model, contents, config } = params;
+  const { key, model, contents, config, timeoutMs, abortSignal } = params;
 
   if (!isServerKeyToken(key) && Boolean(key.trim()) && isNativeApkWithoutCustomApiBase()) {
-    return callNativeApkGeminiHttp(params);
+    return callNativeApkGeminiHttp({ key, model, contents, config, timeoutMs });
   }
 
   const headers: Record<string, string> = {
@@ -754,11 +759,30 @@ async function callServerGeminiGenerate(params: {
     headers['x-gemini-api-key'] = key.trim();
   }
 
-  const resp = await fetch(`${API_BASE}/api/gemini/generate`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  const effectiveTimeoutMs = Math.max(12_000, Math.min(90_000, timeoutMs ?? 52_000));
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (abortSignal) {
+    if (abortSignal.aborted) {
+      controller.abort();
+    } else {
+      abortSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  const timer = setTimeout(() => controller.abort(), effectiveTimeoutMs);
+
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}/api/gemini/generate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+    abortSignal?.removeEventListener('abort', onExternalAbort);
+  }
 
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
@@ -2020,6 +2044,118 @@ export const EPUB_TRANSLATION_MODEL = 'gemini-3.5-flash-lite' as const;
 export const EPUB_BACKUP_MODEL = 'gemini-3.1-flash-lite' as const;
 const EPUB_MODEL_CHAIN = [EPUB_TRANSLATION_MODEL, EPUB_BACKUP_MODEL] as const;
 
+interface TranslationModelPerfState {
+  consecutiveFailures: number;
+  degradedUntil: number;
+  ewmaLatencyMs: number;
+  sampleCount: number;
+}
+
+const translationModelPerfMap = new Map<string, TranslationModelPerfState>();
+
+function getTranslationModelPerf(model: string): TranslationModelPerfState {
+  let st = translationModelPerfMap.get(model);
+  if (!st) {
+    st = {
+      consecutiveFailures: 0,
+      degradedUntil: 0,
+      ewmaLatencyMs: 0,
+      sampleCount: 0,
+    };
+    translationModelPerfMap.set(model, st);
+  }
+  return st;
+}
+
+function recordTranslationModelOutcome(
+  model: string,
+  success: boolean,
+  latencyMs: number,
+  failureKind?: GeminiFailureKind
+): void {
+  const st = getTranslationModelPerf(model);
+  if (success) {
+    st.consecutiveFailures = 0;
+    st.degradedUntil = 0;
+    st.sampleCount += 1;
+    st.ewmaLatencyMs =
+      st.sampleCount === 1
+        ? latencyMs
+        : Math.round(st.ewmaLatencyMs * 0.65 + latencyMs * 0.35);
+    return;
+  }
+
+  // RPM 429 chỉ cooldown riêng channel của key đó, không hạ uy tín toàn cục của model
+  if (failureKind === 'RPM') return;
+
+  st.consecutiveFailures += 1;
+  if (st.consecutiveFailures >= 2) {
+    st.degradedUntil = Date.now() + 90_000;
+  }
+}
+
+export function isTranslationModelDegraded(model: string): boolean {
+  const st = getTranslationModelPerf(model);
+  return Date.now() < st.degradedUntil;
+}
+
+export function orderTranslationModelsAdaptively(
+  baseChain: readonly string[] = EPUB_MODEL_CHAIN
+): string[] {
+  const now = Date.now();
+  const deduped = Array.from(new Set(baseChain));
+  const healthy = deduped.filter((m) => getTranslationModelPerf(m).degradedUntil <= now);
+  const degraded = deduped.filter((m) => getTranslationModelPerf(m).degradedUntil > now);
+  return [...healthy, ...degraded];
+}
+
+export interface TranslationChannelSlot {
+  slotIndex: number;
+  apiKey: string;
+  primaryModel: string;
+  fallbackOrder: string[];
+}
+
+/**
+ * Tạo tối đa 2 kênh song song cho mỗi API Key (kênh 3.5-flash-lite + kênh 3.1-flash-lite),
+ * sắp xếp xen kẽ qua tất cả các Key trước rồi mới tới kênh thứ 2 trên cùng Key
+ * để tối ưu độ phủ Key lẫn tốc độ (tối đa 12 luồng cho 6 Key, khóa <= 14 RPM / kênh).
+ */
+export function buildTranslationChannelSlots(
+  keys: string[],
+  maxWorkers = 12
+): TranslationChannelSlot[] {
+  const cleanKeys = keys.map((k) => k.trim()).filter(Boolean);
+  if (cleanKeys.length === 0) return [];
+
+  const cap = Math.max(1, Math.min(maxWorkers, cleanKeys.length * EPUB_MODEL_CHAIN.length));
+  const slots: TranslationChannelSlot[] = [];
+
+  for (let pass = 0; pass < EPUB_MODEL_CHAIN.length; pass += 1) {
+    for (let kIdx = 0; kIdx < cleanKeys.length; kIdx += 1) {
+      if (slots.length >= cap) break;
+      const apiKey = cleanKeys[kIdx];
+      // Xen kẽ model khởi đầu giữa các key ngay ở vòng 1 (key chẵn ưu tiên 3.5, key lẻ ưu tiên 3.1)
+      const modelIdx = (kIdx + pass) % EPUB_MODEL_CHAIN.length;
+      const primaryModel = EPUB_MODEL_CHAIN[modelIdx];
+      if (isChannelRpdExhausted(apiKey, primaryModel)) continue;
+
+      const secondaryModel =
+        EPUB_MODEL_CHAIN.find((m) => m !== primaryModel && !isChannelRpdExhausted(apiKey, m)) || '';
+      const fallbackOrder = secondaryModel ? [primaryModel, secondaryModel] : [primaryModel];
+
+      slots.push({
+        slotIndex: slots.length,
+        apiKey,
+        primaryModel,
+        fallbackOrder,
+      });
+    }
+  }
+
+  return slots;
+}
+
 /**
  * Lấy danh sách các Gemini API Key hợp lệ đang sẵn sàng chạy dịch EPUB
  * (ít nhất 1 trong 2 model 3.5-flash-lite hoặc dự phòng 3.1-flash-lite chưa cạn RPD và không bị khóa tạm).
@@ -2070,8 +2206,8 @@ function parseEpubJsonOutput(rawText: string): unknown {
 }
 
 /**
- * Thực thi 1 request dịch chunk EPUB qua máy chủ (/api/gemini/generate).
- * Ưu tiên gemini-3.5-flash-lite và tự động chuyển sang gemini-3.1-flash-lite khi quá tải, lỗi rỗng hoặc chạm quota.
+ * Thực thi 1 request dịch chunk EPUB qua máy chủ (/api/gemini/generate) hoặc trực tiếp qua APK.
+ * Tự động xoay/ưu tiên giữa gemini-3.5-flash-lite và gemini-3.1-flash-lite theo độ ổn định & cooldown.
  */
 export async function executeEpubFlashLiteWithKey(params: {
   key: string;
@@ -2079,21 +2215,33 @@ export async function executeEpubFlashLiteWithKey(params: {
   promptText: string;
   responseSchema?: any;
   preferredModels?: string[];
+  timeoutMs?: number;
+  abortSignal?: AbortSignal;
   stopSignal?: { current: boolean };
 }): Promise<EpubFlashLiteCallResult> {
-  const { key, systemInstruction, promptText, responseSchema, preferredModels, stopSignal } = params;
+  const {
+    key,
+    systemInstruction,
+    promptText,
+    responseSchema,
+    preferredModels,
+    timeoutMs,
+    abortSignal,
+    stopSignal,
+  } = params;
   const cleanKey = (key || '').trim();
   if (!cleanKey) {
     return { success: false, keyExhausted: true, retryable: true, error: 'API Key không hợp lệ.' };
   }
 
-  if (stopSignal?.current) {
+  if (stopSignal?.current || abortSignal?.aborted) {
     return { success: false, aborted: true, retryable: true };
   }
 
   const keyState = refreshPersistedRpdState(cleanKey);
   const requestedChain = preferredModels?.length ? preferredModels : [...EPUB_MODEL_CHAIN];
-  const availableModels = requestedChain.filter((m) => !isChannelRpdExhausted(cleanKey, m));
+  const adaptivelyOrdered = orderTranslationModelsAdaptively(requestedChain);
+  const availableModels = adaptivelyOrdered.filter((m) => !isChannelRpdExhausted(cleanKey, m));
 
   if (keyState.isRpdExhausted || availableModels.length === 0) {
     return {
@@ -2117,13 +2265,14 @@ export async function executeEpubFlashLiteWithKey(params: {
   let allNonRetryable = true;
 
   for (const modelName of prioritizedModels) {
-    if (stopSignal?.current) {
+    if (stopSignal?.current || abortSignal?.aborted) {
       return { success: false, aborted: true, retryable: true };
     }
 
+    const reqStart = Date.now();
     try {
       await acquireRpmSlot(cleanKey, modelName);
-      if (stopSignal?.current) {
+      if (stopSignal?.current || abortSignal?.aborted) {
         return { success: false, aborted: true, retryable: true };
       }
 
@@ -2140,10 +2289,13 @@ export async function executeEpubFlashLiteWithKey(params: {
         model: modelName,
         contents: [{ role: 'user', parts: [{ text: promptText }] }],
         config,
+        timeoutMs,
+        abortSignal,
       });
 
       const textOutput = response?.text;
       if (!textOutput || !textOutput.trim()) {
+        recordTranslationModelOutcome(modelName, false, Date.now() - reqStart, 'TRANSIENT');
         lastErrorMsg = `Gemini (${modelName}) trả về phản hồi rỗng.`;
         sawNonRateLimitRetryable = true;
         allNonRetryable = false;
@@ -2153,18 +2305,24 @@ export async function executeEpubFlashLiteWithKey(params: {
 
       if (responseSchema) {
         const parsed = parseEpubJsonOutput(textOutput);
+        recordTranslationModelOutcome(modelName, true, Date.now() - reqStart);
         keyState.backoffFactor = 0;
         keyState.cooldownUntil = 0;
         return { success: true, data: parsed, usedModel: modelName };
       }
 
+      recordTranslationModelOutcome(modelName, true, Date.now() - reqStart);
       keyState.backoffFactor = 0;
       keyState.cooldownUntil = 0;
       return { success: true, data: textOutput.trim(), usedModel: modelName };
     } catch (err: unknown) {
+      if (stopSignal?.current || abortSignal?.aborted) {
+        return { success: false, aborted: true, retryable: true };
+      }
       const failure = classifyGeminiFailure(err);
       const errMsg = err instanceof Error ? err.message : String(err);
       lastErrorMsg = errMsg;
+      recordTranslationModelOutcome(modelName, false, Date.now() - reqStart, failure);
 
       console.warn(`[EPUB Gemini] Model ${modelName} (${failure}):`, errMsg);
 
@@ -2196,7 +2354,6 @@ export async function executeEpubFlashLiteWithKey(params: {
       }
 
       if (failure === 'NON_RETRYABLE') {
-        // Nếu model đầu từ chối hoặc gặp safety filter, vẫn cho model dự phòng thử lại trước khi bỏ cuộc
         continue;
       }
 
@@ -2226,7 +2383,7 @@ export async function executeEpubFlashLiteWithKey(params: {
 
 /**
  * Thực thi 1 request dịch trang PDF Digital bằng AI Vision (kèm ảnh trang + lớp text neo)
- * qua máy chủ (/api/gemini/generate), dùng chung bộ điều tiết RPM/RPD và cơ chế 3.5 -> 3.1 failover.
+ * dùng chung bộ điều tiết RPM/RPD và cơ chế tự thích nghi giữa 3.5 & 3.1 Flash Lite.
  */
 export async function executePdfVisionFlashLiteWithKey(params: {
   key: string;
@@ -2236,6 +2393,8 @@ export async function executePdfVisionFlashLiteWithKey(params: {
   imageMimeType?: string;
   responseSchema?: any;
   preferredModels?: string[];
+  timeoutMs?: number;
+  abortSignal?: AbortSignal;
   stopSignal?: { current: boolean };
 }): Promise<EpubFlashLiteCallResult> {
   const {
@@ -2246,6 +2405,8 @@ export async function executePdfVisionFlashLiteWithKey(params: {
     imageMimeType = 'image/jpeg',
     responseSchema,
     preferredModels,
+    timeoutMs,
+    abortSignal,
     stopSignal,
   } = params;
 
@@ -2253,7 +2414,7 @@ export async function executePdfVisionFlashLiteWithKey(params: {
   if (!cleanKey) {
     return { success: false, keyExhausted: true, retryable: true, error: 'API Key không hợp lệ.' };
   }
-  if (stopSignal?.current) {
+  if (stopSignal?.current || abortSignal?.aborted) {
     return { success: false, aborted: true, retryable: true };
   }
 
@@ -2267,7 +2428,8 @@ export async function executePdfVisionFlashLiteWithKey(params: {
 
   const keyState = refreshPersistedRpdState(cleanKey);
   const requestedChain = preferredModels?.length ? preferredModels : [...EPUB_MODEL_CHAIN];
-  const availableModels = requestedChain.filter((m) => !isChannelRpdExhausted(cleanKey, m));
+  const adaptivelyOrdered = orderTranslationModelsAdaptively(requestedChain);
+  const availableModels = adaptivelyOrdered.filter((m) => !isChannelRpdExhausted(cleanKey, m));
 
   if (keyState.isRpdExhausted || availableModels.length === 0) {
     return {
@@ -2290,13 +2452,14 @@ export async function executePdfVisionFlashLiteWithKey(params: {
   let allNonRetryable = true;
 
   for (const modelName of prioritizedModels) {
-    if (stopSignal?.current) {
+    if (stopSignal?.current || abortSignal?.aborted) {
       return { success: false, aborted: true, retryable: true };
     }
 
+    const reqStart = Date.now();
     try {
       await acquireRpmSlot(cleanKey, modelName);
-      if (stopSignal?.current) {
+      if (stopSignal?.current || abortSignal?.aborted) {
         return { success: false, aborted: true, retryable: true };
       }
 
@@ -2326,10 +2489,13 @@ export async function executePdfVisionFlashLiteWithKey(params: {
           },
         ],
         config,
+        timeoutMs,
+        abortSignal,
       });
 
       const textOutput = response?.text;
       if (!textOutput || !textOutput.trim()) {
+        recordTranslationModelOutcome(modelName, false, Date.now() - reqStart, 'TRANSIENT');
         lastErrorMsg = `Gemini Vision (${modelName}) trả về phản hồi rỗng.`;
         sawNonRateLimitRetryable = true;
         allNonRetryable = false;
@@ -2338,18 +2504,24 @@ export async function executePdfVisionFlashLiteWithKey(params: {
 
       if (responseSchema) {
         const parsed = parseEpubJsonOutput(textOutput);
+        recordTranslationModelOutcome(modelName, true, Date.now() - reqStart);
         keyState.backoffFactor = 0;
         keyState.cooldownUntil = 0;
         return { success: true, data: parsed, usedModel: modelName };
       }
 
+      recordTranslationModelOutcome(modelName, true, Date.now() - reqStart);
       keyState.backoffFactor = 0;
       keyState.cooldownUntil = 0;
       return { success: true, data: textOutput.trim(), usedModel: modelName };
     } catch (err: unknown) {
+      if (stopSignal?.current || abortSignal?.aborted) {
+        return { success: false, aborted: true, retryable: true };
+      }
       const failure = classifyGeminiFailure(err);
       const errMsg = err instanceof Error ? err.message : String(err);
       lastErrorMsg = errMsg;
+      recordTranslationModelOutcome(modelName, false, Date.now() - reqStart, failure);
 
       console.warn(`[PDF Vision Gemini] Model ${modelName} (${failure}):`, errMsg);
 
