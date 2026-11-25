@@ -12,7 +12,6 @@ import {
 } from '../types';
 import {
   buildTranslationChannelSlots,
-  EPUB_BACKUP_MODEL,
   EPUB_TRANSLATION_MODEL,
   executeEpubFlashLiteWithKey,
   executePdfVisionFlashLiteWithKey,
@@ -549,7 +548,7 @@ export async function runParallelPdfTranslation(
         const r = await translateTextItemsBatch(
           part,
           apiKey,
-          [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL],
+          [EPUB_TRANSLATION_MODEL],
           timeoutMs,
           abortSignal
         );
@@ -575,7 +574,7 @@ export async function runParallelPdfTranslation(
         const deltaRes = await translateTextItemsBatch(
           missingItems,
           apiKey,
-          [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL],
+          [EPUB_TRANSLATION_MODEL],
           timeoutMs,
           abortSignal
         );
@@ -712,16 +711,7 @@ export async function runParallelPdfTranslation(
             }
 
             const attemptsBefore = unitRetryCounts.get(unitIdx) || 0;
-            const preferredModels = isHedge
-              ? [
-                  slot.primaryModel === EPUB_TRANSLATION_MODEL
-                    ? EPUB_BACKUP_MODEL
-                    : EPUB_TRANSLATION_MODEL,
-                  slot.primaryModel,
-                ]
-              : attemptsBefore >= 1
-              ? [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL]
-              : slot.fallbackOrder;
+            const preferredModels = [EPUB_TRANSLATION_MODEL];
 
             const timeoutMs =
               unit.kind === 'vision-page'

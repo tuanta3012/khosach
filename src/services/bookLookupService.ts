@@ -799,41 +799,52 @@ export async function findBookCoverCandidates(
   const uniqueQueries = Array.from(new Set(queries.map((q) => q.trim()).filter(Boolean)));
 
   const allCandidates: BookCoverCandidate[] = [];
+  const intlTitle = origTitle || shortTitle || cleanTitle;
+  const intlAuthor = origAuthor || cleanAuthor;
+  const primaryGoodreadsQuery = uniqueQueries[0] || '';
+  const secondaryGoodreadsQuery = uniqueQueries[1] || '';
 
-  // 1. Ưu tiên Goodreads trước (tỷ lệ trúng bìa bản tiếng Việt cực cao)
-  for (const q of uniqueQueries.slice(0, 2)) {
-    const grResults = await searchGoodreadsCoverCandidates(q, cleanTitle, author, origTitle);
-    allCandidates.push(...grResults);
-    if (grResults.some((c) => c.score >= 85)) break;
+  // Chạy song song Goodreads (truy vấn chính) + Open Library + Apple Books + Google Books + Wikipedia
+  const primaryTasks: Array<Promise<BookCoverCandidate[]>> = [
+    ...(primaryGoodreadsQuery
+      ? [searchGoodreadsCoverCandidates(primaryGoodreadsQuery, cleanTitle, author, origTitle)]
+      : []),
+    searchOpenLibraryCoverCandidates(intlTitle, intlAuthor, isbn || undefined, origTitle),
+    searchAppleBooksCoverCandidates(
+      [intlTitle, intlAuthor].filter(Boolean).join(' '),
+      cleanTitle,
+      author,
+      origTitle ? undefined : 'vn',
+      origTitle
+    ),
+    searchGoogleBooksCoverCandidates(shortTitle || cleanTitle, cleanAuthor, isbn || undefined, origTitle),
+    searchWikipediaCoverCandidate(cleanTitle, author),
+  ];
+
+  const primarySettled = await Promise.all(primaryTasks);
+  for (const group of primarySettled) {
+    allCandidates.push(...group);
   }
 
-  // Nếu chưa chắc chắn (hoặc tìm đa nguồn cho modal chọn), quét thêm các nguồn quốc tế + Wikipedia song song
-  const needMoreSources = !allCandidates.some((c) => c.score >= 95);
-  if (needMoreSources) {
-    const intlTitle = origTitle || shortTitle || cleanTitle;
-    const intlAuthor = origAuthor || cleanAuthor;
+  // Chỉ gọi thêm Goodreads phụ/ASCII nếu vòng song song chưa có kết quả độ khớp cao (>= 82)
+  if (!allCandidates.some((c) => c.score >= 82)) {
     const asciiFallbackQuery = normalizedBookText([shortTitle || cleanTitle, cleanAuthor].filter(Boolean).join(' '));
-
-    const tasks: Array<Promise<BookCoverCandidate[]>> = [
-      searchOpenLibraryCoverCandidates(intlTitle, intlAuthor, isbn || undefined, origTitle),
-      searchAppleBooksCoverCandidates(
-        [intlTitle, intlAuthor].filter(Boolean).join(' '),
-        cleanTitle,
-        author,
-        origTitle ? undefined : 'vn',
-        origTitle
-      ),
-      searchGoogleBooksCoverCandidates(shortTitle || cleanTitle, cleanAuthor, isbn || undefined, origTitle),
-      searchWikipediaCoverCandidate(cleanTitle, author),
-    ];
-
-    if (allCandidates.length === 0 && asciiFallbackQuery && !uniqueQueries.some((q) => normalizedBookText(q) === asciiFallbackQuery)) {
-      tasks.push(searchGoodreadsCoverCandidates(asciiFallbackQuery, cleanTitle, author, origTitle));
+    const extraTasks: Array<Promise<BookCoverCandidate[]>> = [];
+    if (secondaryGoodreadsQuery) {
+      extraTasks.push(searchGoodreadsCoverCandidates(secondaryGoodreadsQuery, cleanTitle, author, origTitle));
     }
-
-    const settled = await Promise.all(tasks);
-    for (const group of settled) {
-      allCandidates.push(...group);
+    if (
+      allCandidates.length === 0 &&
+      asciiFallbackQuery &&
+      !uniqueQueries.some((q) => normalizedBookText(q) === asciiFallbackQuery)
+    ) {
+      extraTasks.push(searchGoodreadsCoverCandidates(asciiFallbackQuery, cleanTitle, author, origTitle));
+    }
+    if (extraTasks.length > 0) {
+      const extraSettled = await Promise.all(extraTasks);
+      for (const group of extraSettled) {
+        allCandidates.push(...group);
+      }
     }
   }
 

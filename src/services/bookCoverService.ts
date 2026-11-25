@@ -25,6 +25,7 @@ export interface PrecomputedCoverHint {
   originalTitle?: string;
   isbn?: string;
   searchQuery?: string;
+  alreadyAnalyzedByAi?: boolean;
 }
 
 export interface BatchFindCoversOptions {
@@ -50,10 +51,11 @@ export interface BatchFindCoversResult {
  */
 export async function pickFirstLoadableCover(
   candidates: BookCoverCandidate[],
-  maxProbe = 4
+  maxProbe = 4,
+  timeoutMs = 2800
 ): Promise<BookCoverCandidate | null> {
   for (const cand of candidates.slice(0, maxProbe)) {
-    const ok = await verifyCoverImageLoadable(cand.coverUrl, 4500);
+    const ok = await verifyCoverImageLoadable(cand.coverUrl, timeoutMs);
     if (ok) return cand;
   }
   return null;
@@ -218,7 +220,7 @@ export async function batchFindBookCovers(
     enrichSummary = true,
     useAiFallback = true,
     skipGrounding = false,
-    catalogWorkers = 8,
+    catalogWorkers = 12,
     precomputedHints,
     stopSignal,
     onProgress,
@@ -247,11 +249,16 @@ export async function batchFindBookCovers(
     return { updatedCount: 0, processedCount: 0, stopped: false };
   }
 
+  const batchStartedAt = Date.now();
   let totalFound = 0;
   let totalProcessed = 0;
   const pendingSaveBuffer: BookRecord[] = [];
   const foundIds = new Set<string>();
   const summaryMap = new Map<string, string>();
+
+  console.log(
+    `[CoverBatch] Bắt đầu tìm bìa: ${targetBooks.length} cuốn • workers=${catalogWorkers} • useAiFallback=${useAiFallback} • skipGrounding=${skipGrounding}`
+  );
 
   const flushSaves = async (force = false) => {
     if (pendingSaveBuffer.length === 0) return;
@@ -276,6 +283,7 @@ export async function batchFindBookCovers(
   };
 
   // === VÒNG 1: TRA CỨU THƯ MỤC MỞ MIỄN PHÍ SONG SONG ===
+  const v1StartedAt = Date.now();
   let catalogIdx = 0;
   const CATALOG_WORKERS = Math.max(1, Math.min(catalogWorkers, targetBooks.length));
 
@@ -299,7 +307,7 @@ export async function batchFindBookCovers(
           ...(preHint?.isbn ? { isbn: preHint.isbn } : {}),
           ...(preHint?.searchQuery ? { altSearchQuery: preHint.searchQuery } : {}),
         });
-        const best = await pickFirstLoadableCover(candidates, 2);
+        const best = await pickFirstLoadableCover(candidates, 2, 2400);
         if (best) {
           await recordBookCover(book, best.coverUrl);
         }
@@ -321,6 +329,11 @@ export async function batchFindBookCovers(
   await Promise.all(Array.from({ length: CATALOG_WORKERS }, () => runCatalogWorker()));
   await flushSaves(true);
 
+  console.log(
+    `[CoverBatch] Xong Vòng 1 (catalog) sau ${((Date.now() - v1StartedAt) / 1000).toFixed(1)}s: ` +
+      `khớp ${totalFound}/${targetBooks.length} cuốn`
+  );
+
   if (stopSignal?.current) {
     return {
       updatedCount: totalFound,
@@ -335,16 +348,20 @@ export async function batchFindBookCovers(
     const missingSummary = enrichSummary && (!b.summary || !b.summary.trim());
     if (missingSummary) return true;
     if (!missingCover) return false;
-    // Nếu Phase 1 đã cung cấp sẵn originalTitle/isbn thì không cần gọi lại AI hint cho cuốn này
+    // Nếu Phase 1 (batchNormalize) đã phân tích cuốn này rồi hoặc đã có hint thì không gọi AI hint lặp lại
     const pre = precomputedHints?.get(b.id);
-    return !(pre && (pre.originalTitle || pre.isbn));
+    if (pre?.alreadyAnalyzedByAi || pre?.originalTitle || pre?.isbn) {
+      return false;
+    }
+    return true;
   });
-  if (useAiFallback && (remainingBooks.length > 0 || targetBooks.some((b) => !foundIds.has(b.id))) && (await ensureGeminiAccessAvailable())) {
+
+  if (useAiFallback && (remainingBooks.length > 0 || (!skipGrounding && targetBooks.some((b) => !foundIds.has(b.id)))) && (await ensureGeminiAccessAvailable())) {
     const keys = getEffectiveGeminiKeys();
     const concurrency = getSafeAiConcurrency(keys.length, 12);
 
-    // Vòng 2: Giải mã tên gốc quốc tế / từ khóa sạch / ISBN + Tóm tắt nội dung theo lô 8 cuốn
-    const CHUNK_SIZE = 8;
+    // Vòng 2: Giải mã tên gốc quốc tế / từ khóa sạch / ISBN + Tóm tắt nội dung theo lô 10 cuốn
+    const CHUNK_SIZE = 10;
     const chunks: BookRecord[][] = [];
     for (let i = 0; i < remainingBooks.length; i += CHUNK_SIZE) {
       chunks.push(remainingBooks.slice(i, i + CHUNK_SIZE));
@@ -352,9 +369,16 @@ export async function batchFindBookCovers(
 
     let chunkCursor = 0;
     let aiProcessed = 0;
+    const v2StartedAt = Date.now();
+    if (chunks.length > 0) {
+      console.log(
+        `[CoverBatch] Vòng 2 (AI hints): ${remainingBooks.length} cuốn -> ${chunks.length} lô với ${Math.min(concurrency, chunks.length)} luồng`
+      );
+    }
 
     const runAiHintWorker = async (workerIdx: number) => {
-      const staggerMs = keys.length >= 4 ? 220 : 500;
+      const pinnedKey = keys.length > 0 ? keys[workerIdx % keys.length] : undefined;
+      const staggerMs = keys.length >= 4 ? 120 : 300;
       if (workerIdx > 0) {
         await new Promise((r) => setTimeout(r, workerIdx * staggerMs));
       }
@@ -366,7 +390,8 @@ export async function batchFindBookCovers(
         const chunk = chunks[cIdx];
         const hints = await resolveBookCoverQueriesBatch(
           chunk.map((b) => ({ id: b.id, title: b.title, author: b.author, publisher: b.publisher })),
-          stopSignal
+          stopSignal,
+          pinnedKey
         );
         const hintMap = new Map(hints.map((h) => [h.id, h]));
 
@@ -385,7 +410,7 @@ export async function batchFindBookCovers(
                 isbn: hint.isbn,
                 skipCache: true,
               });
-              const best = await pickFirstLoadableCover(candidates, 2);
+              const best = await pickFirstLoadableCover(candidates, 2, 2400);
               if (best) {
                 await recordBookCover(book, best.coverUrl, hint.summary);
               }
@@ -406,17 +431,23 @@ export async function batchFindBookCovers(
     if (chunks.length > 0) {
       await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, (_, i) => runAiHintWorker(i)));
       await flushSaves(true);
+      console.log(
+        `[CoverBatch] Xong Vòng 2 sau ${((Date.now() - v2StartedAt) / 1000).toFixed(1)}s • Tổng khớp=${totalFound} bìa`
+      );
     }
 
-    // Vòng 3: Google Search Grounding cho các sách Việt Nam đặc thù vẫn còn thiếu
+    // Vòng 3: Google Search Grounding (chỉ chạy khi không skipGrounding)
     const stillMissing = targetBooks.filter((b) => !foundIds.has(b.id));
     if (!skipGrounding && !stopSignal?.current && stillMissing.length > 0) {
+      const v3StartedAt = Date.now();
       let groundCursor = 0;
       let groundProcessed = 0;
-      const groundWorkers = Math.max(1, Math.min(keys.length * 2, 10, stillMissing.length));
+      const groundWorkers = Math.max(1, Math.min(keys.length, 6, stillMissing.length));
+      console.log(`[CoverBatch] Vòng 3 (AI Grounding): ${stillMissing.length} cuốn với ${groundWorkers} luồng`);
 
       const runGroundWorker = async (wIdx: number) => {
-        if (wIdx > 0) await new Promise((r) => setTimeout(r, wIdx * 260));
+        const pinnedKey = keys.length > 0 ? keys[wIdx % keys.length] : undefined;
+        if (wIdx > 0) await new Promise((r) => setTimeout(r, wIdx * 150));
         while (groundCursor < stillMissing.length) {
           if (stopSignal?.current) break;
           const gIdx = groundCursor++;
@@ -428,7 +459,8 @@ export async function batchFindBookCovers(
               book.title,
               book.author || '',
               book.publisher || '',
-              stopSignal
+              stopSignal,
+              pinnedKey
             );
 
             const extraCandidates: BookCoverCandidate[] = [];
@@ -468,7 +500,7 @@ export async function batchFindBookCovers(
               }
             }
 
-            const verified = await pickFirstLoadableCover(extraCandidates, 3);
+            const verified = await pickFirstLoadableCover(extraCandidates, 3, 2600);
             if (verified) {
               await recordBookCover(book, verified.coverUrl, summaryMap.get(book.id));
             }
@@ -487,6 +519,9 @@ export async function batchFindBookCovers(
 
       await Promise.all(Array.from({ length: groundWorkers }, (_, i) => runGroundWorker(i)));
       await flushSaves(true);
+      console.log(
+        `[CoverBatch] Xong Vòng 3 sau ${((Date.now() - v3StartedAt) / 1000).toFixed(1)}s • Tổng khớp=${totalFound} bìa`
+      );
     }
   }
 
@@ -506,6 +541,11 @@ export async function batchFindBookCovers(
     }
     await flushSaves(true);
   }
+
+  console.log(
+    `[CoverBatch] Hoàn tất sau ${((Date.now() - batchStartedAt) / 1000).toFixed(1)}s: ` +
+      `đã cập nhật ${totalFound}/${targetBooks.length} bìa (NONE=${targetBooks.length - totalFound})`
+  );
 
   onProgress?.({
     phase: 'done',

@@ -16,6 +16,7 @@ import {
   getPendingBookMutations,
   DEFAULT_CATEGORIES,
   clearAllLocalBooks,
+  resolveNormalizeFields,
 } from './utils/localBooksStorage';
 import { resolveCategoryForSave, syncCategoriesWithBooks } from './utils/categoryMatcher';
 import { Navbar, NavTabType } from './components/Navbar';
@@ -264,6 +265,7 @@ export default function App() {
   const isAutoFetchingCoversRef = useRef(false);
   const autoNormalizeRunningRef = useRef(false);
   const autoNormalizeStopRef = useRef(false);
+  const autoNormalizeAbortControllerRef = useRef<AbortController | null>(null);
   const syncWithGoogleDriveRef = useRef<
     ((currentBooks: BookRecord[], options?: { skipAutoCoverCheck?: boolean }) => Promise<BookRecord[]>) | null
   >(null);
@@ -395,6 +397,8 @@ export default function App() {
           overwriteExisting: false,
           enrichSummary: false,
           useAiFallback: true,
+          skipGrounding: true,
+          catalogWorkers: 12,
           onChunkSave: async (chunk) => {
             if (!chunk || chunk.length === 0) return;
             hasLocalUpdates = true;
@@ -1261,6 +1265,10 @@ export default function App() {
   useEffect(() => {
     if (!settings.autoNormalizeEnabled) {
       autoNormalizeStopRef.current = true;
+      if (autoNormalizeAbortControllerRef.current) {
+        autoNormalizeAbortControllerRef.current.abort();
+        autoNormalizeAbortControllerRef.current = null;
+      }
       return;
     }
     if (
@@ -1272,8 +1280,17 @@ export default function App() {
       return;
     }
 
+    const activeFields = resolveNormalizeFields(settings.normalizeFields);
     const pending = books.filter((book) => {
-      if (book.is_ai_normalized) return false;
+      if (book.is_ai_normalized) {
+        let needsField = false;
+        if (activeFields.includes('summary') && !book.summary?.trim()) needsField = true;
+        if (activeFields.includes('cover_url') && (!book.cover_url?.trim() || book.cover_url.trim().toUpperCase() === 'NONE')) needsField = true;
+        if (activeFields.includes('category') && (!book.category?.trim() || book.category.trim() === 'Chung')) needsField = true;
+        if (activeFields.includes('author') && !book.author?.trim()) needsField = true;
+        if (activeFields.includes('publisher') && !book.publisher?.trim()) needsField = true;
+        if (!needsField) return false;
+      }
       const attemptKey = `${book.id}::${book.updated_at || 0}::${book.title}::${book.author || ''}`;
       return !autoNormalizeAttemptsRef.current.has(attemptKey);
     });
@@ -1281,18 +1298,33 @@ export default function App() {
 
     const runAutoNormalize = async () => {
       if (autoNormalizeRunningRef.current) return;
+      const abortController = new AbortController();
+      autoNormalizeAbortControllerRef.current = abortController;
       autoNormalizeRunningRef.current = true;
       autoNormalizeStopRef.current = false;
       isBatchTaskActiveRef.current = true;
       setIsAutoNormalizing(true);
 
+      const autoStartedAt = Date.now();
       let hasUpdatedBooks = false;
       let autoProposalsAdded = 0;
       const coverHintsMap = new Map<string, PrecomputedCoverHint>();
       const booksNeedingCoverMap = new Map<string, BookRecord>();
       const pendingProposalBookIds = new Set<string>();
 
+      const activeFields = resolveNormalizeFields(settings.normalizeFields);
+      const applyTitle = activeFields.includes('title');
+      const applyAuthor = activeFields.includes('author');
+      const applyCategory = activeFields.includes('category');
+      const applyPublisher = activeFields.includes('publisher');
+      const applySummary = activeFields.includes('summary');
+      const applyCover = activeFields.includes('cover_url');
+
       try {
+        console.log(
+          `[AutoNormalize] Bắt đầu hiệu chỉnh tự động ngầm ${pending.length} cuốn • ` +
+            `trường=[${activeFields.join(', ')}] • model=gemini-3.5-flash-lite...`
+        );
         pending.forEach((book) => {
           const attemptKey = `${book.id}::${book.updated_at || 0}::${book.title}::${book.author || ''}`;
           autoNormalizeAttemptsRef.current.add(attemptKey);
@@ -1300,7 +1332,9 @@ export default function App() {
 
         const result = await batchNormalize(pending, {
           categories: settings.categoriesList,
+          normalizeFields: activeFields,
           stopSignal: autoNormalizeStopRef,
+          abortSignal: abortController.signal,
           onChunkComplete: async (normalizedChunk) => {
             if (!normalizedChunk || normalizedChunk.length === 0) return;
             const currentLocal = loadLocalBooks();
@@ -1317,21 +1351,20 @@ export default function App() {
               const origTitleTrim = (orig.title || '').trim();
               const origAuthorTrim = (orig.author || '').trim();
 
-              const titleMeaningfullyChanged = isMeaningfulChange(origTitleTrim, normTitle, false);
-              const authorMeaningfullyChanged = isMeaningfulChange(origAuthorTrim, normAuthor, true);
+              const titleMeaningfullyChanged = applyTitle && isMeaningfulChange(origTitleTrim, normTitle, false);
+              const authorMeaningfullyChanged = applyAuthor && isMeaningfulChange(origAuthorTrim, normAuthor, true);
 
-              const nextTitle = titleMeaningfullyChanged ? orig.title : (normTitle || orig.title);
-              const nextAuthor = authorMeaningfullyChanged ? orig.author : (normAuthor || orig.author);
-              const nextPublisher = (found.publisher || orig.publisher || '').trim();
-              const nextCategory = (found.category || orig.category || 'Chung').trim();
-              const nextSummary = (found.summary || orig.summary || '').trim();
+              const nextTitle = !applyTitle ? orig.title : (titleMeaningfullyChanged ? orig.title : (normTitle || orig.title));
+              const nextAuthor = !applyAuthor ? orig.author : (authorMeaningfullyChanged ? orig.author : (normAuthor || orig.author));
+              const nextPublisher = applyPublisher ? (found.publisher || orig.publisher || '').trim() : (orig.publisher || '');
+              const nextCategory = applyCategory ? (found.category || orig.category || 'Chung').trim() : (orig.category || 'Chung');
+              const nextSummary = applySummary ? (found.summary || orig.summary || '').trim() : (orig.summary || '');
 
-              if (found.originalTitle || found.isbn) {
-                coverHintsMap.set(orig.id, {
-                  ...(found.originalTitle ? { originalTitle: String(found.originalTitle).trim() } : {}),
-                  ...(found.isbn ? { isbn: String(found.isbn).trim() } : {}),
-                });
-              }
+              coverHintsMap.set(orig.id, {
+                alreadyAnalyzedByAi: true,
+                ...(found.originalTitle ? { originalTitle: String(found.originalTitle).trim() } : {}),
+                ...(found.isbn ? { isbn: String(found.isbn).trim() } : {}),
+              });
 
               const existingCover = (orig.cover_url || '').trim();
               const hasValidExistingCover = Boolean(existingCover && existingCover.toUpperCase() !== 'NONE');
@@ -1367,7 +1400,7 @@ export default function App() {
                 });
               }
 
-              if (!hasValidExistingCover) {
+              if (applyCover && !hasValidExistingCover) {
                 booksNeedingCoverMap.set(orig.id, {
                   ...updatedBook,
                   title: normTitle || nextTitle,
@@ -1390,15 +1423,22 @@ export default function App() {
           },
         });
 
-        // Pha 2: Tự động tìm bìa song song cho các cuốn vừa hiệu chỉnh chưa có ảnh bìa
-        const missingCoverTargets = Array.from(booksNeedingCoverMap.values());
-        if (!autoNormalizeStopRef.current && missingCoverTargets.length > 0) {
-          await batchFindBookCovers(missingCoverTargets, {
+        console.log(
+          `[AutoNormalize] Xong pha 1 sau ${((Date.now() - autoStartedAt) / 1000).toFixed(1)}s: ` +
+            `chuẩn hóa=${result.normalized.length}, đề xuất=${autoProposalsAdded}, thiếu bìa=${booksNeedingCoverMap.size}`
+        );
+
+        // Pha 2: Tự động tìm bìa song song qua thư mục mở cho các cuốn vừa hiệu chỉnh chưa có ảnh bìa (chỉ khi có chọn cover_url)
+        const missingCoverTargets = applyCover ? Array.from(booksNeedingCoverMap.values()) : [];
+        if (applyCover && !autoNormalizeStopRef.current && !abortController.signal.aborted && missingCoverTargets.length > 0) {
+          const phase2Started = Date.now();
+          const coverRes = await batchFindBookCovers(missingCoverTargets, {
             overwriteExisting: false,
             enrichSummary: false,
-            useAiFallback: true,
+            useAiFallback: false,
+            skipGrounding: true,
             precomputedHints: coverHintsMap,
-            catalogWorkers: 8,
+            catalogWorkers: 12,
             stopSignal: autoNormalizeStopRef,
             onChunkSave: async (coverUpdates) => {
               if (!coverUpdates || coverUpdates.length === 0) return;
@@ -1428,6 +1468,9 @@ export default function App() {
               setBooks(saved);
             },
           });
+          console.log(
+            `[AutoNormalize] Xong pha 2 (bìa) sau ${((Date.now() - phase2Started) / 1000).toFixed(1)}s: cập nhật ${coverRes.updatedCount} bìa`
+          );
         }
 
         if (autoProposalsAdded > 0) {
@@ -1437,19 +1480,26 @@ export default function App() {
             'info'
           );
         } else if (result.normalized.length > 0) {
-          console.log(`[AutoNormalize] Đã tự động hiệu chỉnh ${result.normalized.length} cuốn sách.`);
+          console.log(
+            `[AutoNormalize] Hoàn tất ${result.normalized.length} cuốn trong ${((Date.now() - autoStartedAt) / 1000).toFixed(1)}s.`
+          );
         }
-        if (result.failedChunks.length > 0 && !autoNormalizeStopRef.current) {
+        if (result.failedChunks.length > 0 && !autoNormalizeStopRef.current && !abortController.signal.aborted) {
           const failedCount = result.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0);
           showToast(`Tự động hiệu chỉnh chưa xử lý được ${failedCount} cuốn. Có thể thử lại thủ công trong Cài đặt.`, 'warning');
         }
       } catch (err) {
-        console.error('[AutoNormalize] Lỗi chuẩn hóa tự động ngầm:', err);
-        showToast(`Tự động hiệu chỉnh sách thất bại: ${err instanceof Error ? err.message : String(err)}`, 'warning');
+        if (autoNormalizeStopRef.current || abortController.signal.aborted) {
+          console.log('[AutoNormalize] Đã dừng theo yêu cầu.');
+        } else {
+          console.error('[AutoNormalize] Lỗi chuẩn hóa tự động ngầm:', err);
+          showToast(`Tự động hiệu chỉnh sách thất bại: ${err instanceof Error ? err.message : String(err)}`, 'warning');
+        }
       } finally {
         autoNormalizeRunningRef.current = false;
         isBatchTaskActiveRef.current = false;
         setIsAutoNormalizing(false);
+        autoNormalizeAbortControllerRef.current = null;
 
         if (hasUpdatedBooks) {
           const isOnlineMode = (() => {
@@ -1470,7 +1520,7 @@ export default function App() {
       void runAutoNormalize();
     }, 1800);
     return () => clearTimeout(timer);
-  }, [books, settings.autoNormalizeEnabled, isAutoNormalizing, isLoading, settings.categoriesList, showToast]);
+  }, [books, settings.autoNormalizeEnabled, settings.normalizeFields, isAutoNormalizing, isLoading, settings.categoriesList, showToast]);
 
   // Kiểm tra cập nhật thủ công khi người dùng bấm nút (Chỉ khả dụng ở bản APK)
   const handleManualCheckUpdates = async () => {

@@ -1,4 +1,4 @@
-import { BookRecord, LibrarySettings } from '../types';
+import { BookRecord, DEFAULT_NORMALIZE_FIELDS, LibrarySettings, NormalizeFieldKey } from '../types';
 import { getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from '../services/geminiService';
 
 export const BOOKS_STORAGE_KEY = 'local_books_cache_v2';
@@ -75,10 +75,27 @@ function resolveExpandedCategories(stored?: unknown): string[] {
   return cleanStored;
 }
 
+const VALID_NORMALIZE_FIELDS = new Set<NormalizeFieldKey>(DEFAULT_NORMALIZE_FIELDS);
+
+export function resolveNormalizeFields(raw?: unknown): NormalizeFieldKey[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return [...DEFAULT_NORMALIZE_FIELDS];
+  }
+  const clean = Array.from(
+    new Set(
+      raw.filter((item): item is NormalizeFieldKey =>
+        typeof item === 'string' && VALID_NORMALIZE_FIELDS.has(item as NormalizeFieldKey)
+      )
+    )
+  );
+  return clean.length > 0 ? clean : [...DEFAULT_NORMALIZE_FIELDS];
+}
+
 export const DEFAULT_SETTINGS: LibrarySettings = {
   autoEnrichEnabled: false,
   categoriesList: DEFAULT_CATEGORIES,
   autoNormalizeEnabled: false,
+  normalizeFields: [...DEFAULT_NORMALIZE_FIELDS],
 };
 
 /**
@@ -381,12 +398,15 @@ export function loadLocalSettings(): LibrarySettings {
         ...DEFAULT_SETTINGS,
         ...parsed,
         geminiApiKeys: keys,
-        autoNormalizeEnabled: parsed.autoNormalizeEnabled ?? false,
+        autoNormalizeEnabled: parsed.autoNormalizeEnabled === true,
+        normalizeFields: resolveNormalizeFields(parsed.normalizeFields),
         categoriesList: resolveExpandedCategories(parsed.categoriesList),
       };
     } else if (storedKeys.length > 0) {
       return {
         ...DEFAULT_SETTINGS,
+        autoNormalizeEnabled: false,
+        normalizeFields: [...DEFAULT_NORMALIZE_FIELDS],
         geminiApiKeys: storedKeys,
       };
     }

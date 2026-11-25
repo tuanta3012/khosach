@@ -37,6 +37,32 @@ export interface AuthUser {
   userRole: UserRole;
 }
 
+export type NormalizeFieldKey =
+  | 'title'
+  | 'author'
+  | 'publisher'
+  | 'category'
+  | 'summary'
+  | 'cover_url';
+
+export const DEFAULT_NORMALIZE_FIELDS: NormalizeFieldKey[] = [
+  'title',
+  'author',
+  'publisher',
+  'category',
+  'summary',
+  'cover_url',
+];
+
+export const NORMALIZE_FIELD_OPTIONS: Array<{ key: NormalizeFieldKey; label: string }> = [
+  { key: 'title', label: 'Tên sách' },
+  { key: 'author', label: 'Tác giả' },
+  { key: 'publisher', label: 'Nhà xuất bản' },
+  { key: 'category', label: 'Thể loại' },
+  { key: 'summary', label: 'Tóm tắt' },
+  { key: 'cover_url', label: 'Ảnh bìa' },
+];
+
 export interface Settings {
   autoEnrichEnabled?: boolean;
   driveBackupFolder?: string;
@@ -46,6 +72,7 @@ export interface Settings {
   lastBackupTime?: string;
   categoriesList?: string[];
   autoNormalizeEnabled?: boolean;
+  normalizeFields?: NormalizeFieldKey[];
   geminiApiKeys: string[];
   selectedModel?: string;
 }
@@ -59,6 +86,7 @@ export interface LibrarySettings {
   lastBackupTime?: string;
   categoriesList: string[];
   autoNormalizeEnabled?: boolean;
+  normalizeFields?: NormalizeFieldKey[];
   geminiApiKeys?: string[];
   selectedModel?: string;
 }
@@ -72,8 +100,7 @@ export interface DriveBackupPayload {
 
 export type GeminiModelId = 
   | 'auto' 
-  | 'gemini-3.5-flash-lite' 
-  | 'gemini-3.1-flash-lite';
+  | 'gemini-3.5-flash-lite';
 
 export interface GeminiModelInfo {
   id: GeminiModelId;

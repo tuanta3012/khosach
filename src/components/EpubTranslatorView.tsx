@@ -33,7 +33,6 @@ import {
   PdfOutputFormat,
 } from '../types';
 import {
-  EPUB_BACKUP_MODEL,
   EPUB_TRANSLATION_MODEL,
   getEpubKeyDiagnostics,
   refreshServerGeminiStatus,
@@ -246,7 +245,7 @@ export const EpubTranslatorView: React.FC = () => {
                 <span className="truncate">
                   {keyDiag.totalKeys === 0
                     ? `Chưa có API Key (Cài đặt ⚙️)`
-                    : `${keyDiag.readyKeys}/${keyDiag.totalKeys} Key · ${EPUB_TRANSLATION_MODEL} / ${EPUB_BACKUP_MODEL}`}
+                    : `${keyDiag.readyKeys}/${keyDiag.totalKeys} Key · ${EPUB_TRANSLATION_MODEL}`}
                 </span>
               </div>
             </div>

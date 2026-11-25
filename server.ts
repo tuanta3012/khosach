@@ -7,7 +7,6 @@ import { GoogleGenAI } from '@google/genai';
 const PORT = Number(process.env.PORT) || 3000;
 const ALLOWED_MODELS = new Set([
   'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
   'gemini-4-hydrogen',
   'gemini-4-neon',
   'gemini-4-carbon',
@@ -73,7 +72,12 @@ async function acquireServerRpmSlot(
     releaseMutex = resolve;
   });
 
-  await prevMutex;
+  try {
+    await Promise.race([
+      prevMutex,
+      new Promise<void>((resolve) => setTimeout(resolve, 8_000)),
+    ]);
+  } catch {}
 
   let slotIndex = -1;
   try {
@@ -178,7 +182,7 @@ function getErrorText(err: unknown): string {
   }
 }
 
-type FailureKind = 'RPD' | 'RPM' | 'AUTH' | 'NON_RETRYABLE' | 'TRANSIENT' | 'OTHER';
+type FailureKind = 'RPD' | 'RPM' | 'AUTH' | 'MODEL_NOT_FOUND' | 'NON_RETRYABLE' | 'TRANSIENT' | 'OTHER';
 
 function classifyGeminiError(err: unknown): FailureKind {
   const errMsg = getErrorText(err);
@@ -191,7 +195,10 @@ function classifyGeminiError(err: unknown): FailureKind {
   if (/api.?key.?not.?valid|invalid api key|api_key_invalid|api.?key.?expired|api_key_expired|unauthenticated|permission_denied|http.?401|http.?403/.test(errMsg)) {
     return 'AUTH';
   }
-  if (/gemini_non_retryable|safety|recitation|blocked by|prompt was blocked/.test(errMsg)) {
+  if (/is not found for api version|not supported for generatecontent|models\/[^"'\s]+ is not found|\b404\b|not_found/.test(errMsg)) {
+    return 'MODEL_NOT_FOUND';
+  }
+  if (/gemini_non_retryable|safety|recitation|blocked by|prompt was blocked|invalid_argument|\b400\b/.test(errMsg)) {
     return 'NON_RETRYABLE';
   }
   if (/429|resource_exhausted|rate.?limit|too many requests|quota exceeded/.test(errMsg)) {
@@ -265,7 +272,7 @@ async function startServer() {
     });
   });
 
-  // 2. Kiểm tra tính hợp lệ của Key qua máy chủ (thử 3.5 -> dự phòng 3.1)
+  // 2. Kiểm tra tính hợp lệ của Key qua máy chủ (chỉ dùng gemini-3.5-flash-lite)
   app.post('/api/gemini/test-key', async (req: Request, res: Response) => {
     const candidateKey = typeof req.body?.key === 'string' ? req.body.key.trim() : '';
     const apiKey = candidateKey || getServerGeminiKeys()[0] || '';
@@ -279,7 +286,7 @@ async function startServer() {
       return;
     }
 
-    const probeModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'] as const;
+    const probeModels = ['gemini-3.5-flash-lite'] as const;
     let lastFailureKind: FailureKind = 'OTHER';
     let lastErrMessage = 'Key lỗi. Chờ hoặc thay key mới.';
 
@@ -297,10 +304,7 @@ async function startServer() {
         if (response?.text) {
           res.json({
             success: true,
-            message:
-              modelName === 'gemini-3.5-flash-lite'
-                ? 'Key hoạt động tốt.'
-                : 'Key hoạt động tốt (dự phòng 3.1).',
+            message: 'Key hoạt động tốt (gemini-3.5-flash-lite).',
           });
           return;
         }
@@ -444,8 +448,10 @@ async function startServer() {
           ? 401
           : failureKind === 'RPM' || failureKind === 'RPD'
           ? 429
+          : failureKind === 'MODEL_NOT_FOUND'
+          ? 404
           : failureKind === 'NON_RETRYABLE'
-          ? 422
+          ? 400
           : 502;
       res.status(status).json({
         error: errMsg,

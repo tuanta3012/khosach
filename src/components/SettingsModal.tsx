@@ -25,12 +25,21 @@ import {
   ChevronUp,
   Pencil,
 } from 'lucide-react';
-import { LibrarySettings, BookRecord, AuthUser, BookSource } from '../types';
+import {
+  LibrarySettings,
+  BookRecord,
+  AuthUser,
+  BookSource,
+  NormalizeFieldKey,
+  NORMALIZE_FIELD_OPTIONS,
+  DEFAULT_NORMALIZE_FIELDS,
+} from '../types';
 import { useToast } from '../context/ToastContext';
 import { CURRENT_APP_VERSION } from '../version';
 import { batchNormalize } from '../utils/geminiService';
 import {
   getStoredGeminiApiKeys,
+  getEffectiveGeminiKeys,
   saveStoredGeminiApiKeys,
   testGeminiApiKey,
   testAllGeminiApiKeys,
@@ -52,7 +61,7 @@ import {
   fetchUserApiKeysFromSheetConfig,
 } from '../services/driveSyncService';
 import { getAccessToken } from '../services/googleAuthService';
-import { saveAllLocalBooks } from '../utils/localBooksStorage';
+import { saveAllLocalBooks, resolveNormalizeFields } from '../utils/localBooksStorage';
 import {
   recordApprovedProposalsAndHotReload,
   recordKeptDuplicatesAndHotReload,
@@ -144,18 +153,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [currentBatchText, setCurrentBatchText] = useState('');
   const [, setProcessedCount] = useState(0);
   const stopNormalizingRef = useRef(false);
+  const normalizeAbortControllerRef = useRef<AbortController | null>(null);
 
-  // Trạng thái Đã AI lấy trực tiếp theo cột G (is_ai_normalized):
-  // Đã hiệu chỉnh xong -> ghi Đã AI = Có để không hiệu chỉnh lại hàng loạt trừ khi bấm "Làm lại"
-  const isBookComplete = (b: BookRecord) => Boolean(b.is_ai_normalized);
+  // Mặc định tính năng AI tự động luôn là OFF khi cài app mới
+  const [autoNormalize, setAutoNormalize] = useState<boolean>(() => !!settings.autoNormalizeEnabled);
+
+  // Danh sách các trường dữ liệu được chọn để hiệu chỉnh AI
+  const [selectedNormalizeFields, setSelectedNormalizeFields] = useState<NormalizeFieldKey[]>(() => {
+    return resolveNormalizeFields(settings.normalizeFields);
+  });
+
+  useEffect(() => {
+    setSelectedNormalizeFields(resolveNormalizeFields(settings.normalizeFields));
+  }, [settings.normalizeFields, isOpen]);
+
+  // Trạng thái hoàn tất theo các trường được chọn:
+  // Một cuốn sách tính là hoàn tất nếu đã qua AI (is_ai_normalized = true)
+  // VÀ không bị thiếu dữ liệu ở các trường người dùng đang chọn hiệu chỉnh
+  const isBookComplete = (b: BookRecord) => {
+    if (!b.is_ai_normalized) return false;
+    if (selectedNormalizeFields.includes('summary') && !b.summary?.trim()) return false;
+    if (selectedNormalizeFields.includes('cover_url') && (!b.cover_url?.trim() || b.cover_url.trim().toUpperCase() === 'NONE')) return false;
+    if (selectedNormalizeFields.includes('category') && (!b.category?.trim() || b.category.trim() === 'Chung')) return false;
+    if (selectedNormalizeFields.includes('author') && !b.author?.trim()) return false;
+    if (selectedNormalizeFields.includes('publisher') && !b.publisher?.trim()) return false;
+    return true;
+  };
 
   const totalBooks = books.length;
   const normalizedCount = books.filter(isBookComplete).length;
   const pendingBooks = books.filter((b) => !isBookComplete(b));
   const activeReviewCount = reviewProposals ? reviewProposals.length : (pendingReviewCount || pendingReviewAccumulatorRef.current.length);
-
-  // Mặc định tính năng AI tự động luôn là OFF khi cài app mới
-  const [autoNormalize, setAutoNormalize] = useState<boolean>(() => !!settings.autoNormalizeEnabled);
 
   useEffect(() => {
     const syncPendingReviews = () => {
@@ -174,9 +202,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setAutoNormalize(!!settings.autoNormalizeEnabled);
   }, [settings.autoNormalizeEnabled, isOpen]);
 
+  useEffect(() => {
+    if (!isOpen && normalizeAbortControllerRef.current) {
+      normalizeAbortControllerRef.current.abort();
+      normalizeAbortControllerRef.current = null;
+      stopNormalizingRef.current = true;
+      setIsNormalizing(false);
+    }
+  }, [isOpen]);
+
   const handleToggleAutoNormalize = async (val: boolean) => {
     setAutoNormalize(val);
     await onSaveSettings({ ...settings, autoNormalizeEnabled: val });
+  };
+
+  const handleToggleNormalizeField = async (fieldKey: NormalizeFieldKey) => {
+    const exists = selectedNormalizeFields.includes(fieldKey);
+    let updated: NormalizeFieldKey[];
+    if (exists) {
+      if (selectedNormalizeFields.length === 1) {
+        showToast('Vui lòng chọn ít nhất 1 trường để hiệu chỉnh!', 'warning');
+        return;
+      }
+      updated = selectedNormalizeFields.filter((f) => f !== fieldKey);
+    } else {
+      updated = [...selectedNormalizeFields, fieldKey];
+    }
+    setSelectedNormalizeFields(updated);
+    await onSaveSettings({ ...settings, normalizeFields: updated });
   };
 
   // States cho danh sách Gemini API Keys cá nhân (hoàn toàn do người dùng nhập, không có key mặc định)
@@ -202,6 +255,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [apiKeys, setApiKeys] = useState<string[]>(() => {
     return getCleanKeys();
   });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const latest = getCleanKeys();
+    if (latest.length > 0 && apiKeys.length === 0) {
+      setApiKeys(latest);
+    }
+  }, [isOpen, settings.geminiApiKeys]);
 
   const [testingKeysMap, setTestingKeysMap] = useState<Record<string, boolean>>({});
   const [testResultsMap, setTestResultsMap] = useState<Record<string, { success: boolean; message: string }>>({});
@@ -375,21 +436,61 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!isOpen) return null;
 
   const handleStartNormalize = async () => {
-    if (!onBatchUpdateBooks || pendingBooks.length === 0) return;
+    console.log(
+      `[Normalize] Bấm "Hiệu chỉnh thủ công": total=${books.length}, pending=${pendingBooks.length}, ` +
+        `localKeys=${apiKeys.length}, role=${currentUser?.userRole || 'none'}, isNormalizing=${isNormalizing}`
+    );
 
-    // Đảm bảo đồng bộ API Keys vào storage trước khi chạy
-    let storedKeys = getStoredGeminiApiKeys();
-    if (storedKeys.length === 0 && apiKeys.length > 0) {
-      saveStoredGeminiApiKeys(apiKeys);
-      storedKeys = getStoredGeminiApiKeys();
-    }
+    if (isNormalizing) return;
 
-    const hasAccess = storedKeys.length > 0 || (await ensureGeminiAccessAvailable());
-    if (!hasAccess) {
-      showToast('Vui lòng thêm và lưu ít nhất 1 Gemini API Key trước khi hiệu chỉnh kho!', 'warning');
+    if (currentUser?.userRole === 'VIEWER') {
+      showToast('Tài khoản Xem (Viewer) không có quyền hiệu chỉnh kho sách.', 'warning');
       return;
     }
 
+    if (!onBatchUpdateBooks) {
+      showToast('Chức năng cập nhật kho sách chưa sẵn sàng. Vui lòng thử lại.', 'error');
+      return;
+    }
+
+    if (books.length === 0) {
+      showToast('Kho sách đang trống, chưa có sách nào để hiệu chỉnh.', 'info');
+      return;
+    }
+
+    if (pendingBooks.length === 0) {
+      setCurrentBatchText('Đã hiệu chỉnh hết — bấm "Làm lại" nếu muốn chạy lại.');
+      showToast(
+        `Tất cả ${books.length} cuốn sách đã hiệu chỉnh xong. Bấm "Làm lại" để hiệu chỉnh lại từ đầu!`,
+        'info',
+        4500
+      );
+      return;
+    }
+
+    // Đảm bảo đồng bộ API Keys vào storage trước khi chạy
+    let storedKeys = getStoredGeminiApiKeys();
+    const fallbackCleanKeys = getCleanKeys();
+    if (storedKeys.length === 0 && fallbackCleanKeys.length > 0) {
+      saveStoredGeminiApiKeys(fallbackCleanKeys);
+      storedKeys = getStoredGeminiApiKeys();
+      if (apiKeys.length === 0) {
+        setApiKeys(fallbackCleanKeys);
+      }
+    }
+
+    const effectiveKeys = getEffectiveGeminiKeys();
+    const hasAccess = effectiveKeys.length > 0 || (await ensureGeminiAccessAvailable());
+    const finalKeys = getEffectiveGeminiKeys();
+    if (!hasAccess || finalKeys.length === 0) {
+      setIsKeySectionExpanded(true);
+      setCurrentBatchText('Chưa có Gemini API Key — vui lòng thêm Key ở mục trên.');
+      showToast('Vui lòng thêm và lưu ít nhất 1 Gemini API Key trước khi hiệu chỉnh kho!', 'warning', 4500);
+      return;
+    }
+
+    const abortController = new AbortController();
+    normalizeAbortControllerRef.current = abortController;
     setIsNormalizing(true);
     onBatchStateChange?.(true);
     stopNormalizingRef.current = false;
@@ -399,10 +500,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setPendingReviewCount(pendingReviewAccumulatorRef.current.length);
     sourceLookupWarningsRef.current.clear();
     const localPending = [...pendingBooks];
+    const localPendingById = new Map(localPending.map((b) => [b.id, b]));
+    const normalizeStartedAt = Date.now();
     let currentProcessed = 0;
     let hasLocalUpdates = false;
 
-    setCurrentBatchText(`Đang kết nối Gemini API (${Math.max(1, storedKeys.length)} Key) hiệu chỉnh song song...`);
+    const activeFields = selectedNormalizeFields.length > 0
+      ? selectedNormalizeFields
+      : resolveNormalizeFields(settings.normalizeFields);
+    const applyTitle = activeFields.includes('title');
+    const applyAuthor = activeFields.includes('author');
+    const applyCategory = activeFields.includes('category');
+    const applyPublisher = activeFields.includes('publisher');
+    const applySummary = activeFields.includes('summary');
+    const applyCover = activeFields.includes('cover_url');
+
+    console.log(
+      `[Normalize] Khởi chạy hiệu chỉnh thủ công: ${localPending.length} cuốn • ${Math.max(1, finalKeys.length)} Key • ` +
+        `trường=[${activeFields.join(', ')}] • model=gemini-3.5-flash-lite`
+    );
+    setCurrentBatchText(`Đang kết nối Gemini 3.5 Flash Lite (${Math.max(1, finalKeys.length)} Key) hiệu chỉnh song song...`);
 
     const coverHintsMap = new Map<string, PrecomputedCoverHint>();
     const booksNeedingCoverMap = new Map<string, BookRecord>();
@@ -414,7 +531,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const chunkProposals: TitleAuthorProposal[] = [];
       for (const normItem of normalizedChunk) {
         if (normItem.sourceWarning) sourceLookupWarningsRef.current.add(normItem.sourceWarning);
-        const orig = localPending.find((b) => b.id === normItem.id);
+        const orig = localPendingById.get(normItem.id);
         if (!orig) continue;
 
         const normTitleTrim = String(normItem.title || '').trim();
@@ -422,22 +539,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         const normAuthorTrim = String(normItem.author || '').trim();
         const origAuthorTrim = (orig.author || '').trim();
 
-        const titleMeaningfullyChanged = isMeaningfulChange(origTitleTrim, normTitleTrim, false);
-        const authorMeaningfullyChanged = isMeaningfulChange(origAuthorTrim, normAuthorTrim, true);
+        const titleMeaningfullyChanged = applyTitle && isMeaningfulChange(origTitleTrim, normTitleTrim, false);
+        const authorMeaningfullyChanged = applyAuthor && isMeaningfulChange(origAuthorTrim, normAuthorTrim, true);
 
-        const enrichedCategory = normItem.category || orig.category || 'Chung';
-        const enrichedPublisher = normItem.publisher || orig.publisher || '';
+        const enrichedCategory = applyCategory ? (normItem.category || orig.category || 'Chung') : (orig.category || 'Chung');
+        const enrichedPublisher = applyPublisher ? (normItem.publisher || orig.publisher || '') : (orig.publisher || '');
 
-        const resolvedTitle = titleMeaningfullyChanged ? orig.title : (normTitleTrim || orig.title);
-        const resolvedAuthor = authorMeaningfullyChanged ? orig.author : (normAuthorTrim || orig.author);
-        const enrichedSummary = (normItem.summary && String(normItem.summary).trim()) || orig.summary || '';
+        const resolvedTitle = !applyTitle ? orig.title : (titleMeaningfullyChanged ? orig.title : (normTitleTrim || orig.title));
+        const resolvedAuthor = !applyAuthor ? orig.author : (authorMeaningfullyChanged ? orig.author : (normAuthorTrim || orig.author));
+        const enrichedSummary = applySummary ? ((normItem.summary && String(normItem.summary).trim()) || orig.summary || '') : (orig.summary || '');
 
-        if (normItem.originalTitle || normItem.isbn) {
-          coverHintsMap.set(orig.id, {
-            ...(normItem.originalTitle ? { originalTitle: String(normItem.originalTitle).trim() } : {}),
-            ...(normItem.isbn ? { isbn: String(normItem.isbn).trim() } : {}),
-          });
-        }
+        coverHintsMap.set(orig.id, {
+          alreadyAnalyzedByAi: true,
+          ...(normItem.originalTitle ? { originalTitle: String(normItem.originalTitle).trim() } : {}),
+          ...(normItem.isbn ? { isbn: String(normItem.isbn).trim() } : {}),
+        });
 
         const existingCover = (orig.cover_url || '').trim();
         const hasValidExistingCover = Boolean(existingCover && existingCover.toUpperCase() !== 'NONE');
@@ -454,7 +570,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           updated_at: Date.now(),
         };
 
-        if (!hasValidExistingCover) {
+        if (applyCover && !hasValidExistingCover) {
           booksNeedingCoverMap.set(orig.id, {
             ...updatedBook,
             title: normTitleTrim || resolvedTitle,
@@ -497,45 +613,63 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
 
       setPendingReviewCount(pendingReviewAccumulatorRef.current.length);
-      setCurrentBatchText(
-        remaining > 0
-          ? `Đang hiệu chỉnh: còn ${remaining} cuốn...`
-          : booksNeedingCoverMap.size > 0
-          ? `Chuẩn bị tìm ảnh bìa song song (${booksNeedingCoverMap.size} cuốn)...`
-          : `Đang hoàn tất & đồng bộ...`
-      );
+      if (!stopNormalizingRef.current && !abortController.signal.aborted) {
+        setCurrentBatchText(
+          remaining > 0
+            ? `Đang hiệu chỉnh: còn ${remaining} cuốn...`
+            : applyCover && booksNeedingCoverMap.size > 0
+            ? `Chuẩn bị tìm ảnh bìa song song (${booksNeedingCoverMap.size} cuốn)...`
+            : `Đang hoàn tất...`
+        );
+      }
     };
 
     try {
       const res = await batchNormalize(localPending, {
         onChunkComplete,
+        onProgress: (status) => {
+          if (!stopNormalizingRef.current && !abortController.signal.aborted) {
+            setCurrentBatchText(status);
+          }
+        },
+        normalizeFields: activeFields,
         stopSignal: stopNormalizingRef,
+        abortSignal: abortController.signal,
         categories: settings.categoriesList,
         withSources: false,
       });
 
-      // Pha 2: Tìm ảnh bìa song song cho các cuốn chưa có bìa (không làm chậm luồng AI chuẩn hóa chữ & tóm tắt)
-      const missingCoverTargets = Array.from(booksNeedingCoverMap.values());
-      if (!stopNormalizingRef.current && missingCoverTargets.length > 0) {
+      const phase1Sec = ((Date.now() - normalizeStartedAt) / 1000).toFixed(1);
+      console.log(
+        `[Normalize] Xong pha 1 sau ${phase1Sec}s: ${currentProcessed} cuốn, ` +
+          `${pendingReviewAccumulatorRef.current.length} đề xuất chờ duyệt, thiếu bìa=${booksNeedingCoverMap.size}`
+      );
+
+      // Pha 2: Tìm ảnh bìa song song qua thư mục mở cho các cuốn chưa có bìa (chỉ chạy khi có chọn trường cover_url)
+      const missingCoverTargets = applyCover ? Array.from(booksNeedingCoverMap.values()) : [];
+      if (applyCover && !stopNormalizingRef.current && !abortController.signal.aborted && missingCoverTargets.length > 0) {
+        const phase2StartedAt = Date.now();
         setCurrentBatchText(`Đang tìm ảnh bìa song song (${missingCoverTargets.length} cuốn)...`);
-        await batchFindBookCovers(missingCoverTargets, {
+        const coverRes = await batchFindBookCovers(missingCoverTargets, {
           overwriteExisting: false,
           enrichSummary: false,
-          useAiFallback: true,
+          useAiFallback: false,
+          skipGrounding: true,
           precomputedHints: coverHintsMap,
-          catalogWorkers: 8,
+          catalogWorkers: 12,
           stopSignal: stopNormalizingRef,
           onProgress: (prog) => {
-            if (prog.statusMessage) {
+            if (!stopNormalizingRef.current && !abortController.signal.aborted && prog.statusMessage) {
               setCurrentBatchText(prog.statusMessage);
             }
           },
           onChunkSave: async (coverUpdates) => {
             if (!coverUpdates || coverUpdates.length === 0) return;
             const coverMap = new Map<string, string>();
+            const proposalById = new Map(pendingReviewAccumulatorRef.current.map((p) => [p.bookId, p]));
             const syncedUpdates = coverUpdates.map((cu) => {
-              const existingOrig = localPending.find((b) => b.id === cu.id);
-              const matchingProposal = pendingReviewAccumulatorRef.current.find((p) => p.bookId === cu.id);
+              const existingOrig = localPendingById.get(cu.id);
+              const matchingProposal = proposalById.get(cu.id);
               if (cu.cover_url && cu.cover_url !== 'NONE') {
                 coverMap.set(cu.id, cu.cover_url);
                 if (matchingProposal) {
@@ -560,15 +694,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             hasLocalUpdates = true;
           },
         });
+        console.log(
+          `[Normalize] Xong pha 2 (bìa) sau ${((Date.now() - phase2StartedAt) / 1000).toFixed(1)}s: cập nhật ${coverRes.updatedCount} bìa`
+        );
       }
 
-      if (res.normalized.length > 0 && res.failedChunks.length > 0) {
+      if (stopNormalizingRef.current || abortController.signal.aborted) {
+        // Người dùng đã chủ động bấm Dừng
+        if (currentProcessed > 0) {
+          showToast(`Đã dừng sau khi hiệu chỉnh ${currentProcessed} cuốn sách.`, 'info');
+        }
+      } else if (res.normalized.length > 0 && res.failedChunks.length > 0) {
         const failedBookCount = res.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0);
         showToast(`Đã hiệu chỉnh ${currentProcessed} cuốn; ${failedBookCount} cuốn chưa xử lý và có thể chạy lại thủ công.`, 'warning');
       } else if (currentProcessed > 0 && res.success) {
         showToast(`Đã hoàn tất hiệu chỉnh ${currentProcessed} cuốn sách!`, 'success');
-      } else if (res.stopped && currentProcessed > 0) {
-        showToast(`Đã tạm dừng sau khi hiệu chỉnh ${currentProcessed} cuốn sách.`, 'info');
       } else if (!stopNormalizingRef.current) {
         const failure = res.failedChunks[0]?.message;
         showToast(failure
@@ -576,17 +716,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           : 'Không có sách nào được chuẩn hóa. Vui lòng kiểm tra lại API Key hoặc hạn ngạch!', 'warning');
       }
     } catch (err: any) {
-      console.error('Lỗi khi chuẩn hóa lô:', err);
-      showToast(`Lỗi chuẩn hóa: ${err?.message || String(err)}`, 'error');
+      if (stopNormalizingRef.current || abortController.signal.aborted || err?.message === 'CLIENT_ABORTED') {
+        console.log('[Normalize] Đã dừng hiệu chỉnh theo yêu cầu của người dùng.');
+      } else {
+        console.error('[Normalize] Lỗi khi chuẩn hóa lô:', err);
+        showToast(`Lỗi chuẩn hóa: ${err?.message || String(err)}`, 'error');
+      }
     } finally {
       onBatchStateChange?.(false);
-      // Khi kết thúc hoặc tạm dừng mới thực hiện đồng bộ 2 chiều Google Drive 1 lần duy nhất
-      if (hasLocalUpdates && onSyncDriveNow) {
-        setCurrentBatchText('Đang đồng bộ 2 chiều với Google Drive...');
-        await onSyncDriveNow().catch(() => {});
-      }
       setIsNormalizing(false);
-      setCurrentBatchText('');
+      normalizeAbortControllerRef.current = null;
+      // Đồng bộ Drive ngầm không làm đơ giao diện người dùng
+      if (hasLocalUpdates && onSyncDriveNow) {
+        onSyncDriveNow().catch((syncErr) => {
+          console.warn('[Normalize] Lỗi đồng bộ Drive sau hiệu chỉnh:', syncErr);
+        });
+      }
+      console.log(
+        `[Normalize] Tổng thời gian hiệu chỉnh thủ công: ${((Date.now() - normalizeStartedAt) / 1000).toFixed(1)}s`
+      );
+      if (!stopNormalizingRef.current) {
+        setCurrentBatchText('');
+      }
       setProcessedCount(0);
     }
 
@@ -608,13 +759,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleStopNormalize = () => {
     stopNormalizingRef.current = true;
-    setCurrentBatchText('Đang dừng và chuẩn bị đồng bộ...');
+    if (normalizeAbortControllerRef.current) {
+      normalizeAbortControllerRef.current.abort();
+      normalizeAbortControllerRef.current = null;
+    }
+    setIsNormalizing(false);
+    onBatchStateChange?.(false);
+    setCurrentBatchText('Đã dừng hiệu chỉnh.');
 
     const proposals = pendingReviewAccumulatorRef.current;
     if (proposals.length > 0) {
       console.log('[Normalize] Bấm Dừng -> Mở danh sách duyệt:', proposals.length);
       setReviewProposals([...proposals]);
-      showToast(`Đã tạm dừng. Có ${proposals.length} cuốn sách cần duyệt đổi tên/tác giả.`, 'info');
+      showToast(`Đã dừng. Có ${proposals.length} cuốn sách cần duyệt đổi tên/tác giả.`, 'info');
+    } else {
+      showToast('Đã dừng hiệu chỉnh.', 'info');
     }
   };
 
@@ -728,7 +887,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleResetAiStatus = async () => {
-    if (!onBatchUpdateBooks || books.length === 0) return;
+    if (isNormalizing || !onBatchUpdateBooks || books.length === 0) return;
     const now = Date.now();
     const resetList: BookRecord[] = books.map((b) => ({
       ...b,
@@ -738,8 +897,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     await onBatchUpdateBooks(resetList);
     pendingReviewAccumulatorRef.current = [];
     setPendingReviewCount(0);
+    setCurrentBatchText('');
     clearPendingTitleAuthorProposals();
-    showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách!`, 'success');
+    console.log(`[Normalize] Đã đặt lại cờ AI (is_ai_normalized=false) cho ${books.length} cuốn sách.`);
+    showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách! Bấm "Hiệu chỉnh thủ công" để chạy lại.`, 'success', 4000);
   };
 
   const handleManualDeduplicate = async () => {
@@ -1463,6 +1624,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               </div>
 
+              {/* Chọn các trường thông tin được hiệu chỉnh */}
+              <div className="p-2.5 bg-slate-50 border border-purple-100/70 rounded-xl space-y-1.5 shadow-3xs">
+                <div className="flex items-center justify-between text-[11px] font-bold text-slate-700">
+                  <span>Trường hiệu chỉnh ({selectedNormalizeFields.length}/6):</span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const allKeys = NORMALIZE_FIELD_OPTIONS.map((f) => f.key);
+                      const updated = selectedNormalizeFields.length === allKeys.length
+                        ? (['category', 'summary'] as NormalizeFieldKey[])
+                        : allKeys;
+                      setSelectedNormalizeFields(updated);
+                      await onSaveSettings({ ...settings, normalizeFields: updated });
+                    }}
+                    className="text-[10px] text-[#653f96] hover:underline cursor-pointer font-bold"
+                  >
+                    {selectedNormalizeFields.length === NORMALIZE_FIELD_OPTIONS.length ? 'Rút gọn' : 'Chọn tất cả'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {NORMALIZE_FIELD_OPTIONS.map((field) => {
+                    const isChecked = selectedNormalizeFields.includes(field.key);
+                    return (
+                      <button
+                        key={field.key}
+                        type="button"
+                        onClick={() => handleToggleNormalizeField(field.key)}
+                        className={`flex items-center gap-1.5 py-1.5 px-2 rounded-lg border text-[11px] transition active:scale-95 cursor-pointer select-none ${
+                          isChecked
+                            ? 'bg-purple-50 text-[#653f96] border-purple-300 shadow-3xs font-bold'
+                            : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300 font-medium'
+                        }`}
+                      >
+                        <div
+                          className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[10px] shrink-0 transition ${
+                            isChecked ? 'bg-[#653f96] text-white' : 'border border-slate-300 bg-white'
+                          }`}
+                        >
+                          {isChecked && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                        </div>
+                        <span className="truncate">{field.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Progress: Tiến độ: 100% !X */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-2 text-xs text-slate-700">
@@ -1519,20 +1727,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <button
                       type="button"
                       onClick={handleStartNormalize}
-                      disabled={pendingBooks.length === 0}
-                      className="flex-1 h-9 px-3 bg-[#8233ff] hover:bg-[#6f24e6] disabled:opacity-40 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-3xs whitespace-nowrap min-w-0"
+                      className={`flex-1 h-9 px-3 bg-[#8233ff] hover:bg-[#6f24e6] text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-3xs whitespace-nowrap min-w-0 ${
+                        pendingBooks.length === 0 ? 'opacity-65' : ''
+                      }`}
                     >
                       <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                      <span>Hiệu chỉnh thủ công</span>
+                      <span>
+                        {pendingBooks.length > 0 && pendingBooks.length < totalBooks
+                          ? `Hiệu chỉnh thủ công (${pendingBooks.length})`
+                          : 'Hiệu chỉnh thủ công'}
+                      </span>
                     </button>
                   ) : null}
 
                   <button
                     type="button"
                     onClick={handleResetAiStatus}
+                    disabled={isNormalizing || books.length === 0}
                     className={`${
                       !autoNormalize || isNormalizing ? 'px-2.5 shrink-0' : 'w-full'
-                    } h-9 bg-purple-50 hover:bg-purple-100 text-[#653f96] border border-purple-200/60 text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap`}
+                    } h-9 bg-purple-50 hover:bg-purple-100 disabled:opacity-40 text-[#653f96] border border-purple-200/60 text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap`}
                     title="Đặt lại trạng thái để hiệu chỉnh lại từ đầu"
                   >
                     <RefreshCw className="w-3.5 h-3.5 shrink-0" />
@@ -1575,7 +1789,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={downloadLogs}
+                  onClick={async () => {
+                    const res = await downloadLogs(CURRENT_APP_VERSION);
+                    showToast(res.message, res.success ? 'success' : 'error');
+                  }}
                   className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95"
                 >
                   <span>Tải log</span>

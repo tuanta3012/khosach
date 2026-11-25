@@ -7,7 +7,6 @@ import {
 } from '../types';
 import {
   buildTranslationChannelSlots,
-  EPUB_BACKUP_MODEL,
   EPUB_TRANSLATION_MODEL,
   executeEpubFlashLiteWithKey,
   getAvailableEpubTranslationKeys,
@@ -191,7 +190,7 @@ interface InFlightEpubChunkEntry {
 }
 
 /**
- * Chạy dịch song song nhiều chunk dựa trên tối đa 2 kênh model (3.5 + 3.1) cho mỗi API Key hợp lệ,
+ * Chạy dịch song song nhiều chunk với 1 luồng/key trên model duy nhất gemini-3.5-flash-lite,
  * kết hợp đánh chặn phần cuối (tail hedging) và chỉ dịch bù các đoạn còn thiếu.
  */
 export async function runParallelEpubTranslation(
@@ -273,7 +272,6 @@ export async function runParallelEpubTranslation(
   const activeCheckpointWrites = new Set<Promise<void>>();
 
   let activeWorkersCount = channelSlots.length;
-  let backupUsedCount = 0;
   let lastFatalOrKeyError = '';
 
   const countCompletedSegments = () => {
@@ -299,7 +297,7 @@ export async function runParallelEpubTranslation(
   };
 
   emitProgress(
-    `Đang khởi động ${channelSlots.length} luồng song song (${availableKeys.length} key · 3.5 & 3.1)...`
+    `Đang khởi động ${channelSlots.length} luồng song song (${availableKeys.length} key · 3.5 Flash Lite)...`
   );
 
   const buildChunkPrompt = (items: Array<{ id: number; text: string }>) =>
@@ -333,7 +331,6 @@ export async function runParallelEpubTranslation(
   }> => {
     const merged = new Map<number, string>();
     const subBatchSize = Math.max(1, Math.min(8, Math.ceil(items.length / 2)));
-    let usedBackup = false;
 
     for (let offset = 0; offset < items.length; offset += subBatchSize) {
       if (effectiveStopSignal.current || abortSignal.aborted) {
@@ -346,13 +343,12 @@ export async function runParallelEpubTranslation(
         systemInstruction,
         promptText: buildChunkPrompt(subItems),
         responseSchema: CHUNK_RESPONSE_SCHEMA,
-        preferredModels: [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL],
+        preferredModels: [EPUB_TRANSLATION_MODEL],
         timeoutMs,
         abortSignal,
         stopSignal: effectiveStopSignal,
       });
 
-      if (res.usedModel === EPUB_BACKUP_MODEL) usedBackup = true;
       if (effectiveStopSignal.current || abortSignal.aborted || res.aborted) {
         return { success: false, parsedMap: merged, aborted: true, retryable: true };
       }
@@ -376,7 +372,7 @@ export async function runParallelEpubTranslation(
       }
     }
 
-    return { success: true, parsedMap: merged, usedBackup };
+    return { success: true, parsedMap: merged };
   };
 
   const tryClaimHedgeChunk = (slot: TranslationChannelSlot): InFlightEpubChunkEntry | null => {
@@ -505,7 +501,6 @@ export async function runParallelEpubTranslation(
           const timeoutMs = isHedge ? 34_000 : 42_000;
 
           let finalParsedMap: Map<number, string> | null = null;
-          let usedBackupModel = false;
           let lastCallFailure: {
             aborted?: boolean;
             keyExhausted?: boolean;
@@ -529,30 +524,18 @@ export async function runParallelEpubTranslation(
               }
               break;
             }
-            if (splitRes.usedBackup) usedBackupModel = true;
             if (splitRes.success) {
               finalParsedMap = splitRes.parsedMap;
             } else {
               lastCallFailure = splitRes;
             }
           } else {
-            const preferredModels = isHedge
-              ? [
-                  slot.primaryModel === EPUB_TRANSLATION_MODEL
-                    ? EPUB_BACKUP_MODEL
-                    : EPUB_TRANSLATION_MODEL,
-                  slot.primaryModel,
-                ]
-              : attemptsBefore >= 1
-              ? [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL]
-              : slot.fallbackOrder;
-
             const res = await executeEpubFlashLiteWithKey({
               key: slot.apiKey,
               systemInstruction,
               promptText: buildChunkPrompt(inputItems),
               responseSchema: CHUNK_RESPONSE_SCHEMA,
-              preferredModels,
+              preferredModels: [EPUB_TRANSLATION_MODEL],
               timeoutMs,
               abortSignal: abortCtrl.signal,
               stopSignal: effectiveStopSignal,
@@ -566,8 +549,6 @@ export async function runParallelEpubTranslation(
               }
               break;
             }
-
-            if (res.usedModel === EPUB_BACKUP_MODEL) usedBackupModel = true;
 
             if (res.success && Array.isArray(res.data)) {
               const parsedMap = extractValidMap(res.data);
@@ -584,7 +565,7 @@ export async function runParallelEpubTranslation(
                         systemInstruction,
                         promptText: buildChunkPrompt(missingItems),
                         responseSchema: CHUNK_RESPONSE_SCHEMA,
-                        preferredModels: [EPUB_BACKUP_MODEL, EPUB_TRANSLATION_MODEL],
+                        preferredModels: [EPUB_TRANSLATION_MODEL],
                         timeoutMs: 32_000,
                         abortSignal: abortCtrl.signal,
                         stopSignal: effectiveStopSignal,
@@ -603,11 +584,6 @@ export async function runParallelEpubTranslation(
                     pendingQueue.unshift(chunkIdx);
                   }
                   break;
-                }
-
-                if ('usedBackup' in deltaRes && deltaRes.usedBackup) usedBackupModel = true;
-                if ('usedModel' in deltaRes && deltaRes.usedModel === EPUB_BACKUP_MODEL) {
-                  usedBackupModel = true;
                 }
 
                 if (deltaRes.success) {
@@ -650,8 +626,6 @@ export async function runParallelEpubTranslation(
           }
 
           if (finalParsedMap) {
-            if (usedBackupModel) backupUsedCount += 1;
-
             completedChunkSet.add(chunkIdx);
             failedChunkSet.delete(chunkIdx);
             inFlightChunks.delete(chunkIdx);
@@ -689,9 +663,8 @@ export async function runParallelEpubTranslation(
               });
             }
 
-            const backupSuffix = backupUsedCount > 0 ? ` · 3.1: ${backupUsedCount}` : '';
             emitProgress(
-              `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (${channelSlots.length} luồng${backupSuffix})`
+              `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (${channelSlots.length} luồng)`
             );
             if (checkAllDone()) break;
             continue;
@@ -717,7 +690,7 @@ export async function runParallelEpubTranslation(
           if (lastCallFailure?.retryable !== false && attempts < MAX_RETRIES_PER_CHUNK) {
             if (lastCallFailure?.rateLimited) {
               emitProgress(
-                `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (đang giãn nhịp RPM & chuyển 3.1-flash-lite)...`
+                `Đã dịch ${completedChunkSet.size}/${totalChunks} phần (đang giãn nhịp RPM)...`
               );
               await new Promise((resolve) => setTimeout(resolve, 3500 + attempts * 1000));
             } else {
