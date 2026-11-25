@@ -503,13 +503,16 @@ async function startServer() {
       });
 
       for await (const chunk of stream) {
+        if (clientDisconnected || res.writableEnded) break;
         if (chunk?.text) {
           res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
         }
       }
       releaseSlot();
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-      res.end();
+      if (!clientDisconnected && !res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+        res.end();
+      }
     } catch (err: unknown) {
       releaseSlot?.();
       const failureKind = classifyGeminiError(err);
@@ -517,8 +520,10 @@ async function startServer() {
         recordServerRpm429(apiKey, requestedModel, getErrorText(err));
       }
       const errMsg = err instanceof Error ? err.message : String(err);
-      res.write(`data: ${JSON.stringify({ error: errMsg, failureKind })}\n\n`);
-      res.end();
+      if (!clientDisconnected && !res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: errMsg, failureKind })}\n\n`);
+        res.end();
+      }
     }
   });
 

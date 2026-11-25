@@ -160,6 +160,39 @@ export async function findBookCoverCandidatesFull(
 }
 
 /**
+ * Tìm 1 URL ảnh bìa hợp lệ tốt nhất cho 1 cuốn sách (kết hợp thư mục mở + AI fallback nếu cần).
+ * Trả về 'NONE' nếu không tìm thấy ảnh bìa trực tuyến khả dụng.
+ */
+export async function resolveCoverUrlForBook(
+  title: string,
+  author = '',
+  publisher = '',
+  options?: { existingCoverUrl?: string; forceRefresh?: boolean; allowAi?: boolean; stopSignal?: { current: boolean } }
+): Promise<string> {
+  const existing = (options?.existingCoverUrl || '').trim();
+  if (!options?.forceRefresh && existing && existing.toUpperCase() !== 'NONE') {
+    return existing;
+  }
+  if (options?.stopSignal?.current) {
+    return existing || '';
+  }
+
+  try {
+    const candidates = await findBookCoverCandidatesFull(title, author, publisher, {
+      allowAi: options?.allowAi !== false,
+      stopSignal: options?.stopSignal,
+    });
+    if (candidates.length > 0 && candidates[0].coverUrl) {
+      return candidates[0].coverUrl;
+    }
+  } catch (err) {
+    console.warn('[CoverResolve] Không tìm được ảnh bìa:', title, err);
+  }
+
+  return options?.stopSignal?.current ? existing : 'NONE';
+}
+
+/**
  * Tìm & cập nhật ảnh bìa và tóm tắt hàng loạt cho kho sách:
  * - Vòng 1: Tra cứu miễn phí siêu tốc qua Goodreads, Apple Books, Open Library, Google Books, Wikipedia.
  * - Vòng 2 (cho sách còn thiếu bìa hoặc tóm tắt): Dùng Gemini giải mã tên gốc/ISBN + tạo tóm tắt nội dung 1-3 câu.

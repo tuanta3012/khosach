@@ -24,7 +24,6 @@ import {
   ChevronDown,
   ChevronUp,
   Pencil,
-  Image as ImageIcon,
 } from 'lucide-react';
 import { LibrarySettings, BookRecord, AuthUser, BookSource } from '../types';
 import { useToast } from '../context/ToastContext';
@@ -37,10 +36,7 @@ import {
   testAllGeminiApiKeys,
   ensureGeminiAccessAvailable,
 } from '../services/geminiService';
-import {
-  batchFindBookCovers,
-  BatchCoverProgress,
-} from '../services/bookCoverService';
+import { resolveCoverUrlForBook } from '../services/bookCoverService';
 import {
   groupDuplicateBooksAsync,
   DuplicateGroup,
@@ -74,6 +70,8 @@ export interface TitleAuthorProposal {
   authorChanged: boolean;
   category: string;
   publisher?: string;
+  summary?: string;
+  cover_url?: string;
   sources: BookSource[];
   selected: boolean;
   isEditing?: boolean;
@@ -86,7 +84,9 @@ interface SettingsModalProps {
   onSaveSettings: (newSettings: LibrarySettings) => Promise<void>;
   onCheckUpdates?: () => void;
   books?: BookRecord[];
-  onBatchUpdateBooks?: (updatedBooksList: BookRecord[]) => Promise<void>;
+  onBatchUpdateBooks?: (updatedBooksList: BookRecord[], options?: { skipSync?: boolean }) => Promise<void>;
+  onSyncDriveNow?: () => Promise<void>;
+  onBatchStateChange?: (active: boolean) => void;
   onBatchDeleteBooks?: (idsToDelete: string[]) => Promise<void>;
   isAutoNormalizing?: boolean;
   appMode?: 'offline' | 'online';
@@ -108,6 +108,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onCheckUpdates,
   books = [],
   onBatchUpdateBooks,
+  onSyncDriveNow,
+  onBatchStateChange,
   onBatchDeleteBooks,
   onClearLocalBooksOnly,
   appMode = 'offline',
@@ -142,36 +144,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [, setProcessedCount] = useState(0);
   const stopNormalizingRef = useRef(false);
 
-  // States cho tìm ảnh bìa hàng loạt
-  const [isFindingCovers, setIsFindingCovers] = useState(false);
-  const [coverProgress, setCoverProgress] = useState<BatchCoverProgress | null>(null);
-  const stopFindingCoversRef = useRef(false);
-
-  // Một cuốn sách được coi là hoàn thiện đầy đủ thông tin khi:
-  // - Đã chuẩn hóa AI (is_ai_normalized)
-  // - Có thể loại rõ ràng (khác 'Chung')
-  // - Có nhà xuất bản
-  // - Có tóm tắt
-  // - Có ảnh bìa (hoặc đã tìm và đánh dấu 'NONE')
-  const isBookComplete = (b: BookRecord) =>
-    Boolean(
-      b.is_ai_normalized &&
-      b.category &&
-      b.category.trim() !== '' &&
-      b.category.trim() !== 'Chung' &&
-      b.publisher &&
-      b.publisher.trim() !== '' &&
-      b.summary &&
-      b.summary.trim() !== '' &&
-      b.cover_url &&
-      b.cover_url.trim() !== ''
-    );
+  // Trạng thái Đã AI lấy trực tiếp theo cột G (is_ai_normalized):
+  // Đã hiệu chỉnh xong -> ghi Đã AI = Có để không hiệu chỉnh lại hàng loạt trừ khi bấm "Làm lại"
+  const isBookComplete = (b: BookRecord) => Boolean(b.is_ai_normalized);
 
   const totalBooks = books.length;
   const normalizedCount = books.filter(isBookComplete).length;
   const pendingBooks = books.filter((b) => !isBookComplete(b));
-  const booksWithCoverCount = books.filter((b) => Boolean(b.cover_url && b.cover_url.trim() && b.cover_url !== 'NONE')).length;
-  const missingCoverCount = Math.max(0, totalBooks - booksWithCoverCount);
   const activeReviewCount = reviewProposals ? reviewProposals.length : (pendingReviewCount || pendingReviewAccumulatorRef.current.length);
 
   // Mặc định tính năng AI tự động luôn là OFF khi cài app mới
@@ -180,12 +159,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     setAutoNormalize(!!settings.autoNormalizeEnabled);
   }, [settings.autoNormalizeEnabled, isOpen]);
-
-  useEffect(() => {
-    return () => {
-      stopFindingCoversRef.current = true;
-    };
-  }, []);
 
   const handleToggleAutoNormalize = async (val: boolean) => {
     setAutoNormalize(val);
@@ -404,89 +377,115 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
 
     setIsNormalizing(true);
+    onBatchStateChange?.(true);
     stopNormalizingRef.current = false;
-    // Giữ lại các đề xuất trước đó nếu chưa duyệt, hoặc khởi tạo mảng nếu chưa có
     if (!pendingReviewAccumulatorRef.current) {
       pendingReviewAccumulatorRef.current = [];
     }
     setPendingReviewCount(pendingReviewAccumulatorRef.current.length);
     sourceLookupWarningsRef.current.clear();
-    let localPending = [...pendingBooks];
+    const localPending = [...pendingBooks];
     let currentProcessed = 0;
+    let hasLocalUpdates = false;
 
-    setCurrentBatchText(`Đang kết nối Gemini API để chuẩn hóa...`);
+    setCurrentBatchText(`Đang kết nối Gemini API để hiệu chỉnh 6 trường thông tin...`);
 
     const onChunkComplete = async (normalizedChunk: any[], remaining: number) => {
       if (!normalizedChunk || normalizedChunk.length === 0) return;
 
+      const preparedEntries = await Promise.all(
+        normalizedChunk.map(async (normItem: any) => {
+          if (normItem.sourceWarning) sourceLookupWarningsRef.current.add(normItem.sourceWarning);
+          const orig = localPending.find((b) => b.id === normItem.id);
+          if (!orig) return null;
+
+          const normTitleTrim = String(normItem.title || '').trim();
+          const origTitleTrim = (orig.title || '').trim();
+          const normAuthorTrim = String(normItem.author || '').trim();
+          const origAuthorTrim = (orig.author || '').trim();
+
+          const titleMeaningfullyChanged = isMeaningfulChange(origTitleTrim, normTitleTrim, false);
+          const authorMeaningfullyChanged = isMeaningfulChange(origAuthorTrim, normAuthorTrim, true);
+
+          const enrichedCategory = normItem.category || orig.category || 'Chung';
+          const enrichedPublisher = normItem.publisher || orig.publisher || '';
+
+          const resolvedTitle = titleMeaningfullyChanged ? orig.title : (normTitleTrim || orig.title);
+          const resolvedAuthor = authorMeaningfullyChanged ? orig.author : (normAuthorTrim || orig.author);
+          const enrichedSummary = (normItem.summary && String(normItem.summary).trim()) || orig.summary || '';
+
+          // Tự động tìm/xác nhận URL ảnh bìa nếu chưa có hoặc đang là 'NONE'
+          const resolvedCoverUrl = await resolveCoverUrlForBook(
+            normTitleTrim || resolvedTitle,
+            normAuthorTrim || resolvedAuthor,
+            enrichedPublisher,
+            {
+              existingCoverUrl: orig.cover_url,
+              allowAi: true,
+              stopSignal: stopNormalizingRef,
+            }
+          );
+
+          const updatedBook: BookRecord = {
+            ...orig,
+            title: resolvedTitle,
+            author: resolvedAuthor,
+            publisher: enrichedPublisher,
+            category: enrichedCategory,
+            ...(enrichedSummary ? { summary: enrichedSummary } : {}),
+            ...(resolvedCoverUrl ? { cover_url: resolvedCoverUrl } : {}),
+            is_ai_normalized: true,
+            updated_at: Date.now(),
+          };
+
+          const proposal: TitleAuthorProposal | null =
+            titleMeaningfullyChanged || authorMeaningfullyChanged
+              ? {
+                  bookId: orig.id,
+                  originalTitle: orig.title,
+                  proposedTitle: normTitleTrim,
+                  titleChanged: titleMeaningfullyChanged,
+                  originalAuthor: orig.author,
+                  proposedAuthor: normAuthorTrim,
+                  authorChanged: authorMeaningfullyChanged,
+                  category: enrichedCategory,
+                  publisher: enrichedPublisher,
+                  summary: enrichedSummary,
+                  cover_url: resolvedCoverUrl,
+                  sources: normItem.sources || [],
+                  selected: true,
+                }
+              : null;
+
+          return { updatedBook, proposal };
+        })
+      );
+
       const safeUpdatedList: BookRecord[] = [];
-
-      normalizedChunk.forEach((normItem: any) => {
-        if (normItem.sourceWarning) sourceLookupWarningsRef.current.add(normItem.sourceWarning);
-        const orig = pendingBooks.find((b) => b.id === normItem.id);
-        if (!orig) return;
-
-        const normTitleTrim = String(normItem.title || '').trim();
-        const origTitleTrim = (orig.title || '').trim();
-        const normAuthorTrim = String(normItem.author || '').trim();
-        const origAuthorTrim = (orig.author || '').trim();
-
-        // Dùng hàm kiểm tra ngữ nghĩa thông minh: bỏ qua khác biệt về hoa thường, định dạng dấu gạch/phẩy, lỗi chính tả nhẹ
-        const titleMeaningfullyChanged = isMeaningfulChange(origTitleTrim, normTitleTrim, false);
-        const authorMeaningfullyChanged = isMeaningfulChange(origAuthorTrim, normAuthorTrim, true);
-
-        const enrichedCategory = normItem.category || orig.category || 'Chung';
-        const enrichedPublisher = normItem.publisher || orig.publisher || '';
-
-        // Nếu chỉ là làm đẹp / sửa chính tả nhẹ / định dạng -> Tự động áp dụng ngay vào bản ghi
-        const resolvedTitle = titleMeaningfullyChanged ? orig.title : (normTitleTrim || orig.title);
-        const resolvedAuthor = authorMeaningfullyChanged ? orig.author : (normAuthorTrim || orig.author);
-        const enrichedSummary = (normItem.summary && String(normItem.summary).trim()) || orig.summary || '';
-
-        safeUpdatedList.push({
-          ...orig,
-          title: resolvedTitle,
-          author: resolvedAuthor,
-          publisher: enrichedPublisher,
-          category: enrichedCategory,
-          ...(enrichedSummary ? { summary: enrichedSummary } : {}),
-          is_ai_normalized: true,
-          updated_at: Date.now(),
-        });
-
-        // Chỉ khi có thay đổi ngữ nghĩa lớn (đổi hẳn sang tác phẩm khác / tác giả khác) mới đưa vào danh sách duyệt
-        if (titleMeaningfullyChanged || authorMeaningfullyChanged) {
-          const exists = pendingReviewAccumulatorRef.current.some((p) => p.bookId === orig.id);
+      for (const entry of preparedEntries) {
+        if (!entry) continue;
+        safeUpdatedList.push(entry.updatedBook);
+        if (entry.proposal) {
+          const exists = pendingReviewAccumulatorRef.current.some((p) => p.bookId === entry.proposal!.bookId);
           if (!exists) {
-            pendingReviewAccumulatorRef.current.push({
-              bookId: orig.id,
-              originalTitle: orig.title,
-              proposedTitle: normTitleTrim,
-              titleChanged: titleMeaningfullyChanged,
-              originalAuthor: orig.author,
-              proposedAuthor: normAuthorTrim,
-              authorChanged: authorMeaningfullyChanged,
-              category: enrichedCategory,
-              publisher: enrichedPublisher,
-              sources: normItem.sources || [],
-              selected: true,
-            });
+            pendingReviewAccumulatorRef.current.push(entry.proposal);
           }
         }
-      });
+      }
 
       if (safeUpdatedList.length > 0) {
-        await onBatchUpdateBooks(safeUpdatedList);
+        // Chỉ lưu cục bộ trong lúc đang chạy lô để tránh đồng bộ Drive chồng chéo & tốn quota
+        await onBatchUpdateBooks(safeUpdatedList, { skipSync: true });
+        hasLocalUpdates = true;
         currentProcessed += safeUpdatedList.length;
         setProcessedCount(currentProcessed);
       }
 
       setPendingReviewCount(pendingReviewAccumulatorRef.current.length);
-
       setCurrentBatchText(
         remaining > 0
-          ? `Đang chuẩn hóa tuần tự: còn ${remaining} cuốn...`
-          : `Đang hoàn tất...`
+          ? `Đang hiệu chỉnh: còn ${remaining} cuốn...`
+          : `Đang hoàn tất & đồng bộ...`
       );
     };
 
@@ -504,7 +503,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       } else if (currentProcessed > 0 && res.success) {
         showToast(`Đã hoàn tất hiệu chỉnh ${currentProcessed} cuốn sách!`, 'success');
       } else if (res.stopped && currentProcessed > 0) {
-        showToast(`Đã dừng sau khi hiệu chỉnh ${currentProcessed} cuốn sách.`, 'info');
+        showToast(`Đã tạm dừng sau khi hiệu chỉnh ${currentProcessed} cuốn sách.`, 'info');
       } else if (!stopNormalizingRef.current) {
         const failure = res.failedChunks[0]?.message;
         showToast(failure
@@ -514,13 +513,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     } catch (err: any) {
       console.error('Lỗi khi chuẩn hóa lô:', err);
       showToast(`Lỗi chuẩn hóa: ${err?.message || String(err)}`, 'error');
+    } finally {
+      onBatchStateChange?.(false);
+      // Khi kết thúc hoặc tạm dừng mới thực hiện đồng bộ 2 chiều Google Drive 1 lần duy nhất
+      if (hasLocalUpdates && onSyncDriveNow) {
+        setCurrentBatchText('Đang đồng bộ 2 chiều với Google Drive...');
+        await onSyncDriveNow().catch(() => {});
+      }
+      setIsNormalizing(false);
+      setCurrentBatchText('');
+      setProcessedCount(0);
     }
 
-    setIsNormalizing(false);
-    setCurrentBatchText('');
-    setProcessedCount(0);
-
-    // Nếu người dùng đã bấm dừng
     if (stopNormalizingRef.current) {
       const proposals = pendingReviewAccumulatorRef.current;
       if (proposals.length > 0) {
@@ -539,12 +543,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleStopNormalize = () => {
     stopNormalizingRef.current = true;
-    setIsNormalizing(false);
-    setCurrentBatchText('');
+    setCurrentBatchText('Đang dừng và chuẩn bị đồng bộ...');
 
     const proposals = pendingReviewAccumulatorRef.current;
     if (proposals.length > 0) {
-      console.log('[Normalize] Bấm Dừng -> Mở ngay lập tức danh sách duyệt:', proposals.length);
+      console.log('[Normalize] Bấm Dừng -> Mở danh sách duyệt:', proposals.length);
       setReviewProposals([...proposals]);
       showToast(`Đã tạm dừng. Có ${proposals.length} cuốn sách cần duyệt đổi tên/tác giả.`, 'info');
     }
@@ -607,6 +610,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       const updatedList: BookRecord[] = selectedOnes.map((p) => {
         const orig = books.find((b) => b.id === p.bookId);
+        const finalSummary = p.summary || orig?.summary || '';
+        const finalCover = p.cover_url || orig?.cover_url || '';
         return {
           ...orig,
           id: p.bookId,
@@ -614,6 +619,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           author: p.authorChanged ? p.proposedAuthor : (orig?.author || p.originalAuthor),
           category: p.category || orig?.category || 'Chung',
           publisher: p.publisher || orig?.publisher || '',
+          ...(finalSummary ? { summary: finalSummary } : {}),
+          ...(finalCover ? { cover_url: finalCover } : {}),
           is_ai_normalized: true,
           updated_at: Date.now(),
         } as BookRecord;
@@ -655,62 +662,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleResetAiStatus = async () => {
     if (!onBatchUpdateBooks || books.length === 0) return;
+    const now = Date.now();
     const resetList: BookRecord[] = books.map((b) => ({
       ...b,
       is_ai_normalized: false,
+      updated_at: now,
     }));
     await onBatchUpdateBooks(resetList);
     pendingReviewAccumulatorRef.current = [];
     setPendingReviewCount(0);
     showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách!`, 'success');
-  };
-
-  const handleStartBatchFindCovers = async (overwriteExisting = false) => {
-    if (currentUser?.userRole === 'VIEWER') {
-      showToast('Chế độ Chỉ xem không thể cập nhật ảnh bìa.', 'warning');
-      return;
-    }
-    if (!onBatchUpdateBooks || books.length === 0) return;
-
-    stopFindingCoversRef.current = false;
-    setIsFindingCovers(true);
-    setCoverProgress({
-      phase: 'catalog',
-      processed: 0,
-      total: overwriteExisting ? totalBooks : missingCoverCount,
-      foundCount: 0,
-      statusMessage: 'Đang chuẩn bị tìm bìa...',
-    });
-
-    try {
-      const result = await batchFindBookCovers(books, {
-        overwriteExisting,
-        enrichSummary: true,
-        useAiFallback: true,
-        stopSignal: stopFindingCoversRef,
-        onProgress: (p) => setCoverProgress(p),
-        onChunkSave: async (chunk) => {
-          await onBatchUpdateBooks(chunk);
-        },
-      });
-
-      if (result.stopped) {
-        showToast(`Đã dừng. Đã lưu ${result.updatedCount} ảnh bìa.`, 'info');
-      } else if (result.updatedCount > 0) {
-        showToast(`Đã cập nhật ${result.updatedCount} ảnh bìa!`, 'success');
-      } else {
-        showToast('Không tìm thêm được ảnh bìa mới.', 'info');
-      }
-    } catch (err: any) {
-      showToast(`Lỗi tìm bìa: ${err?.message || String(err)}`, 'error');
-    } finally {
-      setIsFindingCovers(false);
-      stopFindingCoversRef.current = false;
-    }
-  };
-
-  const handleStopBatchFindCovers = () => {
-    stopFindingCoversRef.current = true;
   };
 
   const handleManualDeduplicate = async () => {
@@ -891,7 +852,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               else if (reviewProposals) setReviewProposals(null);
               else onClose();
             }}
-
+            className="p-1.5 text-white/80 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer"
             aria-label="Đóng"
           >
             <X className="w-5 h-5" />
@@ -1436,24 +1397,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
               {/* Progress: Tiến độ: 100% !X */}
               <div className="space-y-1.5">
-                <div className="flex items-center text-xs text-slate-700 gap-1.5">
-                  <span className="font-semibold">Tiến độ: </span>
-                  <span className="font-bold text-[#653f96]">
-                    {Math.round((normalizedCount / (totalBooks || 1)) * 100)}%
-                  </span>
-                  {activeReviewCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (pendingReviewAccumulatorRef.current.length > 0) {
-                          setReviewProposals([...pendingReviewAccumulatorRef.current]);
-                        }
-                      }}
-                      title={`${activeReviewCount} cuốn sách cần duyệt đổi tên/tác giả (Bấm để xem)`}
-                      className="font-black text-red-600 hover:text-red-700 transition cursor-pointer"
-                    >
-                      !{activeReviewCount}
-                    </button>
+                <div className="flex items-center justify-between gap-2 text-xs text-slate-700">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="font-semibold">Tiến độ: </span>
+                    <span className="font-bold text-[#653f96]">
+                      {Math.round((normalizedCount / (totalBooks || 1)) * 100)}%
+                    </span>
+                    {activeReviewCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (pendingReviewAccumulatorRef.current.length > 0) {
+                            setReviewProposals([...pendingReviewAccumulatorRef.current]);
+                          }
+                        }}
+                        title={`${activeReviewCount} cuốn sách cần duyệt đổi tên/tác giả (Bấm để xem)`}
+                        className="font-black text-red-600 hover:text-red-700 transition cursor-pointer"
+                      >
+                        !{activeReviewCount}
+                      </button>
+                    )}
+                  </div>
+                  {currentBatchText && (
+                    <span className="text-[11px] font-medium text-[#653f96] truncate">
+                      {currentBatchText}
+                    </span>
                   )}
                 </div>
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
@@ -1500,69 +1468,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <span>Làm lại</span>
                   </button>
                 </div>
-              </div>
-            </div>
-
-            {/* 3B. ẢNH BÌA SÁCH */}
-            <div className="bg-white rounded-2xl border border-slate-100 p-3.5 space-y-2.5 shadow-3xs">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-black text-slate-800 leading-tight">
-                  Ảnh bìa sách
-                </span>
-                <div className="px-2.5 py-1 bg-sky-50 text-[#0284C7] text-xs font-extrabold rounded-xl shrink-0">
-                  {booksWithCoverCount}/{totalBooks}
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600">
-                  <span className="truncate font-medium">
-                    {isFindingCovers && coverProgress
-                      ? coverProgress.statusMessage
-                      : `Đạt ${Math.round((booksWithCoverCount / (totalBooks || 1)) * 100)}%`}
-                  </span>
-                </div>
-                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-[#0284C7] transition-all duration-300 rounded-full"
-                    style={{ width: `${Math.round((booksWithCoverCount / (totalBooks || 1)) * 100)}%` }}
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100">
-                {isFindingCovers ? (
-                  <button
-                    type="button"
-                    onClick={handleStopBatchFindCovers}
-                    className="flex-1 h-9 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-3xs"
-                  >
-                    <Pause className="w-3.5 h-3.5 shrink-0" />
-                    <span>Dừng tìm bìa</span>
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => handleStartBatchFindCovers(false)}
-                      disabled={missingCoverCount === 0}
-                      className="flex-1 h-9 px-3 bg-[#0284C7] hover:bg-[#0369a1] disabled:opacity-40 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-3xs whitespace-nowrap min-w-0"
-                    >
-                      <ImageIcon className="w-3.5 h-3.5 shrink-0" />
-                      <span>Tìm bìa ({missingCoverCount})</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleStartBatchFindCovers(true)}
-                      disabled={totalBooks === 0}
-                      className="px-2.5 h-9 bg-sky-50 hover:bg-sky-100 disabled:opacity-40 text-[#0284C7] border border-sky-200/70 text-xs font-bold rounded-xl transition active:scale-95 cursor-pointer flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
-                      title="Tìm lại ảnh bìa cho toàn bộ kho sách"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5 shrink-0" />
-                      <span>Tìm lại</span>
-                    </button>
-                  </>
-                )}
               </div>
             </div>
 

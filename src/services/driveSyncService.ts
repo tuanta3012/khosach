@@ -1652,7 +1652,7 @@ export async function fetchBooksFromGoogleSheet(
   let pubIdx = headerRow.findIndex((h) => h === 'nhà xuất bản' || h === 'nha xuat ban' || h === 'nxb' || h === 'publisher');
   let dateIdx = headerRow.findIndex((h) => h.includes('ngày') || h.includes('ngay') || h.includes('date') || h.includes('updated'));
   let aiIdx = headerRow.findIndex((h) => h.includes('ai'));
-  let coverIdx = headerRow.findIndex((h) => h.includes('bìa') || h.includes('bia') || h.includes('cover') || h.includes('image'));
+  let coverIdx = headerRow.findIndex((h) => h.includes('bìa') || h.includes('bia') || h.includes('cover') || h.includes('image') || h.includes('url'));
   let summaryIdx = headerRow.findIndex((h) => h.includes('tóm') || h.includes('tom') || h.includes('summary') || h.includes('mô tả') || h.includes('giới thiệu'));
 
   // Chỉ số chuẩn mặc định nếu hàng tiêu đề không khớp

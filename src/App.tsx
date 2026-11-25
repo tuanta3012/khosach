@@ -128,6 +128,7 @@ import {
   syncCategoriesListWithSheetConfig,
 } from './services/driveSyncService';
 import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
+import { batchFindBookCovers, resolveCoverUrlForBook } from './services/bookCoverService';
 import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
 import { syncStartupCloudRulesOnce } from './services/curationLearningService';
 import { 
@@ -235,6 +236,15 @@ export default function App() {
   const [settingsInitialExpandKey, setSettingsInitialExpandKey] = useState(false);
   const [isAutoNormalizing, setIsAutoNormalizing] = useState(false);
   const autoNormalizeAttemptsRef = useRef(new Set<string>());
+  const activeSyncPromiseRef = useRef<Promise<BookRecord[]> | null>(null);
+  const isBatchTaskActiveRef = useRef(false);
+  const autoCoverCheckedIdsRef = useRef(new Set<string>());
+  const isAutoFetchingCoversRef = useRef(false);
+  const autoNormalizeRunningRef = useRef(false);
+  const autoNormalizeStopRef = useRef(false);
+  const syncWithGoogleDriveRef = useRef<
+    ((currentBooks: BookRecord[], options?: { skipAutoCoverCheck?: boolean }) => Promise<BookRecord[]>) | null
+  >(null);
   
   // App Auto Update
   const {
@@ -309,6 +319,93 @@ export default function App() {
       saveAllLocalBooks(books);
     }
   }, [books]);
+
+  const preloadValidCoverUrls = useCallback((bookList: BookRecord[]) => {
+    if (typeof window === 'undefined' || !Array.isArray(bookList)) return;
+    let queued = 0;
+    for (const book of bookList) {
+      const url = (book.cover_url || '').trim();
+      if (!url || url === 'NONE' || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+        continue;
+      }
+      if (queued >= 24) break;
+      queued += 1;
+      try {
+        const img = new window.Image();
+        img.decoding = 'async';
+        img.src = url;
+      } catch {}
+    }
+  }, []);
+
+  // Tự động kiểm tra cột cover_url sau khi đăng nhập trên thiết bị khác & đồng bộ dữ liệu thành công:
+  // - Warm preload cho các URL bìa đã có
+  // - Tự động tìm & tải bìa về ngầm cho các sách còn trống cover_url, lưu local theo lô và đồng bộ 2 chiều 1 lần khi xong
+  const triggerAutoCoverLoadAfterSync = useCallback(
+    async (syncedBooks: BookRecord[], roleOverride?: UserRole) => {
+      if (!Array.isArray(syncedBooks) || syncedBooks.length === 0) return;
+      preloadValidCoverUrls(syncedBooks);
+
+      if (
+        isAutoFetchingCoversRef.current ||
+        isBatchTaskActiveRef.current ||
+        autoNormalizeRunningRef.current
+      ) {
+        return;
+      }
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+      const missingCoverBooks = syncedBooks.filter((b) => {
+        const cover = (b.cover_url || '').trim();
+        return !cover && !autoCoverCheckedIdsRef.current.has(b.id);
+      });
+      if (missingCoverBooks.length === 0) return;
+
+      missingCoverBooks.forEach((b) => autoCoverCheckedIdsRef.current.add(b.id));
+      isAutoFetchingCoversRef.current = true;
+      isBatchTaskActiveRef.current = true;
+      let hasLocalUpdates = false;
+      const effectiveRole = roleOverride || currentUserRef.current?.userRole || 'VIEWER';
+
+      try {
+        log.info(`[AutoCover] Phát hiện ${missingCoverBooks.length} sách chưa có URL bìa sau đồng bộ. Tự động tìm kiếm ngầm...`);
+        const res = await batchFindBookCovers(missingCoverBooks, {
+          overwriteExisting: false,
+          enrichSummary: false,
+          useAiFallback: true,
+          onChunkSave: async (chunk) => {
+            if (!chunk || chunk.length === 0) return;
+            hasLocalUpdates = true;
+            const saved = batchUpsertLocalBooks(chunk);
+            setBooks(saved);
+          },
+        });
+
+        if (res.updatedCount > 0) {
+          showToast(`🖼️ Đã tự động tải về ${res.updatedCount} ảnh bìa sách còn thiếu.`, 'success');
+        }
+      } catch (err) {
+        log.warn('[AutoCover] Lỗi tự động tải ảnh bìa sau đồng bộ:', err);
+      } finally {
+        isAutoFetchingCoversRef.current = false;
+        isBatchTaskActiveRef.current = false;
+      }
+
+      if (hasLocalUpdates && effectiveRole !== 'VIEWER') {
+        const isOnlineMode = (() => {
+          try {
+            return localStorage.getItem('app_mode_v2') === 'online';
+          } catch {
+            return false;
+          }
+        })();
+        if (isOnlineMode && syncWithGoogleDriveRef.current) {
+          await syncWithGoogleDriveRef.current(loadLocalBooks(), { skipAutoCoverCheck: true }).catch(() => {});
+        }
+      }
+    },
+    [preloadValidCoverUrls, showToast]
+  );
 
   // LUỒNG TỰ ĐỘNG KẾT NỐI (AUTO-DISCOVERY & FALLBACK FLOW)
   // Đăng nhập trên bất kỳ thiết bị nào (Web hay APK Android) tự động nhận diện tệp dữ liệu ngầm qua Firestore & Google Drive
@@ -386,6 +483,7 @@ export default function App() {
               setBooks(syncRes.mergedBooks);
               setLastDriveSyncTimestamp(Date.now(), activeSheet.id);
             }
+            void triggerAutoCoverLoadAfterSync(syncRes.mergedBooks, role);
           } catch (syncErr) {
             log.warn('[AutoConnect] Lỗi đồng bộ dữ liệu sau liên kết:', syncErr);
           }
@@ -446,7 +544,7 @@ export default function App() {
         setIsSyncingDrive(false);
       }
     },
-    [showToast]
+    [showToast, triggerAutoCoverLoadAfterSync]
   );
 
   const getCachedUserRole = (): UserRole => {
@@ -497,22 +595,30 @@ export default function App() {
     return () => unsubscribe();
   }, [handleAutoDiscoverAndConnect]);
 
-  // Hàm Đồng Bộ 2 Chiều với Google Drive (Sheets API v4)
+  // Hàm Đồng Bộ 2 Chiều với Google Drive (Sheets API v4) - có khóa chống chạy chồng chéo
   const syncWithGoogleDrive = useCallback(
-    async (currentBooks: BookRecord[]): Promise<BookRecord[]> => {
-      if (appMode !== 'online') return currentBooks;
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        log.info('[Sync] Thiết bị đang ngoại tuyến, giữ nguyên dữ liệu trên máy.');
-        return currentBooks;
+    async (
+      currentBooks: BookRecord[],
+      options?: { skipAutoCoverCheck?: boolean }
+    ): Promise<BookRecord[]> => {
+      if (activeSyncPromiseRef.current) {
+        return activeSyncPromiseRef.current;
       }
 
-      const token = await getAccessToken();
-      if (!token) {
-        log.info('[Sync] Chưa có token Google Drive trong bộ nhớ, giữ nguyên dữ liệu máy.');
-        return currentBooks;
-      }
+      const executeSync = async (): Promise<BookRecord[]> => {
+        if (appMode !== 'online') return currentBooks;
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          log.info('[Sync] Thiết bị đang ngoại tuyến, giữ nguyên dữ liệu trên máy.');
+          return currentBooks;
+        }
 
-      setIsSyncingDrive(true);
+        const token = await getAccessToken();
+        if (!token) {
+          log.info('[Sync] Chưa có token Google Drive trong bộ nhớ, giữ nguyên dữ liệu máy.');
+          return currentBooks;
+        }
+
+        setIsSyncingDrive(true);
       
       // Reload spreadsheetInfo from localStorage to ensure we have the latest
       let currentSpreadsheetInfo = spreadsheetInfo;
@@ -685,6 +791,9 @@ export default function App() {
         setLastDriveSyncTimestamp(Date.now(), sheetInfo.id);
         log.info(`[Sync] Đồng bộ thành công: Tổng cộng ${syncRes.mergedBooks.length} cuốn sách.`);
         showToast(`🚀 Đã đồng bộ thành công ${syncRes.mergedBooks.length} sách với Google Drive!`, 'success');
+        if (!options?.skipAutoCoverCheck) {
+          void triggerAutoCoverLoadAfterSync(syncRes.mergedBooks, activeRole);
+        }
         return syncRes.mergedBooks;
       } catch (err: any) {
         const errMsg = err?.message || String(err);
@@ -732,6 +841,9 @@ export default function App() {
               setBooks(retryRes.mergedBooks);
               setLastDriveSyncTimestamp(Date.now(), sheetInfo.id);
               showToast(`🚀 Đã khôi phục và đồng bộ thành công ${retryRes.mergedBooks.length} sách với Google Drive!`, 'success');
+              if (!options?.skipAutoCoverCheck) {
+                void triggerAutoCoverLoadAfterSync(retryRes.mergedBooks, activeRole);
+              }
               return retryRes.mergedBooks;
             } catch (retryErr: any) {
               log.error('[Sync] Thử lại sau khi khôi phục token thất bại:', retryErr?.message || retryErr);
@@ -747,11 +859,20 @@ export default function App() {
       } finally {
         setIsSyncingDrive(false);
       }
+      };
 
-      return currentBooks;
+      const promise = executeSync().finally(() => {
+        activeSyncPromiseRef.current = null;
+      });
+      activeSyncPromiseRef.current = promise;
+      return promise;
     },
-    [appMode, currentUser, spreadsheetInfo, showToast]
+    [appMode, currentUser, spreadsheetInfo, showToast, triggerAutoCoverLoadAfterSync]
   );
+
+  useEffect(() => {
+    syncWithGoogleDriveRef.current = syncWithGoogleDrive;
+  }, [syncWithGoogleDrive]);
 
   // Kiểm tra lại khi app được mở lại và định kỳ để nhận biết unlink/thu hồi quyền từ thiết bị Admin.
   useEffect(() => {
@@ -878,9 +999,13 @@ export default function App() {
   // Tự động kiểm tra mạng (Wifi + Mobile Data) và Ping Internet thực tế trước khi đẩy đồng bộ (Auto-Reconnect)
   useEffect(() => {
     const cleanup = setupNetworkRecoveryListener(() => {
+      if (isBatchTaskActiveRef.current || activeSyncPromiseRef.current) {
+        log.info('[Network] Đang có tác vụ hàng loạt/đồng bộ đang chạy, hoãn đồng bộ khi có mạng lại.');
+        return;
+      }
       console.log('[Network] Internet thực tế đã được xác nhận. Tiến hành đồng bộ tự động...');
       if (appMode === 'online' && spreadsheetInfo?.id) {
-        syncWithGoogleDrive(books).catch((err) => {
+        syncWithGoogleDrive(loadLocalBooks()).catch((err) => {
           console.warn('[Network] Tự động đồng bộ khi có mạng gặp lỗi:', err);
         });
       }
@@ -889,7 +1014,7 @@ export default function App() {
     return () => {
       cleanup();
     };
-  }, [appMode, spreadsheetInfo?.id, books, syncWithGoogleDrive]);
+  }, [appMode, spreadsheetInfo?.id, syncWithGoogleDrive]);
 
   // CẢI TIẾN 1: Tự động đón đầu token và đồng bộ ngầm khi mở lại app từ Background (App Resume / Foreground)
   useEffect(() => {
@@ -898,6 +1023,10 @@ export default function App() {
         log.info('[AppLifecycle] Token Google mới đã được gia hạn ngầm thành công khi quay lại app.');
       },
       onForeground: () => {
+        if (isBatchTaskActiveRef.current || activeSyncPromiseRef.current) {
+          log.info('[AppLifecycle] Đang chạy tác vụ hàng loạt, bỏ qua đồng bộ ngầm khi quay lại app.');
+          return;
+        }
         if (appMode === 'online' && spreadsheetInfo?.id) {
           const pending = getPendingBookMutations();
           const lastSync = getLastDriveSyncTimestamp();
@@ -1106,50 +1235,93 @@ export default function App() {
     })();
   }, [appMode, currentUser]);
 
-  // 5. Tự động chuẩn hóa dữ liệu ngầm khi bật công tắc gạt và có sách chưa chuẩn hóa
+  // 5. Tự động hiệu chỉnh toàn bộ kho sách ngầm (6 trường + ghi cột G Đã AI = Có, hoãn sync Drive tới khi xong hoặc tắt)
   useEffect(() => {
-    if (!settings.autoNormalizeEnabled || isAutoNormalizing || isLoading) return;
+    if (!settings.autoNormalizeEnabled) {
+      autoNormalizeStopRef.current = true;
+      return;
+    }
+    if (
+      autoNormalizeRunningRef.current ||
+      isAutoNormalizing ||
+      isLoading ||
+      currentUserRef.current?.userRole === 'VIEWER'
+    ) {
+      return;
+    }
 
-    const pending = books.filter((book) => (
-      !book.is_ai_normalized &&
-      !autoNormalizeAttemptsRef.current.has(JSON.stringify([
-        book.id, book.title, book.author, book.publisher, book.category,
-      ]))
-    ));
+    const pending = books.filter((book) => {
+      if (book.is_ai_normalized) return false;
+      const attemptKey = `${book.id}::${book.updated_at || 0}::${book.title}::${book.author || ''}`;
+      return !autoNormalizeAttemptsRef.current.has(attemptKey);
+    });
     if (pending.length === 0) return;
 
     const runAutoNormalize = async () => {
+      if (autoNormalizeRunningRef.current) return;
+      autoNormalizeRunningRef.current = true;
+      autoNormalizeStopRef.current = false;
+      isBatchTaskActiveRef.current = true;
       setIsAutoNormalizing(true);
-      try {
-        const batchToProcess = pending.slice(0, 10);
-        batchToProcess.forEach((book) => {
-          autoNormalizeAttemptsRef.current.add(JSON.stringify([
-            book.id, book.title, book.author, book.publisher, book.category,
-          ]));
-        });
-        const result = await batchNormalize(batchToProcess, { categories: settings.categoriesList });
 
-        if (result && Array.isArray(result.normalized) && result.normalized.length > 0) {
-          const updatedList = books.map((b) => {
-            const found = result.normalized.find((r: any) => r.id === b.id);
-            if (found) {
-              return {
-                ...b,
-                title: found.title || b.title,
-                author: found.author || b.author,
-                category: found.category || b.category,
-                publisher: found.publisher || b.publisher,
+      let hasUpdatedBooks = false;
+      try {
+        pending.forEach((book) => {
+          const attemptKey = `${book.id}::${book.updated_at || 0}::${book.title}::${book.author || ''}`;
+          autoNormalizeAttemptsRef.current.add(attemptKey);
+        });
+
+        const result = await batchNormalize(pending, {
+          categories: settings.categoriesList,
+          stopSignal: autoNormalizeStopRef,
+          onChunkComplete: async (normalizedChunk) => {
+            if (!normalizedChunk || normalizedChunk.length === 0) return;
+            const currentLocal = loadLocalBooks();
+            const bookById = new Map(currentLocal.map((b) => [b.id, b]));
+            const chunkUpdates: BookRecord[] = [];
+
+            for (const found of normalizedChunk) {
+              const orig = bookById.get(found.id);
+              if (!orig) continue;
+
+              const nextTitle = (found.title || orig.title).trim();
+              const nextAuthor = (found.author || orig.author || '').trim();
+              const nextPublisher = (found.publisher || orig.publisher || '').trim();
+              const nextCategory = (found.category || orig.category || 'Chung').trim();
+              const nextSummary = (found.summary || orig.summary || '').trim();
+
+              const resolvedCover = await resolveCoverUrlForBook(
+                nextTitle,
+                nextAuthor,
+                nextPublisher,
+                { existingCoverUrl: orig.cover_url, forceRefresh: false }
+              ).catch(() => orig.cover_url || 'NONE');
+
+              chunkUpdates.push({
+                ...orig,
+                title: nextTitle,
+                author: nextAuthor,
+                category: nextCategory,
+                publisher: nextPublisher,
+                summary: nextSummary,
+                cover_url: resolvedCover,
                 is_ai_normalized: true,
                 updated_at: Date.now(),
-              };
+              });
             }
-            return b;
-          });
 
-          await handleBatchUpdateBooks(updatedList);
-          console.log(`[AutoNormalize] Đã tự động chuẩn hóa ${batchToProcess.length} cuốn sách.`);
+            if (chunkUpdates.length > 0) {
+              hasUpdatedBooks = true;
+              const saved = batchUpsertLocalBooks(chunkUpdates);
+              setBooks(saved);
+            }
+          },
+        });
+
+        if (result.normalized.length > 0) {
+          console.log(`[AutoNormalize] Đã tự động hiệu chỉnh ${result.normalized.length} cuốn sách.`);
         }
-        if (result.failedChunks.length > 0) {
+        if (result.failedChunks.length > 0 && !autoNormalizeStopRef.current) {
           const failedCount = result.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0);
           showToast(`Tự động hiệu chỉnh chưa xử lý được ${failedCount} cuốn. Có thể thử lại thủ công trong Cài đặt.`, 'warning');
         }
@@ -1157,13 +1329,28 @@ export default function App() {
         console.error('[AutoNormalize] Lỗi chuẩn hóa tự động ngầm:', err);
         showToast(`Tự động hiệu chỉnh sách thất bại: ${err instanceof Error ? err.message : String(err)}`, 'warning');
       } finally {
-        setTimeout(() => {
-          setIsAutoNormalizing(false);
-        }, 4000);
+        autoNormalizeRunningRef.current = false;
+        isBatchTaskActiveRef.current = false;
+        setIsAutoNormalizing(false);
+
+        if (hasUpdatedBooks) {
+          const isOnlineMode = (() => {
+            try {
+              return localStorage.getItem('app_mode_v2') === 'online';
+            } catch {
+              return false;
+            }
+          })();
+          if (isOnlineMode && syncWithGoogleDriveRef.current) {
+            await syncWithGoogleDriveRef.current(loadLocalBooks(), { skipAutoCoverCheck: true }).catch(() => {});
+          }
+        }
       }
     };
 
-    const timer = setTimeout(runAutoNormalize, 2000);
+    const timer = setTimeout(() => {
+      void runAutoNormalize();
+    }, 1800);
     return () => clearTimeout(timer);
   }, [books, settings.autoNormalizeEnabled, isAutoNormalizing, isLoading, settings.categoriesList, showToast]);
 
@@ -1289,15 +1476,18 @@ export default function App() {
     }
   };
 
-  // Cập nhật hàng loạt (chuẩn hóa AI / sửa nhanh)
-  const handleBatchUpdateBooks = async (updatedBooksList: BookRecord[]) => {
+  // Cập nhật hàng loạt (chuẩn hóa AI / sửa nhanh - hỗ trợ skipSync để hoãn sync Drive tới khi xong lô)
+  const handleBatchUpdateBooks = async (
+    updatedBooksList: BookRecord[],
+    options?: { skipSync?: boolean }
+  ) => {
     if (currentUser?.userRole === 'VIEWER') {
       showToast('⚠️ Bạn đang ở chế độ CHỈ XEM (Viewer). Không có quyền cập nhật sách!', 'warning');
       return;
     }
     const saved = batchUpsertLocalBooks(updatedBooksList);
     setBooks(saved);
-    if (appMode === 'online') {
+    if (appMode === 'online' && !options?.skipSync) {
       syncWithGoogleDrive(saved)
         .then(() => {
           console.info('[BatchUpdate] Sách đã được cập nhật và đồng bộ 2 chiều với Google Drive.');
@@ -1444,6 +1634,9 @@ export default function App() {
             onSaveBook={handleSaveBook}
             onDeleteBook={handleDeleteBook}
             onBatchUpdateBooks={handleBatchUpdateBooks}
+            onSyncDriveNow={async () => {
+              await syncWithGoogleDrive(loadLocalBooks(), { skipAutoCoverCheck: true });
+            }}
             onOpenAddModal={() => {
               setEditingBook(null);
               setIsAddEditModalOpen(true);
@@ -1512,7 +1705,7 @@ export default function App() {
         userEmail={currentUser?.email}
         appMode={appMode}
         onSignInGoogle={() => handleSelectMode('online')}
-        onSyncDriveNow={async () => { await syncWithGoogleDrive(books); }}
+        onSyncDriveNow={async () => { await syncWithGoogleDrive(loadLocalBooks()); }}
         isSyncingDrive={isSyncingDrive}
         spreadsheetInfo={spreadsheetInfo}
         canUnlinkWorkspace={currentUser?.userRole === 'ADMIN'}
@@ -1659,6 +1852,12 @@ export default function App() {
         onCheckUpdates={!IS_BUILD_AAB ? handleManualCheckUpdates : undefined}
         books={books}
         onBatchUpdateBooks={handleBatchUpdateBooks}
+        onSyncDriveNow={async () => {
+          await syncWithGoogleDrive(loadLocalBooks(), { skipAutoCoverCheck: true });
+        }}
+        onBatchStateChange={(active) => {
+          isBatchTaskActiveRef.current = active;
+        }}
         onBatchDeleteBooks={handleBatchDeleteBooks}
         onClearLocalBooksOnly={handleClearLocalBooksOnly}
         isAutoNormalizing={isAutoNormalizing}

@@ -3,8 +3,6 @@ import {
   Search,
   X,
   Trash2,
-  ChevronLeft,
-  ChevronRight,
   Database,
   LayoutList,
   LayoutGrid,
@@ -16,8 +14,6 @@ import {
   Camera,
   ArrowUpDown,
   PlusCircle,
-  Loader2,
-  Square,
 } from "lucide-react";
 import { BookRecord, UserRole } from "../types";
 import { removeVietnameseTones } from "../utils/fuzzyMatcher";
@@ -30,17 +26,14 @@ import {
   reclassifyBookCategories,
   ensureGeminiAccessAvailable,
 } from "../utils/geminiService";
-import {
-  batchFindBookCovers,
-  BatchCoverProgress,
-} from "../services/bookCoverService";
 
 interface BookTableViewProps {
   books: BookRecord[];
   categories: string[];
   onSaveBook?: (book: BookRecord) => Promise<void>;
   onDeleteBook: (id: string) => Promise<void>;
-  onBatchUpdateBooks?: (updatedBooksList: BookRecord[]) => Promise<void>;
+  onBatchUpdateBooks?: (updatedBooksList: BookRecord[], options?: { skipSync?: boolean }) => Promise<void>;
+  onSyncDriveNow?: () => Promise<void>;
   onOpenAddModal: () => void;
   onOpenEditModal?: (book: BookRecord) => void;
   onOpenImportModal: () => void;
@@ -79,6 +72,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   categories,
   onDeleteBook,
   onBatchUpdateBooks,
+  onSyncDriveNow,
   onOpenAddModal,
   onOpenEditModal,
   onOpenImportModal,
@@ -89,20 +83,26 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
   const { showToast } = useToast();
   const [globalFilter, setGlobalFilter] = useState("");
   const deferredFilter = useDeferredValue(globalFilter);
-  const [viewMode, setViewMode] = useState<"list" | "grid" | "chart">("grid");
+  const [viewMode, setViewModeState] = useState<"list" | "grid" | "chart">(() => {
+    try {
+      const saved = localStorage.getItem("book_library_view_mode");
+      if (saved === "list" || saved === "grid" || saved === "chart") {
+        return saved;
+      }
+    } catch {}
+    return "grid";
+  });
+  const setViewMode = useCallback((mode: "list" | "grid" | "chart") => {
+    setViewModeState(mode);
+    try {
+      localStorage.setItem("book_library_view_mode", mode);
+    } catch {}
+  }, []);
   const [isReclassifyingCategories, setIsReclassifyingCategories] = useState(false);
   const [reclassifyProgress, setReclassifyProgress] = useState<{ processed: number; total: number } | null>(null);
   const stopReclassifyRef = useRef(false);
-  const [isFindingCovers, setIsFindingCovers] = useState(false);
-  const [coverProgress, setCoverProgress] = useState<BatchCoverProgress | null>(null);
-  const [showCoverScopeChoices, setShowCoverScopeChoices] = useState(false);
-  const stopFindingCoversRef = useRef(false);
   const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-
-  // Pagination state
-  const [pageIndex, setPageIndex] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
 
   // Sắp xếp
   const [sortBy, setSortBy] = useState<BookSortOption>(() => {
@@ -118,7 +118,6 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
     try {
       localStorage.setItem("book_library_sort_by", newSort);
     } catch {}
-    setPageIndex(0);
   };
 
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -287,117 +286,19 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
     return scored.map((s) => s.book);
   }, [books, deferredFilter, selectedCategory, sortBy]);
 
-  // Phân trang
-  const totalPages = Math.ceil(filteredData.length / pageSize) || 1;
-  const paginatedBooks = useMemo(() => {
-    const start = pageIndex * pageSize;
-    return filteredData.slice(start, start + pageSize);
-  }, [filteredData, pageIndex, pageSize]);
-
   const handleFilterChange = (val: string) => {
     setGlobalFilter(val);
-    setPageIndex(0);
   };
 
   const handleCategorySelect = (cat: string) => {
     setSelectedCategory(cat);
-    setPageIndex(0);
   };
 
   const handleSelectCategoryFromChart = useCallback((catName: string) => {
     setSelectedCategory(catName);
     setViewMode('list');
-    setPageIndex(0);
     showToast(`Đã lọc: ${catName}`, 'info');
-  }, [showToast]);
-
-  const booksWithCoverCount = useMemo(
-    () => books.filter((b) => Boolean(b.cover_url && b.cover_url.trim() && b.cover_url !== 'NONE')).length,
-    [books]
-  );
-  const missingCoverOrSummaryCount = useMemo(
-    () =>
-      books.filter(
-        (b) =>
-          !b.cover_url ||
-          (b.cover_url !== 'NONE' && !b.cover_url.trim()) ||
-          !b.summary?.trim()
-      ).length,
-    [books]
-  );
-  const missingCoverCount = Math.max(0, books.length - booksWithCoverCount);
-
-  useEffect(() => {
-    return () => {
-      stopFindingCoversRef.current = true;
-    };
-  }, []);
-
-  const handleStartBatchFindCovers = useCallback(
-    async (overwriteExisting: boolean) => {
-      if (userRole === 'VIEWER') {
-        showToast('⚠️ Chế độ Chỉ xem không thể cập nhật ảnh bìa.', 'warning');
-        return;
-      }
-      if (!onBatchUpdateBooks || books.length === 0) return;
-
-      setShowCoverScopeChoices(false);
-      stopFindingCoversRef.current = false;
-      setIsFindingCovers(true);
-      setCoverProgress({
-        phase: 'catalog',
-        processed: 0,
-        total: overwriteExisting ? books.length : missingCoverOrSummaryCount,
-        foundCount: 0,
-        statusMessage: 'Đang chuẩn bị tìm bìa & tóm tắt...',
-      });
-
-      try {
-        const result = await batchFindBookCovers(books, {
-          overwriteExisting,
-          enrichSummary: true,
-          useAiFallback: true,
-          stopSignal: stopFindingCoversRef,
-          onProgress: (p) => setCoverProgress(p),
-          onChunkSave: async (chunk) => {
-            await onBatchUpdateBooks(chunk);
-          },
-        });
-
-        if (result.stopped) {
-          showToast(`Đã dừng. Đã lưu ${result.updatedCount} ảnh bìa & tóm tắt.`, 'info');
-        } else if (result.updatedCount > 0) {
-          showToast(`✨ Đã cập nhật ${result.updatedCount} ảnh bìa & tóm tắt!`, 'success');
-        } else {
-          showToast('Kho sách đã đầy đủ ảnh bìa & tóm tắt.', 'info');
-        }
-      } catch (err: any) {
-        showToast(`Lỗi tìm bìa & tóm tắt: ${err?.message || String(err)}`, 'error');
-      } finally {
-        setIsFindingCovers(false);
-        setCoverProgress(null);
-        stopFindingCoversRef.current = false;
-      }
-    },
-    [userRole, onBatchUpdateBooks, books, missingCoverOrSummaryCount, showToast]
-  );
-
-  const handleGridCoverAiButtonClick = useCallback(() => {
-    if (userRole === 'VIEWER') {
-      showToast('⚠️ Chế độ Chỉ xem không thể cập nhật ảnh bìa.', 'warning');
-      return;
-    }
-    if (books.length === 0 || !onBatchUpdateBooks) return;
-    if (missingCoverOrSummaryCount === 0) {
-      handleStartBatchFindCovers(true);
-      return;
-    }
-    setShowCoverScopeChoices((prev) => !prev);
-  }, [userRole, books.length, onBatchUpdateBooks, missingCoverOrSummaryCount, handleStartBatchFindCovers, showToast]);
-
-  const handleStopBatchFindCovers = useCallback(() => {
-    stopFindingCoversRef.current = true;
-  }, []);
+  }, [setViewMode, showToast]);
 
   const handleStartReclassifyCategories = useCallback(async () => {
     if (userRole === 'VIEWER') {
@@ -440,7 +341,8 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       });
 
       if (changedBooks.length > 0) {
-        await onBatchUpdateBooks(changedBooks);
+        await onBatchUpdateBooks(changedBooks, { skipSync: true });
+        await onSyncDriveNow?.();
       }
 
       if (res.stopped) {
@@ -468,7 +370,7 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       setReclassifyProgress(null);
       stopReclassifyRef.current = false;
     }
-  }, [userRole, onBatchUpdateBooks, books, categories, onOpenSettingsKey, showToast]);
+  }, [userRole, onBatchUpdateBooks, onSyncDriveNow, books, categories, onOpenSettingsKey, showToast]);
 
   const handleStopReclassifyCategories = useCallback(() => {
     stopReclassifyRef.current = true;
@@ -663,116 +565,17 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
       {/* Main Content Area */}
       {viewMode !== 'chart' ? (
         <div className="space-y-2.5">
-          {/* Header riêng cho Kệ bìa sách với nút AI góc trên bên phải (giống Thống kê) */}
-          {viewMode === 'grid' && (
-            <div className="bg-amber-50/40 rounded-2xl p-3 border border-amber-200/80 shadow-xs space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-xs font-extrabold text-amber-950/85 tracking-tight">
-                    Kệ bìa sách
-                  </span>
-                  <span className="text-[11px] font-bold text-amber-800/80">
-                    ({booksWithCoverCount}/{books.length})
-                  </span>
-                </div>
-
-                {onBatchUpdateBooks && (
-                  isFindingCovers ? (
-                    <button
-                      type="button"
-                      onClick={handleStopBatchFindCovers}
-                      title="Dừng tìm ảnh bìa"
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-100 hover:bg-amber-200 active:scale-95 text-amber-900 border border-amber-300 text-[11px] font-extrabold shadow-2xs transition cursor-pointer shrink-0"
-                    >
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
-                      <span>Dừng</span>
-                      <Square className="w-2.5 h-2.5 fill-current" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleGridCoverAiButtonClick}
-                      disabled={books.length === 0}
-                      title="Tìm ảnh bìa sách bằng AI"
-                      aria-label="Tìm ảnh bìa sách bằng AI"
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-[#059669] border border-emerald-300/90 text-[11px] font-extrabold shadow-2xs transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>AI</span>
-                    </button>
-                  )
-                )}
-              </div>
-
-              {showCoverScopeChoices && !isFindingCovers && (
-                <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-amber-200/60">
-                  {missingCoverOrSummaryCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => handleStartBatchFindCovers(false)}
-                      className="px-2.5 py-1.5 rounded-xl bg-[#0284C7] hover:bg-[#0369a1] active:scale-95 text-white text-[11px] font-bold transition cursor-pointer"
-                    >
-                      Chưa đủ bìa / tóm tắt ({missingCoverOrSummaryCount})
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => handleStartBatchFindCovers(true)}
-                    className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-[11px] font-bold transition cursor-pointer"
-                  >
-                    Toàn bộ kho ({books.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCoverScopeChoices(false)}
-                    className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 text-[11px] font-bold transition cursor-pointer ml-auto"
-                  >
-                    Hủy
-                  </button>
-                </div>
-              )}
-
-              {isFindingCovers && coverProgress && (
-                <div className="bg-white/90 border border-emerald-200 rounded-xl px-3 py-2 space-y-1.5">
-                  <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-emerald-800">
-                    <span className="flex items-center gap-1.5 min-w-0">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600 shrink-0" />
-                      <span className="truncate">{coverProgress.statusMessage}</span>
-                    </span>
-                    <span className="font-mono text-emerald-700 shrink-0">
-                      {coverProgress.total > 0
-                        ? `${Math.min(100, Math.round((coverProgress.processed / coverProgress.total) * 100))}%`
-                        : '0%'}
-                    </span>
-                  </div>
-                  <div className="w-full h-1.5 bg-emerald-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-[#10B981] transition-all duration-300 rounded-full"
-                      style={{
-                        width: `${
-                          coverProgress.total > 0
-                            ? Math.min(100, Math.round((coverProgress.processed / coverProgress.total) * 100))
-                            : 0
-                        }%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
           {/* Books List or Grid Shelf */}
           <div
             className={
-              viewMode === 'grid' && paginatedBooks.length > 0
+              viewMode === 'grid' && filteredData.length > 0
                 ? 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-3.5'
                 : 'space-y-1'
             }
           >
-            {paginatedBooks.length > 0 ? (
-              paginatedBooks.map((book, idx) => {
-                const displayIndex = pageIndex * pageSize + idx + 1;
+            {filteredData.length > 0 ? (
+              filteredData.map((book, idx) => {
+                const displayIndex = idx + 1;
                 const badgeStyle = getCategoryBadgeStyle(book.category || '');
 
                 if (viewMode === 'grid') {
@@ -966,59 +769,6 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
               </div>
             )}
           </div>
-
-          {/* Pagination */}
-          {filteredData.length > 0 && (
-            <div className="bg-white rounded-2xl border border-slate-200/90 p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-600 shadow-2xs">
-              <div className="flex items-center justify-between sm:justify-start gap-2">
-                <span>
-                  <strong className="text-slate-900">{paginatedBooks.length}</strong> /{' '}
-                  <strong className="text-slate-900">{filteredData.length}</strong> cuốn
-                </span>
-                <div className="flex items-center gap-1 text-[11px]">
-                  <span>Mỗi trang:</span>
-                  <select
-                    value={pageSize}
-                    onChange={(e) => {
-                      setPageSize(Number(e.target.value));
-                      setPageIndex(0);
-                    }}
-                    className="bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-0.5 text-xs font-semibold text-slate-800"
-                  >
-                    {[25, 50, 100, 200, 500].map((ps) => (
-                      <option key={ps} value={ps}>
-                        {ps}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between sm:justify-end gap-2">
-                <span className="text-[11px]">
-                  Trang <strong className="text-slate-900">{pageIndex + 1}</strong> /{' '}
-                  <strong className="text-slate-900">{totalPages}</strong>
-                </span>
-
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
-                    disabled={pageIndex === 0}
-                    className="p-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setPageIndex((p) => Math.min(totalPages - 1, p + 1))}
-                    disabled={pageIndex >= totalPages - 1}
-                    className="p-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       ) : (
         <CategoryBubbleChart
