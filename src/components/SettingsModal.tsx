@@ -59,23 +59,16 @@ import {
   flushSessionContributionsToCloud,
 } from '../services/curationLearningService';
 import { downloadLogs } from '../utils/logger';
+import {
+  clearPendingTitleAuthorProposals,
+  loadPendingTitleAuthorProposals,
+  PENDING_REVIEWS_CHANGED_EVENT,
+  TitleAuthorProposal,
+  updatePendingProposalCovers,
+  upsertPendingTitleAuthorProposals,
+} from '../utils/pendingReviewStorage';
 
-export interface TitleAuthorProposal {
-  bookId: string;
-  originalTitle: string;
-  proposedTitle: string;
-  titleChanged: boolean;
-  originalAuthor: string;
-  proposedAuthor: string;
-  authorChanged: boolean;
-  category: string;
-  publisher?: string;
-  summary?: string;
-  cover_url?: string;
-  sources: BookSource[];
-  selected: boolean;
-  isEditing?: boolean;
-}
+export type { TitleAuthorProposal };
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -134,8 +127,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // States cho duyệt đề xuất thay đổi Tên sách & Tác giả sau khi chạy xong hoặc bấm tạm dừng
   const [reviewProposals, setReviewProposals] = useState<TitleAuthorProposal[] | null>(null);
-  const [pendingReviewCount, setPendingReviewCount] = useState(0);
-  const pendingReviewAccumulatorRef = useRef<TitleAuthorProposal[]>([]);
+  const [pendingReviewCount, setPendingReviewCount] = useState<number>(() => {
+    try {
+      return loadPendingTitleAuthorProposals().length;
+    } catch {
+      return 0;
+    }
+  });
+  const pendingReviewAccumulatorRef = useRef<TitleAuthorProposal[]>(
+    loadPendingTitleAuthorProposals()
+  );
   const sourceLookupWarningsRef = useRef(new Set<string>());
 
   // States cho chuẩn hóa bằng AI
@@ -155,6 +156,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Mặc định tính năng AI tự động luôn là OFF khi cài app mới
   const [autoNormalize, setAutoNormalize] = useState<boolean>(() => !!settings.autoNormalizeEnabled);
+
+  useEffect(() => {
+    const syncPendingReviews = () => {
+      const latest = loadPendingTitleAuthorProposals();
+      pendingReviewAccumulatorRef.current = latest;
+      setPendingReviewCount(latest.length);
+    };
+    if (isOpen) {
+      syncPendingReviews();
+    }
+    window.addEventListener(PENDING_REVIEWS_CHANGED_EVENT, syncPendingReviews);
+    return () => window.removeEventListener(PENDING_REVIEWS_CHANGED_EVENT, syncPendingReviews);
+  }, [isOpen]);
 
   useEffect(() => {
     setAutoNormalize(!!settings.autoNormalizeEnabled);
@@ -397,6 +411,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       if (!normalizedChunk || normalizedChunk.length === 0) return;
 
       const safeUpdatedList: BookRecord[] = [];
+      const chunkProposals: TitleAuthorProposal[] = [];
       for (const normItem of normalizedChunk) {
         if (normItem.sourceWarning) sourceLookupWarningsRef.current.add(normItem.sourceWarning);
         const orig = localPending.find((b) => b.id === normItem.id);
@@ -450,25 +465,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         safeUpdatedList.push(updatedBook);
 
         if (titleMeaningfullyChanged || authorMeaningfullyChanged) {
-          const exists = pendingReviewAccumulatorRef.current.some((p) => p.bookId === orig.id);
-          if (!exists) {
-            pendingReviewAccumulatorRef.current.push({
-              bookId: orig.id,
-              originalTitle: orig.title,
-              proposedTitle: normTitleTrim,
-              titleChanged: titleMeaningfullyChanged,
-              originalAuthor: orig.author,
-              proposedAuthor: normAuthorTrim,
-              authorChanged: authorMeaningfullyChanged,
-              category: enrichedCategory,
-              publisher: enrichedPublisher,
-              summary: enrichedSummary,
-              cover_url: hasValidExistingCover ? existingCover : '',
-              sources: normItem.sources || [],
-              selected: true,
-            });
-          }
+          chunkProposals.push({
+            bookId: orig.id,
+            originalTitle: orig.title,
+            proposedTitle: normTitleTrim,
+            titleChanged: titleMeaningfullyChanged,
+            originalAuthor: orig.author,
+            proposedAuthor: normAuthorTrim,
+            authorChanged: authorMeaningfullyChanged,
+            category: enrichedCategory,
+            publisher: enrichedPublisher,
+            summary: enrichedSummary,
+            cover_url: hasValidExistingCover ? existingCover : '',
+            sources: normItem.sources || [],
+            selected: true,
+          });
         }
+      }
+
+      if (chunkProposals.length > 0) {
+        const persisted = upsertPendingTitleAuthorProposals(chunkProposals);
+        pendingReviewAccumulatorRef.current = persisted;
       }
 
       if (safeUpdatedList.length > 0) {
@@ -515,11 +532,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           },
           onChunkSave: async (coverUpdates) => {
             if (!coverUpdates || coverUpdates.length === 0) return;
+            const coverMap = new Map<string, string>();
             const syncedUpdates = coverUpdates.map((cu) => {
               const existingOrig = localPending.find((b) => b.id === cu.id);
               const matchingProposal = pendingReviewAccumulatorRef.current.find((p) => p.bookId === cu.id);
-              if (matchingProposal && cu.cover_url && cu.cover_url !== 'NONE') {
-                matchingProposal.cover_url = cu.cover_url;
+              if (cu.cover_url && cu.cover_url !== 'NONE') {
+                coverMap.set(cu.id, cu.cover_url);
+                if (matchingProposal) {
+                  matchingProposal.cover_url = cu.cover_url;
+                }
               }
               return {
                 ...cu,
@@ -532,6 +553,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 is_ai_normalized: true,
               };
             });
+            if (coverMap.size > 0) {
+              pendingReviewAccumulatorRef.current = updatePendingProposalCovers(coverMap);
+            }
             await onBatchUpdateBooks(syncedUpdates, { skipSync: true });
             hasLocalUpdates = true;
           },
@@ -686,6 +710,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setReviewProposals(null);
       setPendingReviewCount(0);
       pendingReviewAccumulatorRef.current = [];
+      clearPendingTitleAuthorProposals();
     } catch (err: any) {
       showToast(`Lỗi: ${err.message}`, 'error');
     } finally {
@@ -697,6 +722,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setReviewProposals(null);
     setPendingReviewCount(0);
     pendingReviewAccumulatorRef.current = [];
+    clearPendingTitleAuthorProposals();
     showToast('Đã giữ nguyên tên sách & tác giả gốc.', 'info');
     flushSessionContributionsToCloud().catch(() => {});
   };
@@ -712,6 +738,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     await onBatchUpdateBooks(resetList);
     pendingReviewAccumulatorRef.current = [];
     setPendingReviewCount(0);
+    clearPendingTitleAuthorProposals();
     showToast(`Đã đặt lại cờ AI cho ${books.length} cuốn sách!`, 'success');
   };
 
@@ -1448,14 +1475,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          if (pendingReviewAccumulatorRef.current.length > 0) {
-                            setReviewProposals([...pendingReviewAccumulatorRef.current]);
+                          const currentProposals = pendingReviewAccumulatorRef.current.length > 0
+                            ? pendingReviewAccumulatorRef.current
+                            : loadPendingTitleAuthorProposals();
+                          if (currentProposals.length > 0) {
+                            setReviewProposals([...currentProposals]);
                           }
                         }}
                         title={`${activeReviewCount} cuốn sách cần duyệt đổi tên/tác giả (Bấm để xem)`}
-                        className="font-black text-red-600 hover:text-red-700 transition cursor-pointer"
+                        className="px-2 py-0.5 rounded-lg bg-rose-50 border border-rose-200 text-[11px] font-black text-rose-600 hover:bg-rose-100 transition cursor-pointer"
                       >
-                        !{activeReviewCount}
+                        !{activeReviewCount} Chờ duyệt
                       </button>
                     )}
                   </div>

@@ -138,15 +138,17 @@ export const Navbar: React.FC<NavbarProps> = ({
                     {totalBooksCount}
                   </span>
 
-                  {/* Badge chỉ số thay đổi lớn !X khi AI đang làm giàu dữ liệu */}
+                  {/* Badge chỉ số thay đổi lớn !X chờ duyệt */}
                   {pendingAiCount > 0 && (
-                    <span
-                      title={`${pendingAiCount} cuốn sách đang chờ/chuẩn hóa AI`}
-                      className="px-1.5 py-0.2 text-[9.5px] font-black bg-[#F59E0B] text-slate-950 rounded-full animate-bounce shadow-xs flex items-center gap-0.5"
+                    <button
+                      type="button"
+                      onClick={onOpenSettingsModal}
+                      title={`${pendingAiCount} cuốn sách có thay đổi tên/tác giả đang chờ duyệt (Bấm để mở Cài đặt)`}
+                      className="px-1.5 py-0.2 text-[9.5px] font-black bg-[#F59E0B] hover:bg-amber-400 text-slate-950 rounded-full animate-bounce shadow-xs flex items-center gap-0.5 cursor-pointer"
                     >
                       <Sparkles className="w-2.5 h-2.5" />
                       !{pendingAiCount}
-                    </span>
+                    </button>
                   )}
                 </div>
 

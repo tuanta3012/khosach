@@ -129,6 +129,14 @@ import {
 } from './services/driveSyncService';
 import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
 import { batchFindBookCovers, PrecomputedCoverHint } from './services/bookCoverService';
+import { isMeaningfulChange } from './utils/fuzzyMatcher';
+import {
+  loadPendingTitleAuthorProposals,
+  PENDING_REVIEWS_CHANGED_EVENT,
+  TitleAuthorProposal,
+  updatePendingProposalCovers,
+  upsertPendingTitleAuthorProposals,
+} from './utils/pendingReviewStorage';
 import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
 import { syncStartupCloudRulesOnce } from './services/curationLearningService';
 import { 
@@ -235,6 +243,20 @@ export default function App() {
   const [isFamilyShareModalOpen, setIsFamilyShareModalOpen] = useState(false);
   const [settingsInitialExpandKey, setSettingsInitialExpandKey] = useState(false);
   const [isAutoNormalizing, setIsAutoNormalizing] = useState(false);
+  const [pendingReviewCount, setPendingReviewCount] = useState<number>(() => {
+    try {
+      return loadPendingTitleAuthorProposals().length;
+    } catch {
+      return 0;
+    }
+  });
+  useEffect(() => {
+    const syncPending = () => {
+      setPendingReviewCount(loadPendingTitleAuthorProposals().length);
+    };
+    window.addEventListener(PENDING_REVIEWS_CHANGED_EVENT, syncPending);
+    return () => window.removeEventListener(PENDING_REVIEWS_CHANGED_EVENT, syncPending);
+  }, []);
   const autoNormalizeAttemptsRef = useRef(new Set<string>());
   const activeSyncPromiseRef = useRef<Promise<BookRecord[]> | null>(null);
   const isBatchTaskActiveRef = useRef(false);
@@ -1265,8 +1287,10 @@ export default function App() {
       setIsAutoNormalizing(true);
 
       let hasUpdatedBooks = false;
+      let autoProposalsAdded = 0;
       const coverHintsMap = new Map<string, PrecomputedCoverHint>();
       const booksNeedingCoverMap = new Map<string, BookRecord>();
+      const pendingProposalBookIds = new Set<string>();
 
       try {
         pending.forEach((book) => {
@@ -1282,13 +1306,22 @@ export default function App() {
             const currentLocal = loadLocalBooks();
             const bookById = new Map(currentLocal.map((b) => [b.id, b]));
             const chunkUpdates: BookRecord[] = [];
+            const chunkProposals: TitleAuthorProposal[] = [];
 
             for (const found of normalizedChunk) {
               const orig = bookById.get(found.id);
               if (!orig) continue;
 
-              const nextTitle = (found.title || orig.title).trim();
-              const nextAuthor = (found.author || orig.author || '').trim();
+              const normTitle = (found.title || orig.title).trim();
+              const normAuthor = (found.author || orig.author || '').trim();
+              const origTitleTrim = (orig.title || '').trim();
+              const origAuthorTrim = (orig.author || '').trim();
+
+              const titleMeaningfullyChanged = isMeaningfulChange(origTitleTrim, normTitle, false);
+              const authorMeaningfullyChanged = isMeaningfulChange(origAuthorTrim, normAuthor, true);
+
+              const nextTitle = titleMeaningfullyChanged ? orig.title : (normTitle || orig.title);
+              const nextAuthor = authorMeaningfullyChanged ? orig.author : (normAuthor || orig.author);
               const nextPublisher = (found.publisher || orig.publisher || '').trim();
               const nextCategory = (found.category || orig.category || 'Chung').trim();
               const nextSummary = (found.summary || orig.summary || '').trim();
@@ -1315,10 +1348,38 @@ export default function App() {
                 updated_at: Date.now(),
               };
 
+              if (titleMeaningfullyChanged || authorMeaningfullyChanged) {
+                pendingProposalBookIds.add(orig.id);
+                chunkProposals.push({
+                  bookId: orig.id,
+                  originalTitle: orig.title,
+                  proposedTitle: normTitle,
+                  titleChanged: titleMeaningfullyChanged,
+                  originalAuthor: orig.author,
+                  proposedAuthor: normAuthor,
+                  authorChanged: authorMeaningfullyChanged,
+                  category: nextCategory,
+                  publisher: nextPublisher,
+                  summary: nextSummary,
+                  cover_url: hasValidExistingCover ? existingCover : '',
+                  sources: found.sources || [],
+                  selected: true,
+                });
+              }
+
               if (!hasValidExistingCover) {
-                booksNeedingCoverMap.set(orig.id, updatedBook);
+                booksNeedingCoverMap.set(orig.id, {
+                  ...updatedBook,
+                  title: normTitle || nextTitle,
+                  author: normAuthor || nextAuthor,
+                });
               }
               chunkUpdates.push(updatedBook);
+            }
+
+            if (chunkProposals.length > 0) {
+              autoProposalsAdded += chunkProposals.length;
+              upsertPendingTitleAuthorProposals(chunkProposals);
             }
 
             if (chunkUpdates.length > 0) {
@@ -1342,15 +1403,40 @@ export default function App() {
             onChunkSave: async (coverUpdates) => {
               if (!coverUpdates || coverUpdates.length === 0) return;
               hasUpdatedBooks = true;
-              const saved = batchUpsertLocalBooks(
-                coverUpdates.map((cu) => ({ ...cu, is_ai_normalized: true }))
-              );
+              const currentLocalById = new Map(loadLocalBooks().map((b) => [b.id, b]));
+              const coverMap = new Map<string, string>();
+              const safeCoverRecords = coverUpdates.map((cu) => {
+                if (cu.cover_url && cu.cover_url !== 'NONE') {
+                  coverMap.set(cu.id, cu.cover_url);
+                }
+                const latestLocal = currentLocalById.get(cu.id);
+                return {
+                  ...cu,
+                  title: pendingProposalBookIds.has(cu.id)
+                    ? (latestLocal?.title || cu.title)
+                    : cu.title,
+                  author: pendingProposalBookIds.has(cu.id)
+                    ? (latestLocal?.author || cu.author)
+                    : cu.author,
+                  is_ai_normalized: true,
+                };
+              });
+              if (coverMap.size > 0) {
+                updatePendingProposalCovers(coverMap);
+              }
+              const saved = batchUpsertLocalBooks(safeCoverRecords);
               setBooks(saved);
             },
           });
         }
 
-        if (result.normalized.length > 0) {
+        if (autoProposalsAdded > 0) {
+          const totalPendingReviews = loadPendingTitleAuthorProposals().length;
+          showToast(
+            `✨ AI tự động hiệu chỉnh xong. Có ${totalPendingReviews} cuốn đổi tên/tác giả chờ bạn duyệt trong Cài đặt (!${totalPendingReviews}).`,
+            'info'
+          );
+        } else if (result.normalized.length > 0) {
           console.log(`[AutoNormalize] Đã tự động hiệu chỉnh ${result.normalized.length} cuốn sách.`);
         }
         if (result.failedChunks.length > 0 && !autoNormalizeStopRef.current) {
@@ -1653,6 +1739,7 @@ export default function App() {
         isSyncingDrive={isSyncingDrive}
         hasLinkedSpreadsheet={!!spreadsheetInfo?.id}
         spreadsheetInfo={spreadsheetInfo}
+        pendingAiCount={pendingReviewCount}
         onGoogleSignIn={() => handleSelectMode('online')}
         onGoogleLogout={handleGoogleLogout}
       />
