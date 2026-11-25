@@ -493,31 +493,9 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
                     {summary.trim()}
                   </p>
                 ) : (
-                  <div className="py-3 text-left space-y-2">
-                    <p className="text-sm text-slate-400 italic">
-                      Cuốn sách này chưa có lời giới thiệu nội dung.
-                    </p>
-                    <div className="flex flex-wrap items-center justify-start gap-3 text-xs font-bold">
-                      <button
-                        type="button"
-                        onClick={handleEnrichFullBookAI}
-                        disabled={isEnriching}
-                        className="text-[#059669] hover:text-emerald-700 transition cursor-pointer inline-flex items-center gap-1"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>Tạo giới thiệu bằng AI</span>
-                      </button>
-                      <span className="text-slate-300">·</span>
-                      <button
-                        type="button"
-                        onClick={() => setIsEditMode(true)}
-                        className="text-[#0284C7] hover:text-[#0369a1] transition cursor-pointer inline-flex items-center gap-1"
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                        <span>Tự nhập nội dung</span>
-                      </button>
-                    </div>
-                  </div>
+                  <p className="py-2 text-sm text-slate-400 italic text-left">
+                    Cuốn sách này chưa có lời giới thiệu nội dung.
+                  </p>
                 )}
               </div>
             </div>

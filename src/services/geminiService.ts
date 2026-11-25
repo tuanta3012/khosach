@@ -10,6 +10,7 @@
  * 3. Xử lý đa luồng ảnh chụp gáy sách (Batch Scan Vision) & Chuẩn hóa hàng loạt (Batch Normalize).
  */
 
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { 
   BatchNormalizeFailure,
   BatchNormalizeResult,
@@ -259,6 +260,14 @@ export function getNextAvailableKey(keys: string[], excludedKeys: ReadonlySet<st
 const API_BASE = ((import.meta as unknown as { env?: Record<string, string> })?.env?.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const SERVER_KEY_PREFIX = '__SERVER_KEY_';
 
+function isNativeApkWithoutCustomApiBase(): boolean {
+  try {
+    return !API_BASE && Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+}
+
 export function isServerKeyToken(key: string): boolean {
   return key.startsWith(SERVER_KEY_PREFIX);
 }
@@ -280,6 +289,15 @@ export async function refreshServerGeminiStatus(): Promise<{
   serverConfigured: boolean;
   serverKeyCount: number;
 }> {
+  if (isNativeApkWithoutCustomApiBase()) {
+    serverStatusCache = {
+      checked: true,
+      serverConfigured: false,
+      serverKeyCount: 0,
+    };
+    return { serverConfigured: false, serverKeyCount: 0 };
+  }
+
   if (serverStatusPromise) return serverStatusPromise;
   serverStatusPromise = (async () => {
     try {
@@ -514,6 +532,197 @@ function clearKeyErrorState(key: string): void {
   } catch {}
 }
 
+function normalizeContentsForNativeRest(contents: unknown): Array<{ role?: string; parts: unknown[] }> {
+  if (typeof contents === 'string') {
+    return [{ role: 'user', parts: [{ text: contents }] }];
+  }
+  if (Array.isArray(contents)) {
+    if (contents.length === 0) return [];
+    const first = contents[0] as Record<string, unknown> | undefined;
+    if (first && typeof first === 'object' && Array.isArray(first.parts)) {
+      return contents.map((item: any) => ({
+        role: item?.role || 'user',
+        parts: Array.isArray(item?.parts) ? item.parts : [],
+      }));
+    }
+    return [{ role: 'user', parts: contents }];
+  }
+  if (contents && typeof contents === 'object') {
+    const obj = contents as Record<string, unknown>;
+    if (Array.isArray(obj.parts)) {
+      return [{ role: (obj.role as string) || 'user', parts: obj.parts }];
+    }
+    return [{ role: 'user', parts: [obj] }];
+  }
+  return [{ role: 'user', parts: [{ text: String(contents ?? '') }] }];
+}
+
+function buildNativeRestRequestBody(contents: unknown, rawConfig?: unknown): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    contents: normalizeContentsForNativeRest(contents),
+  };
+
+  if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
+    return payload;
+  }
+
+  const cfg = rawConfig as Record<string, unknown>;
+  if (typeof cfg.systemInstruction === 'string' && cfg.systemInstruction.trim()) {
+    payload.systemInstruction = { parts: [{ text: cfg.systemInstruction }] };
+  } else if (cfg.systemInstruction && typeof cfg.systemInstruction === 'object') {
+    payload.systemInstruction = cfg.systemInstruction;
+  }
+
+  const generationConfig: Record<string, unknown> = {};
+  if (typeof cfg.responseMimeType === 'string' && cfg.responseMimeType.trim()) {
+    generationConfig.responseMimeType = cfg.responseMimeType;
+  }
+  if (cfg.responseSchema && typeof cfg.responseSchema === 'object') {
+    generationConfig.responseSchema = cfg.responseSchema;
+  }
+  if (cfg.thinkingConfig && typeof cfg.thinkingConfig === 'object') {
+    generationConfig.thinkingConfig = cfg.thinkingConfig;
+  }
+  if (typeof cfg.seed === 'number' && Number.isFinite(cfg.seed)) {
+    generationConfig.seed = cfg.seed;
+  }
+  if (typeof cfg.maxOutputTokens === 'number' && Number.isFinite(cfg.maxOutputTokens)) {
+    generationConfig.maxOutputTokens = cfg.maxOutputTokens;
+  }
+  if (typeof cfg.temperature === 'number' && Number.isFinite(cfg.temperature)) {
+    generationConfig.temperature = cfg.temperature;
+  }
+  if (Object.keys(generationConfig).length > 0) {
+    payload.generationConfig = generationConfig;
+  }
+
+  if (Array.isArray(cfg.tools)) {
+    const restTools = cfg.tools
+      .filter(
+        (t): t is Record<string, unknown> =>
+          Boolean(
+            t &&
+              typeof t === 'object' &&
+              !Array.isArray(t) &&
+              ('googleSearch' in (t as Record<string, unknown>) || 'google_search' in (t as Record<string, unknown>))
+          )
+      )
+      .map(() => ({ google_search: {} }));
+    if (restTools.length > 0) {
+      payload.tools = restTools;
+    }
+  }
+
+  return payload;
+}
+
+function extractRetryAfterMsFromMessage(message: string): number | undefined {
+  const match = message.match(/retry(?:\s+in|\s*delay["':\s]+)(\d+(?:\.\d+)?)\s*s/i);
+  if (!match) return undefined;
+  const parsed = Math.ceil(Number(match[1]) * 1000);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.min(65_000, Math.max(RPM_429_COOLDOWN_MS, parsed + 1_500));
+}
+
+async function callNativeApkGeminiHttp(params: {
+  key: string;
+  model: string;
+  contents: unknown;
+  config?: unknown;
+}): Promise<{ text: string; groundingUrls?: Array<{ uri: string; title?: string }> }> {
+  const cleanKey = params.key.trim();
+  const model = params.model.trim() || 'gemini-3.5-flash-lite';
+  const endpoint = ['https://', 'generativelanguage.googleapis.com/v1beta/models/', encodeURIComponent(model), ':generateContent'].join('');
+  const bodyObj = buildNativeRestRequestBody(params.contents, params.config);
+
+  const nativeResp = await CapacitorHttp.post({
+    url: endpoint,
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'x-goog-api-key': cleanKey,
+    },
+    data: bodyObj,
+    connectTimeout: 30_000,
+    readTimeout: 90_000,
+  });
+
+  const status = nativeResp.status;
+  let data: any = nativeResp.data;
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data || '{}');
+    } catch {
+      data = { error: { message: data } };
+    }
+  }
+  if (!data || typeof data !== 'object') data = {};
+
+  if (status < 200 || status >= 300) {
+    const apiErrMsg = data?.error?.message || `HTTP ${status}: Lỗi gọi Gemini API trên APK.`;
+    const apiErrStatus = data?.error?.status || '';
+    const errObj: Error & {
+      status?: number;
+      failureKind?: GeminiFailureKind;
+      retryAfterMs?: number;
+      response?: unknown;
+    } = new Error(apiErrMsg);
+    errObj.status = status;
+    errObj.response = data?.error || data;
+    const classified = classifyGeminiFailure({
+      message: `${apiErrMsg} ${apiErrStatus} http ${status}`,
+      status,
+      response: data?.error || data,
+    });
+    errObj.failureKind = classified;
+    if (classified === 'RPM') {
+      const retryMs = extractRetryAfterMsFromMessage(JSON.stringify(data || apiErrMsg));
+      if (retryMs) errObj.retryAfterMs = retryMs;
+    }
+    throw errObj;
+  }
+
+  const candidate = data?.candidates?.[0];
+  const finishReason = candidate?.finishReason;
+  if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
+    const nonRetryErr: Error & { failureKind?: GeminiFailureKind } = new Error(
+      `GEMINI_NON_RETRYABLE: Yêu cầu bị từ chối bởi Google AI (Lý do: ${finishReason}).`
+    );
+    nonRetryErr.failureKind = 'NON_RETRYABLE';
+    throw nonRetryErr;
+  }
+
+  const blockReason = data?.promptFeedback?.blockReason;
+  if (blockReason) {
+    const blockedErr: Error & { failureKind?: GeminiFailureKind } = new Error(
+      `GEMINI_NON_RETRYABLE: Nội dung bị chặn bởi bộ lọc an toàn Google AI (Lý do: ${blockReason}).`
+    );
+    blockedErr.failureKind = 'NON_RETRYABLE';
+    throw blockedErr;
+  }
+
+  const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+  const text = parts
+    .filter((p: any) => typeof p?.text === 'string' && !p?.thought)
+    .map((p: any) => p.text)
+    .join('');
+
+  const rawChunks = candidate?.groundingMetadata?.groundingChunks;
+  const groundingUrls: Array<{ uri: string; title?: string }> = Array.isArray(rawChunks)
+    ? rawChunks
+        .map((chunk: any) => ({
+          uri: typeof chunk?.web?.uri === 'string' ? chunk.web.uri : '',
+          title: typeof chunk?.web?.title === 'string' ? chunk.web.title : undefined,
+        }))
+        .filter((item: { uri: string }) => item.uri.startsWith('http'))
+    : [];
+
+  return {
+    text,
+    ...(groundingUrls.length > 0 ? { groundingUrls } : {}),
+  };
+}
+
 async function callServerGeminiGenerate(params: {
   key: string;
   model: string;
@@ -521,6 +730,10 @@ async function callServerGeminiGenerate(params: {
   config?: unknown;
 }): Promise<{ text: string; groundingUrls?: Array<{ uri: string; title?: string }> }> {
   const { key, model, contents, config } = params;
+
+  if (!isServerKeyToken(key) && Boolean(key.trim()) && isNativeApkWithoutCustomApiBase()) {
+    return callNativeApkGeminiHttp(params);
+  }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -803,8 +1016,55 @@ export async function executeWithFailover(
   throw new Error(`[Gemini Proxy] ${errMessage}`);
 }
 
+async function testGeminiApiKeyNativeApk(
+  cleanKey: string
+): Promise<{ success: boolean; message: string }> {
+  let lastErrMessage = 'Key lỗi. Chờ hoặc thay key mới.';
+
+  for (const modelName of FAILOVER_CHAIN) {
+    try {
+      await acquireRpmSlot(cleanKey, modelName);
+      const result = await callNativeApkGeminiHttp({
+        key: cleanKey,
+        model: modelName,
+        contents: 'Ping test. Reply with word OK.',
+      });
+      if (result?.text?.trim()) {
+        clearKeyErrorState(cleanKey);
+        return {
+          success: true,
+          message:
+            modelName === 'gemini-3.5-flash-lite'
+              ? 'Key hoạt động tốt.'
+              : 'Key hoạt động tốt (dự phòng 3.1).',
+        };
+      }
+      lastErrMessage = 'Gemini trả về phản hồi rỗng.';
+    } catch (err: unknown) {
+      const failure = classifyGeminiFailure(err);
+      if (failure === 'AUTH') {
+        return { success: false, message: 'Key không hợp lệ hoặc bị từ chối quyền.' };
+      }
+      if (failure === 'RPD') {
+        markChannelRpdExhausted(cleanKey, modelName);
+        lastErrMessage = 'Key hết hạn ngạch ngày. Chờ hoặc thay key mới.';
+        continue;
+      }
+      if (failure === 'RPM') {
+        setChannelCooldown(cleanKey, modelName, RPM_429_COOLDOWN_MS);
+        lastErrMessage = 'Key tạm chạm ngưỡng RPM. Đang thử model dự phòng...';
+        continue;
+      }
+      lastErrMessage = err instanceof Error ? err.message : 'Key lỗi. Chờ hoặc thay key mới.';
+    }
+  }
+
+  return { success: false, message: lastErrMessage };
+}
+
 /**
  * KIỂM TRA TÍNH HỢP LỆ VÀ KẾT NỐI CỦA MỘT GEMINI API KEY QUA MÁY CHỦ (/api/gemini/test-key)
+ * (Riêng trên Android APK native không có proxy server cục bộ thì chạy qua CapacitorHttp + bộ điều phối chung)
  */
 export async function testGeminiApiKey(
   candidateKey: string
@@ -812,6 +1072,10 @@ export async function testGeminiApiKey(
   const cleanKey = candidateKey.trim();
   if (!cleanKey) {
     return { success: false, message: 'Chưa nhập API Key.' };
+  }
+
+  if (!isServerKeyToken(cleanKey) && isNativeApkWithoutCustomApiBase()) {
+    return testGeminiApiKeyNativeApk(cleanKey);
   }
 
   try {
