@@ -91,11 +91,18 @@ const lookupCache = new Map<string, { savedAt: number; result: BookLookupResult 
 const coverCache = new Map<string, { savedAt: number; candidates: BookCoverCandidate[] }>();
 let cacheLoaded = false;
 let coverCacheLoaded = false;
-let requestQueue: Promise<void> = Promise.resolve();
-let nextGoogleBooksRequestAt = 0;
-let nextOpenLibraryRequestAt = 0;
-let nextGoodreadsRequestAt = 0;
-let nextAppleBooksRequestAt = 0;
+
+const providerRequestQueues = new Map<string, Promise<void>>();
+const providerNextRequestAt = new Map<string, number>();
+
+const PROVIDER_MIN_INTERVAL_MS: Record<string, number> = {
+  'Open Library': 550,
+  Goodreads: 220,
+  'Apple Books': 220,
+  'Google Books': 250,
+  Wikipedia: 150,
+  Web: 180,
+};
 
 function isNativePlatform(): boolean {
   try {
@@ -110,26 +117,24 @@ async function fetchWithRateLimit(
   provider: BookSource['provider'],
   options?: { useNativeHttp?: boolean; timeoutMs?: number }
 ): Promise<{ ok: boolean; status: number; json: () => Promise<any>; text: () => Promise<string> }> {
+  const providerKey = provider || 'Web';
   let release!: () => void;
-  const previous = requestQueue;
-  requestQueue = new Promise<void>((resolve) => {
+  const previous = providerRequestQueues.get(providerKey) || Promise.resolve();
+  const nextQueue = new Promise<void>((resolve) => {
     release = resolve;
   });
+  providerRequestQueues.set(providerKey, nextQueue);
   await previous;
 
   try {
-    let nextRequestAt = nextGoogleBooksRequestAt;
-    if (provider === 'Open Library') nextRequestAt = nextOpenLibraryRequestAt;
-    else if (provider === 'Goodreads') nextRequestAt = nextGoodreadsRequestAt;
-    else if (provider === 'Apple Books') nextRequestAt = nextAppleBooksRequestAt;
-
+    const nextRequestAt = providerNextRequestAt.get(providerKey) || 0;
     const delay = Math.max(0, nextRequestAt - Date.now());
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 
-    if (provider === 'Open Library') nextOpenLibraryRequestAt = Date.now() + 900;
-    else if (provider === 'Goodreads') nextGoodreadsRequestAt = Date.now() + 280;
-    else if (provider === 'Apple Books') nextAppleBooksRequestAt = Date.now() + 300;
-    else nextGoogleBooksRequestAt = Date.now() + 350;
+    const minInterval = PROVIDER_MIN_INTERVAL_MS[providerKey] ?? 250;
+    providerNextRequestAt.set(providerKey, Date.now() + minInterval);
+
+    const timeoutMs = options?.timeoutMs || 4800;
 
     if (options?.useNativeHttp && isNativePlatform()) {
       const res = await CapacitorHttp.get({
@@ -138,8 +143,8 @@ async function fetchWithRateLimit(
           Accept: 'application/json, text/html, */*',
           'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36',
         },
-        connectTimeout: options.timeoutMs || 6500,
-        readTimeout: options.timeoutMs || 6500,
+        connectTimeout: timeoutMs,
+        readTimeout: timeoutMs,
       });
       const ok = res.status >= 200 && res.status < 300;
       return {
@@ -151,7 +156,7 @@ async function fetchWithRateLimit(
     }
 
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), options?.timeoutMs || 6500) : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
     try {
       const resp = await fetch(url, {
         ...(controller ? { signal: controller.signal } : {}),
@@ -799,7 +804,7 @@ export async function findBookCoverCandidates(
   for (const q of uniqueQueries.slice(0, 2)) {
     const grResults = await searchGoodreadsCoverCandidates(q, cleanTitle, author, origTitle);
     allCandidates.push(...grResults);
-    if (grResults.some((c) => c.score >= 95)) break;
+    if (grResults.some((c) => c.score >= 85)) break;
   }
 
   // Nếu chưa chắc chắn (hoặc tìm đa nguồn cho modal chọn), quét thêm các nguồn quốc tế + Wikipedia song song
@@ -849,7 +854,7 @@ export async function findBookCoverCandidates(
 /**
  * Kiểm tra ảnh bìa có thực sự tải được trên trình duyệt / WebView hay không (tránh ảnh 404 hoặc pixel rỗng).
  */
-export function verifyCoverImageLoadable(url: string, timeoutMs = 4500): Promise<boolean> {
+export function verifyCoverImageLoadable(url: string, timeoutMs = 2800): Promise<boolean> {
   if (!url || typeof window === 'undefined' || typeof Image === 'undefined') {
     return Promise.resolve(Boolean(url));
   }

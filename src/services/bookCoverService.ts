@@ -8,6 +8,7 @@ import {
 import {
   ensureGeminiAccessAvailable,
   getEffectiveGeminiKeys,
+  getSafeAiConcurrency,
   resolveBookCoverQueriesBatch,
   searchBookCoverWithGeminiGrounding,
 } from './geminiService';
@@ -20,10 +21,19 @@ export interface BatchCoverProgress {
   statusMessage: string;
 }
 
+export interface PrecomputedCoverHint {
+  originalTitle?: string;
+  isbn?: string;
+  searchQuery?: string;
+}
+
 export interface BatchFindCoversOptions {
   overwriteExisting?: boolean;
   enrichSummary?: boolean;
   useAiFallback?: boolean;
+  skipGrounding?: boolean;
+  catalogWorkers?: number;
+  precomputedHints?: Map<string, PrecomputedCoverHint>;
   stopSignal?: { current: boolean };
   onProgress?: (progress: BatchCoverProgress) => void;
   onChunkSave?: (updatedBooks: BookRecord[]) => Promise<void>;
@@ -207,6 +217,9 @@ export async function batchFindBookCovers(
     overwriteExisting = false,
     enrichSummary = true,
     useAiFallback = true,
+    skipGrounding = false,
+    catalogWorkers = 8,
+    precomputedHints,
     stopSignal,
     onProgress,
     onChunkSave,
@@ -262,9 +275,9 @@ export async function batchFindBookCovers(
     await flushSaves(false);
   };
 
-  // === VÒNG 1: TRA CỨU THƯ MỤC MỞ MIỄN PHÍ ===
+  // === VÒNG 1: TRA CỨU THƯ MỤC MỞ MIỄN PHÍ SONG SONG ===
   let catalogIdx = 0;
-  const CATALOG_WORKERS = 3;
+  const CATALOG_WORKERS = Math.max(1, Math.min(catalogWorkers, targetBooks.length));
 
   const runCatalogWorker = async () => {
     while (catalogIdx < targetBooks.length) {
@@ -274,14 +287,19 @@ export async function batchFindBookCovers(
 
       const book = targetBooks[idx];
       // Nếu đã có cover và chỉ cần tóm tắt thì bỏ qua Vòng 1 catalog cover
-      if (book.cover_url && book.cover_url.trim() && !overwriteExisting) {
+      if (book.cover_url && book.cover_url.trim() && book.cover_url.trim().toUpperCase() !== 'NONE' && !overwriteExisting) {
         totalProcessed += 1;
         continue;
       }
 
       try {
-        const candidates = await findBookCoverCandidates(book.title, book.author || '');
-        const best = await pickFirstLoadableCover(candidates, 3);
+        const preHint = precomputedHints?.get(book.id);
+        const candidates = await findBookCoverCandidates(book.title, book.author || '', {
+          ...(preHint?.originalTitle ? { originalTitle: preHint.originalTitle } : {}),
+          ...(preHint?.isbn ? { isbn: preHint.isbn } : {}),
+          ...(preHint?.searchQuery ? { altSearchQuery: preHint.searchQuery } : {}),
+        });
+        const best = await pickFirstLoadableCover(candidates, 2);
         if (best) {
           await recordBookCover(book, best.coverUrl);
         }
@@ -312,12 +330,18 @@ export async function batchFindBookCovers(
   }
 
   // === VÒNG 2 & 3: BỔ SUNG BẰNG GEMINI AI CHO CÁC CUỐN CÒN THIẾU BÌA HOẶC TÓM TẮT ===
-  const remainingBooks = targetBooks.filter(
-    (b) => !foundIds.has(b.id) || (enrichSummary && (!b.summary || !b.summary.trim()))
-  );
-  if (useAiFallback && remainingBooks.length > 0 && (await ensureGeminiAccessAvailable())) {
+  const remainingBooks = targetBooks.filter((b) => {
+    const missingCover = !foundIds.has(b.id);
+    const missingSummary = enrichSummary && (!b.summary || !b.summary.trim());
+    if (missingSummary) return true;
+    if (!missingCover) return false;
+    // Nếu Phase 1 đã cung cấp sẵn originalTitle/isbn thì không cần gọi lại AI hint cho cuốn này
+    const pre = precomputedHints?.get(b.id);
+    return !(pre && (pre.originalTitle || pre.isbn));
+  });
+  if (useAiFallback && (remainingBooks.length > 0 || targetBooks.some((b) => !foundIds.has(b.id))) && (await ensureGeminiAccessAvailable())) {
     const keys = getEffectiveGeminiKeys();
-    const concurrency = Math.max(1, Math.min(Math.max(1, keys.length) * 2, 4));
+    const concurrency = getSafeAiConcurrency(keys.length, 12);
 
     // Vòng 2: Giải mã tên gốc quốc tế / từ khóa sạch / ISBN + Tóm tắt nội dung theo lô 8 cuốn
     const CHUNK_SIZE = 8;
@@ -330,8 +354,9 @@ export async function batchFindBookCovers(
     let aiProcessed = 0;
 
     const runAiHintWorker = async (workerIdx: number) => {
+      const staggerMs = keys.length >= 4 ? 220 : 500;
       if (workerIdx > 0) {
-        await new Promise((r) => setTimeout(r, workerIdx * 700));
+        await new Promise((r) => setTimeout(r, workerIdx * staggerMs));
       }
       while (chunkCursor < chunks.length) {
         if (stopSignal?.current) break;
@@ -345,49 +370,53 @@ export async function batchFindBookCovers(
         );
         const hintMap = new Map(hints.map((h) => [h.id, h]));
 
-        for (const book of chunk) {
-          if (stopSignal?.current) break;
-          const hint = hintMap.get(book.id);
-          if (hint?.summary) {
-            summaryMap.set(book.id, hint.summary);
-          }
-          if (hint && (hint.originalTitle || hint.searchQuery || hint.isbn)) {
-            const candidates = await findBookCoverCandidates(book.title, book.author || '', {
-              originalTitle: hint.originalTitle,
-              originalAuthor: hint.originalAuthor,
-              altSearchQuery: hint.searchQuery,
-              isbn: hint.isbn,
-              skipCache: true,
-            });
-            const best = await pickFirstLoadableCover(candidates, 3);
-            if (best) {
-              await recordBookCover(book, best.coverUrl, hint.summary);
+        await Promise.all(
+          chunk.map(async (book) => {
+            if (stopSignal?.current) return;
+            const hint = hintMap.get(book.id);
+            if (hint?.summary) {
+              summaryMap.set(book.id, hint.summary);
             }
-          }
-          aiProcessed += 1;
-          onProgress?.({
-            phase: 'ai-hints',
-            processed: aiProcessed,
-            total: remainingBooks.length,
-            foundCount: totalFound,
-            statusMessage: `AI phân tích tên gốc/ISBN & tóm tắt (${aiProcessed}/${remainingBooks.length}) • Tổng ${totalFound} bìa`,
-          });
-        }
+            if (!foundIds.has(book.id) && hint && (hint.originalTitle || hint.searchQuery || hint.isbn)) {
+              const candidates = await findBookCoverCandidates(book.title, book.author || '', {
+                originalTitle: hint.originalTitle,
+                originalAuthor: hint.originalAuthor,
+                altSearchQuery: hint.searchQuery,
+                isbn: hint.isbn,
+                skipCache: true,
+              });
+              const best = await pickFirstLoadableCover(candidates, 2);
+              if (best) {
+                await recordBookCover(book, best.coverUrl, hint.summary);
+              }
+            }
+            aiProcessed += 1;
+            onProgress?.({
+              phase: 'ai-hints',
+              processed: aiProcessed,
+              total: remainingBooks.length,
+              foundCount: totalFound,
+              statusMessage: `AI phân tích tên gốc/ISBN (${aiProcessed}/${remainingBooks.length}) • Tổng ${totalFound} bìa`,
+            });
+          })
+        );
       }
     };
 
-    await Promise.all(Array.from({ length: concurrency }, (_, i) => runAiHintWorker(i)));
-    await flushSaves(true);
+    if (chunks.length > 0) {
+      await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, (_, i) => runAiHintWorker(i)));
+      await flushSaves(true);
+    }
 
     // Vòng 3: Google Search Grounding cho các sách Việt Nam đặc thù vẫn còn thiếu
-    const stillMissing = remainingBooks.filter((b) => !foundIds.has(b.id));
-    if (!stopSignal?.current && stillMissing.length > 0) {
+    const stillMissing = targetBooks.filter((b) => !foundIds.has(b.id));
+    if (!skipGrounding && !stopSignal?.current && stillMissing.length > 0) {
       let groundCursor = 0;
       let groundProcessed = 0;
-      const groundWorkers = Math.max(1, Math.min(keys.length, 3));
+      const groundWorkers = Math.max(1, Math.min(keys.length * 2, 10, stillMissing.length));
 
       const runGroundWorker = async (wIdx: number) => {
-        if (wIdx > 0) await new Promise((r) => setTimeout(r, wIdx * 900));
+        if (wIdx > 0) await new Promise((r) => setTimeout(r, wIdx * 260));
         while (groundCursor < stillMissing.length) {
           if (stopSignal?.current) break;
           const gIdx = groundCursor++;

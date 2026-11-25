@@ -147,6 +147,8 @@ export interface NormalizedBookItem {
   category: string;
   summary?: string;
   cover_url?: string;
+  originalTitle?: string;
+  isbn?: string;
   is_ai_normalized: boolean;
   sources?: BookSource[];
   sourceWarning?: string;

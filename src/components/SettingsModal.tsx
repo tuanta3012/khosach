@@ -36,7 +36,7 @@ import {
   testAllGeminiApiKeys,
   ensureGeminiAccessAvailable,
 } from '../services/geminiService';
-import { resolveCoverUrlForBook } from '../services/bookCoverService';
+import { batchFindBookCovers, PrecomputedCoverHint } from '../services/bookCoverService';
 import {
   groupDuplicateBooksAsync,
   DuplicateGroup,
@@ -388,87 +388,85 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     let currentProcessed = 0;
     let hasLocalUpdates = false;
 
-    setCurrentBatchText(`Đang kết nối Gemini API để hiệu chỉnh 6 trường thông tin...`);
+    setCurrentBatchText(`Đang kết nối Gemini API (${Math.max(1, storedKeys.length)} Key) hiệu chỉnh song song...`);
+
+    const coverHintsMap = new Map<string, PrecomputedCoverHint>();
+    const booksNeedingCoverMap = new Map<string, BookRecord>();
 
     const onChunkComplete = async (normalizedChunk: any[], remaining: number) => {
       if (!normalizedChunk || normalizedChunk.length === 0) return;
 
-      const preparedEntries = await Promise.all(
-        normalizedChunk.map(async (normItem: any) => {
-          if (normItem.sourceWarning) sourceLookupWarningsRef.current.add(normItem.sourceWarning);
-          const orig = localPending.find((b) => b.id === normItem.id);
-          if (!orig) return null;
-
-          const normTitleTrim = String(normItem.title || '').trim();
-          const origTitleTrim = (orig.title || '').trim();
-          const normAuthorTrim = String(normItem.author || '').trim();
-          const origAuthorTrim = (orig.author || '').trim();
-
-          const titleMeaningfullyChanged = isMeaningfulChange(origTitleTrim, normTitleTrim, false);
-          const authorMeaningfullyChanged = isMeaningfulChange(origAuthorTrim, normAuthorTrim, true);
-
-          const enrichedCategory = normItem.category || orig.category || 'Chung';
-          const enrichedPublisher = normItem.publisher || orig.publisher || '';
-
-          const resolvedTitle = titleMeaningfullyChanged ? orig.title : (normTitleTrim || orig.title);
-          const resolvedAuthor = authorMeaningfullyChanged ? orig.author : (normAuthorTrim || orig.author);
-          const enrichedSummary = (normItem.summary && String(normItem.summary).trim()) || orig.summary || '';
-
-          // Tự động tìm/xác nhận URL ảnh bìa nếu chưa có hoặc đang là 'NONE'
-          const resolvedCoverUrl = await resolveCoverUrlForBook(
-            normTitleTrim || resolvedTitle,
-            normAuthorTrim || resolvedAuthor,
-            enrichedPublisher,
-            {
-              existingCoverUrl: orig.cover_url,
-              allowAi: true,
-              stopSignal: stopNormalizingRef,
-            }
-          );
-
-          const updatedBook: BookRecord = {
-            ...orig,
-            title: resolvedTitle,
-            author: resolvedAuthor,
-            publisher: enrichedPublisher,
-            category: enrichedCategory,
-            ...(enrichedSummary ? { summary: enrichedSummary } : {}),
-            ...(resolvedCoverUrl ? { cover_url: resolvedCoverUrl } : {}),
-            is_ai_normalized: true,
-            updated_at: Date.now(),
-          };
-
-          const proposal: TitleAuthorProposal | null =
-            titleMeaningfullyChanged || authorMeaningfullyChanged
-              ? {
-                  bookId: orig.id,
-                  originalTitle: orig.title,
-                  proposedTitle: normTitleTrim,
-                  titleChanged: titleMeaningfullyChanged,
-                  originalAuthor: orig.author,
-                  proposedAuthor: normAuthorTrim,
-                  authorChanged: authorMeaningfullyChanged,
-                  category: enrichedCategory,
-                  publisher: enrichedPublisher,
-                  summary: enrichedSummary,
-                  cover_url: resolvedCoverUrl,
-                  sources: normItem.sources || [],
-                  selected: true,
-                }
-              : null;
-
-          return { updatedBook, proposal };
-        })
-      );
-
       const safeUpdatedList: BookRecord[] = [];
-      for (const entry of preparedEntries) {
-        if (!entry) continue;
-        safeUpdatedList.push(entry.updatedBook);
-        if (entry.proposal) {
-          const exists = pendingReviewAccumulatorRef.current.some((p) => p.bookId === entry.proposal!.bookId);
+      for (const normItem of normalizedChunk) {
+        if (normItem.sourceWarning) sourceLookupWarningsRef.current.add(normItem.sourceWarning);
+        const orig = localPending.find((b) => b.id === normItem.id);
+        if (!orig) continue;
+
+        const normTitleTrim = String(normItem.title || '').trim();
+        const origTitleTrim = (orig.title || '').trim();
+        const normAuthorTrim = String(normItem.author || '').trim();
+        const origAuthorTrim = (orig.author || '').trim();
+
+        const titleMeaningfullyChanged = isMeaningfulChange(origTitleTrim, normTitleTrim, false);
+        const authorMeaningfullyChanged = isMeaningfulChange(origAuthorTrim, normAuthorTrim, true);
+
+        const enrichedCategory = normItem.category || orig.category || 'Chung';
+        const enrichedPublisher = normItem.publisher || orig.publisher || '';
+
+        const resolvedTitle = titleMeaningfullyChanged ? orig.title : (normTitleTrim || orig.title);
+        const resolvedAuthor = authorMeaningfullyChanged ? orig.author : (normAuthorTrim || orig.author);
+        const enrichedSummary = (normItem.summary && String(normItem.summary).trim()) || orig.summary || '';
+
+        if (normItem.originalTitle || normItem.isbn) {
+          coverHintsMap.set(orig.id, {
+            ...(normItem.originalTitle ? { originalTitle: String(normItem.originalTitle).trim() } : {}),
+            ...(normItem.isbn ? { isbn: String(normItem.isbn).trim() } : {}),
+          });
+        }
+
+        const existingCover = (orig.cover_url || '').trim();
+        const hasValidExistingCover = Boolean(existingCover && existingCover.toUpperCase() !== 'NONE');
+
+        const updatedBook: BookRecord = {
+          ...orig,
+          title: resolvedTitle,
+          author: resolvedAuthor,
+          publisher: enrichedPublisher,
+          category: enrichedCategory,
+          ...(enrichedSummary ? { summary: enrichedSummary } : {}),
+          ...(hasValidExistingCover ? { cover_url: existingCover } : {}),
+          is_ai_normalized: true,
+          updated_at: Date.now(),
+        };
+
+        if (!hasValidExistingCover) {
+          booksNeedingCoverMap.set(orig.id, {
+            ...updatedBook,
+            title: normTitleTrim || resolvedTitle,
+            author: normAuthorTrim || resolvedAuthor,
+          });
+        }
+
+        safeUpdatedList.push(updatedBook);
+
+        if (titleMeaningfullyChanged || authorMeaningfullyChanged) {
+          const exists = pendingReviewAccumulatorRef.current.some((p) => p.bookId === orig.id);
           if (!exists) {
-            pendingReviewAccumulatorRef.current.push(entry.proposal);
+            pendingReviewAccumulatorRef.current.push({
+              bookId: orig.id,
+              originalTitle: orig.title,
+              proposedTitle: normTitleTrim,
+              titleChanged: titleMeaningfullyChanged,
+              originalAuthor: orig.author,
+              proposedAuthor: normAuthorTrim,
+              authorChanged: authorMeaningfullyChanged,
+              category: enrichedCategory,
+              publisher: enrichedPublisher,
+              summary: enrichedSummary,
+              cover_url: hasValidExistingCover ? existingCover : '',
+              sources: normItem.sources || [],
+              selected: true,
+            });
           }
         }
       }
@@ -485,6 +483,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setCurrentBatchText(
         remaining > 0
           ? `Đang hiệu chỉnh: còn ${remaining} cuốn...`
+          : booksNeedingCoverMap.size > 0
+          ? `Chuẩn bị tìm ảnh bìa song song (${booksNeedingCoverMap.size} cuốn)...`
           : `Đang hoàn tất & đồng bộ...`
       );
     };
@@ -496,6 +496,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         categories: settings.categoriesList,
         withSources: false,
       });
+
+      // Pha 2: Tìm ảnh bìa song song cho các cuốn chưa có bìa (không làm chậm luồng AI chuẩn hóa chữ & tóm tắt)
+      const missingCoverTargets = Array.from(booksNeedingCoverMap.values());
+      if (!stopNormalizingRef.current && missingCoverTargets.length > 0) {
+        setCurrentBatchText(`Đang tìm ảnh bìa song song (${missingCoverTargets.length} cuốn)...`);
+        await batchFindBookCovers(missingCoverTargets, {
+          overwriteExisting: false,
+          enrichSummary: false,
+          useAiFallback: true,
+          precomputedHints: coverHintsMap,
+          catalogWorkers: 8,
+          stopSignal: stopNormalizingRef,
+          onProgress: (prog) => {
+            if (prog.statusMessage) {
+              setCurrentBatchText(prog.statusMessage);
+            }
+          },
+          onChunkSave: async (coverUpdates) => {
+            if (!coverUpdates || coverUpdates.length === 0) return;
+            const syncedUpdates = coverUpdates.map((cu) => {
+              const existingOrig = localPending.find((b) => b.id === cu.id);
+              const matchingProposal = pendingReviewAccumulatorRef.current.find((p) => p.bookId === cu.id);
+              if (matchingProposal && cu.cover_url && cu.cover_url !== 'NONE') {
+                matchingProposal.cover_url = cu.cover_url;
+              }
+              return {
+                ...cu,
+                title: matchingProposal?.titleChanged
+                  ? (existingOrig?.title || cu.title)
+                  : cu.title,
+                author: matchingProposal?.authorChanged
+                  ? (existingOrig?.author || cu.author)
+                  : cu.author,
+                is_ai_normalized: true,
+              };
+            });
+            await onBatchUpdateBooks(syncedUpdates, { skipSync: true });
+            hasLocalUpdates = true;
+          },
+        });
+      }
 
       if (res.normalized.length > 0 && res.failedChunks.length > 0) {
         const failedBookCount = res.failedChunks.reduce((count, chunk) => count + chunk.bookIds.length, 0);

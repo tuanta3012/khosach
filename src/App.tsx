@@ -128,7 +128,7 @@ import {
   syncCategoriesListWithSheetConfig,
 } from './services/driveSyncService';
 import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
-import { batchFindBookCovers, resolveCoverUrlForBook } from './services/bookCoverService';
+import { batchFindBookCovers, PrecomputedCoverHint } from './services/bookCoverService';
 import { checkAndHandleFirstLaunch, deepClearAllApplicationData } from './utils/cleanSlateService';
 import { syncStartupCloudRulesOnce } from './services/curationLearningService';
 import { 
@@ -1265,6 +1265,9 @@ export default function App() {
       setIsAutoNormalizing(true);
 
       let hasUpdatedBooks = false;
+      const coverHintsMap = new Map<string, PrecomputedCoverHint>();
+      const booksNeedingCoverMap = new Map<string, BookRecord>();
+
       try {
         pending.forEach((book) => {
           const attemptKey = `${book.id}::${book.updated_at || 0}::${book.title}::${book.author || ''}`;
@@ -1290,24 +1293,32 @@ export default function App() {
               const nextCategory = (found.category || orig.category || 'Chung').trim();
               const nextSummary = (found.summary || orig.summary || '').trim();
 
-              const resolvedCover = await resolveCoverUrlForBook(
-                nextTitle,
-                nextAuthor,
-                nextPublisher,
-                { existingCoverUrl: orig.cover_url, forceRefresh: false }
-              ).catch(() => orig.cover_url || 'NONE');
+              if (found.originalTitle || found.isbn) {
+                coverHintsMap.set(orig.id, {
+                  ...(found.originalTitle ? { originalTitle: String(found.originalTitle).trim() } : {}),
+                  ...(found.isbn ? { isbn: String(found.isbn).trim() } : {}),
+                });
+              }
 
-              chunkUpdates.push({
+              const existingCover = (orig.cover_url || '').trim();
+              const hasValidExistingCover = Boolean(existingCover && existingCover.toUpperCase() !== 'NONE');
+
+              const updatedBook: BookRecord = {
                 ...orig,
                 title: nextTitle,
                 author: nextAuthor,
                 category: nextCategory,
                 publisher: nextPublisher,
                 summary: nextSummary,
-                cover_url: resolvedCover,
+                ...(hasValidExistingCover ? { cover_url: existingCover } : {}),
                 is_ai_normalized: true,
                 updated_at: Date.now(),
-              });
+              };
+
+              if (!hasValidExistingCover) {
+                booksNeedingCoverMap.set(orig.id, updatedBook);
+              }
+              chunkUpdates.push(updatedBook);
             }
 
             if (chunkUpdates.length > 0) {
@@ -1317,6 +1328,27 @@ export default function App() {
             }
           },
         });
+
+        // Pha 2: Tự động tìm bìa song song cho các cuốn vừa hiệu chỉnh chưa có ảnh bìa
+        const missingCoverTargets = Array.from(booksNeedingCoverMap.values());
+        if (!autoNormalizeStopRef.current && missingCoverTargets.length > 0) {
+          await batchFindBookCovers(missingCoverTargets, {
+            overwriteExisting: false,
+            enrichSummary: false,
+            useAiFallback: true,
+            precomputedHints: coverHintsMap,
+            catalogWorkers: 8,
+            stopSignal: autoNormalizeStopRef,
+            onChunkSave: async (coverUpdates) => {
+              if (!coverUpdates || coverUpdates.length === 0) return;
+              hasUpdatedBooks = true;
+              const saved = batchUpsertLocalBooks(
+                coverUpdates.map((cu) => ({ ...cu, is_ai_normalized: true }))
+              );
+              setBooks(saved);
+            },
+          });
+        }
 
         if (result.normalized.length > 0) {
           console.log(`[AutoNormalize] Đã tự động hiệu chỉnh ${result.normalized.length} cuốn sách.`);
