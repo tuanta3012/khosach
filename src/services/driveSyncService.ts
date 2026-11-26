@@ -37,6 +37,7 @@ export interface FamilyMember {
   apiKey?: string;
   apiKeys?: string[];
   apiKeyUpdatedAt?: string;
+  shareKeys?: boolean;
 }
 
 export interface SpreadsheetInfo {
@@ -2142,11 +2143,62 @@ export async function removeFamilyMember(
  * 7b. Lưu hoặc cập nhật Gemini API Key của thành viên (Admin hoặc Editor) vào Google Sheet Config
  * Đồng bộ sang mọi thiết bị hoặc phiên đăng nhập khác của user đó mà không cần nhập lại.
  */
+export async function fetchAllSharedApiKeys(
+  accessToken: string,
+  spreadsheetId: string
+): Promise<{ keys: string[]; sharedEmails: string[] }> {
+  try {
+    if (!accessToken || !spreadsheetId) return { keys: [], sharedEmails: [] };
+    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
+    if (!state) return { keys: [], sharedEmails: [] };
+
+    const sharedKeysSet = new Set<string>();
+    const sharedEmails: string[] = [];
+
+    // Kiểm tra danh sách members xem ai bật chia sẻ key (mặc định chia sẻ nếu có apiKeys và shareKeys !== false)
+    if (Array.isArray(state.members)) {
+      for (const m of state.members) {
+        if (m.shareKeys === false) continue; // Bỏ qua nếu user tắt chia sẻ
+        const mKeys = m.apiKeys || (m.apiKey ? [m.apiKey] : []);
+        if (mKeys.length > 0) {
+          sharedEmails.push(m.email);
+          mKeys.forEach((k) => {
+            const clean = String(k || '').trim();
+            if (clean) sharedKeysSet.add(clean);
+          });
+        }
+      }
+    }
+
+    // Kiểm tra thêm userApiKeys map
+    if (state.metadata.userApiKeys && typeof state.metadata.userApiKeys === 'object') {
+      for (const [email, keys] of Object.entries(state.metadata.userApiKeys)) {
+        if (Array.isArray(keys)) {
+          keys.forEach((k) => {
+            const clean = String(k || '').trim();
+            if (clean) sharedKeysSet.add(clean);
+          });
+        }
+      }
+    }
+
+    return { keys: Array.from(sharedKeysSet), sharedEmails };
+  } catch (err) {
+    console.warn('[DriveSync] fetchAllSharedApiKeys error:', err);
+    return { keys: [], sharedEmails: [] };
+  }
+}
+
+/**
+ * 7b. Lưu hoặc cập nhật Gemini API Key của thành viên vào Google Sheet Config
+ * Hỗ trợ cờ shareKeys để quyết định có đóng góp vào kho key chung của nhóm hay không.
+ */
 export async function saveUserApiKeyToSheetConfig(
   accessToken: string,
   spreadsheetId: string,
   userEmail: string,
   apiKeys: string[],
+  shareKeys = true,
   userRole?: UserRole
 ): Promise<boolean> {
   const cleanEmail = (userEmail || '').trim().toLowerCase();
@@ -2167,6 +2219,7 @@ export async function saveUserApiKeyToSheetConfig(
     if (matchedMember) {
       matchedMember.apiKeys = cleanKeys;
       matchedMember.apiKey = cleanKeys[0] || '';
+      matchedMember.shareKeys = shareKeys;
       matchedMember.apiKeyUpdatedAt = nowIso;
     } else {
       const role = (userRole === 'ADMIN' || state.metadata.adminEmail?.trim().toLowerCase() === cleanEmail)
@@ -2178,6 +2231,7 @@ export async function saveUserApiKeyToSheetConfig(
         addedAt: nowIso,
         apiKeys: cleanKeys,
         apiKey: cleanKeys[0] || '',
+        shareKeys,
         apiKeyUpdatedAt: nowIso,
       };
       existingMembers.push(matchedMember);
@@ -2199,35 +2253,6 @@ export async function saveUserApiKeyToSheetConfig(
       customSettings: cleanCustomSettings,
       updatedAt: nowIso,
     });
-
-    // Cập nhật bổ trợ vào Tab Config cũ (nếu tệp đang dùng tab Config)
-    try {
-      const configResp = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Config!A:D`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-      if (configResp.ok) {
-        const cData = await configResp.json();
-        const rows: any[][] = cData.values || [];
-        for (let i = 1; i < rows.length; i++) {
-          if (rows[i] && String(rows[i][0] || '').trim().toLowerCase() === cleanEmail) {
-            const rowNum = i + 1;
-            await fetch(
-              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Config!D${rowNum}?valueInputOption=USER_ENTERED`,
-              {
-                method: 'PUT',
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ values: [[cleanKeys.join(';')]] }),
-              }
-            );
-            break;
-          }
-        }
-      }
-    } catch {}
 
     return saveSuccess;
   } catch (err) {
@@ -2256,37 +2281,13 @@ export async function fetchUserApiKeysFromSheetConfig(
         if (Array.isArray(keys) && keys.length > 0) return keys;
       }
 
-      // 2. Kiểm tra trong customSettings.userApiKeys
-      const customApiKeys = state.metadata.customSettings?.userApiKeys;
-      if (customApiKeys && customApiKeys[cleanEmail] && Array.isArray(customApiKeys[cleanEmail])) {
-        return customApiKeys[cleanEmail];
-      }
-
-      // 3. Kiểm tra trong danh sách members
+      // 2. Kiểm tra trong danh sách members
       const matched = state.members.find((m) => m.email.trim().toLowerCase() === cleanEmail);
       if (matched?.apiKeys && matched.apiKeys.length > 0) {
         return matched.apiKeys;
       }
       if (matched?.apiKey) {
         return [matched.apiKey];
-      }
-    }
-
-    // 4. Fallback: Kiểm tra trong tab Config cũ
-    const configResp = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Config!A:D`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (configResp.ok) {
-      const cData = await configResp.json();
-      const rows: any[][] = cData.values || [];
-      for (let i = 1; i < rows.length; i++) {
-        if (rows[i] && String(rows[i][0] || '').trim().toLowerCase() === cleanEmail) {
-          const rawKey = String(rows[i][3] || '').trim();
-          if (rawKey) {
-            return rawKey.split(';').map((k) => k.trim()).filter(Boolean);
-          }
-        }
       }
     }
 
@@ -2298,17 +2299,15 @@ export async function fetchUserApiKeysFromSheetConfig(
 }
 
 /**
- * 7d. Tự động đồng bộ 2 chiều API Key giữa LocalStorage và Google Sheet Config
- * - Khi user Admin hoặc Editor đăng nhập ở máy mới: Tự nạp key từ Sheet về máy
- * - Khi user nhập key mới ở máy hiện tại: Tự lưu lên Sheet Config
- * - Khi cả 2 đều có: Hợp nhất (deduplicate) để đảm bảo đồng nhất
+ * 7d. Tự động đồng bộ 2 chiều API Key giữa LocalStorage và Google Sheet Config (bao gồm cả kho key chung nếu chia sẻ)
  */
 export async function syncUserApiKeyWithSheetConfig(
   accessToken: string,
   spreadsheetId: string,
   userEmail: string,
   userRole: UserRole,
-  localKeys: string[]
+  localKeys: string[],
+  shareKeys = true
 ): Promise<{
   syncedKeys: string[];
   hasUpdatedLocal: boolean;
@@ -2320,39 +2319,27 @@ export async function syncUserApiKeyWithSheetConfig(
   }
 
   const cleanLocal = (localKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
-  const remoteKeys = await fetchUserApiKeysFromSheetConfig(accessToken, spreadsheetId, cleanEmail);
 
-  // Trường hợp 1: Remote có keys, Local chưa có (đăng nhập trên máy mới / trình duyệt mới)
-  if (remoteKeys.length > 0 && cleanLocal.length === 0) {
-    saveStoredGeminiApiKeys(remoteKeys);
-    return { syncedKeys: remoteKeys, hasUpdatedLocal: true, hasUpdatedRemote: false };
-  }
+  // 1. Lưu key cá nhân và trạng thái chia sẻ lên Sheet Config
+  await saveUserApiKeyToSheetConfig(accessToken, spreadsheetId, cleanEmail, cleanLocal, shareKeys, userRole);
 
-  // Trường hợp 2: Local có keys, Remote chưa có (vừa nhập key trên máy hiện tại)
-  if (cleanLocal.length > 0 && remoteKeys.length === 0) {
-    await saveUserApiKeyToSheetConfig(accessToken, spreadsheetId, cleanEmail, cleanLocal, userRole);
-    return { syncedKeys: cleanLocal, hasUpdatedLocal: false, hasUpdatedRemote: true };
-  }
+  // 2. Lấy toàn bộ kho key chung từ tất cả thành viên có bật chia sẻ
+  const sharedResult = await fetchAllSharedApiKeys(accessToken, spreadsheetId);
+  const sharedKeys = sharedResult.keys;
 
-  // Trường hợp 3: Cả 2 đều có key -> Gộp hợp nhất các key mới nhất (không trùng lặp)
+  // 3. Hợp nhất key cá nhân của user với kho key chung
   const mergedSet = new Set<string>();
   cleanLocal.forEach((k) => mergedSet.add(k));
-  remoteKeys.forEach((k) => mergedSet.add(k));
+  sharedKeys.forEach((k) => mergedSet.add(k));
   const mergedList = Array.from(mergedSet);
 
   let hasUpdatedLocal = false;
-  let hasUpdatedRemote = false;
-
   if (mergedList.length > cleanLocal.length) {
     saveStoredGeminiApiKeys(mergedList);
     hasUpdatedLocal = true;
   }
-  if (mergedList.length > remoteKeys.length) {
-    await saveUserApiKeyToSheetConfig(accessToken, spreadsheetId, cleanEmail, mergedList, userRole);
-    hasUpdatedRemote = true;
-  }
 
-  return { syncedKeys: mergedList, hasUpdatedLocal, hasUpdatedRemote };
+  return { syncedKeys: mergedList, hasUpdatedLocal, hasUpdatedRemote: true };
 }
 
 /**

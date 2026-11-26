@@ -98,6 +98,19 @@ export const DEFAULT_BASELINE_RULES: ConsensusRule[] = [
     confidenceRate: 0.93,
     updatedAt: 1740000000000,
   },
+  {
+    id: 'rule_strip_english_parenthetical_titles',
+    type: 'TITLE_CLEAN_ENGLISH',
+    title: 'Loại bỏ tên tiếng Anh trong ngoặc đơn ở sách tiếng Việt',
+    description: 'Tự động lược bỏ phần dịch tên tiếng Anh đặt trong ngoặc đơn sau tên sách tiếng Việt (ví dụ: Phải sống (To live) -> Phải sống)',
+    targetField: 'title',
+    pattern: '\\s*\\([^)]*[A-Za-z]{3,}[^)]*\\)$',
+    action: 'STRIP',
+    source: 'COMMUNITY',
+    voteCount: 180,
+    confidenceRate: 0.98,
+    updatedAt: 1740000000000,
+  },
 ];
 
 /**
@@ -253,6 +266,23 @@ export function synthesizeRulesFromProposals(proposals: ProposalInputItem[]): Co
         source: 'USER_LOCAL',
         voteCount: 1,
         confidenceRate: 0.92,
+        updatedAt: Date.now(),
+      });
+    }
+
+    // 3.5. Kiểm tra tên tiếng Anh trong ngoặc đơn
+    if (/\([^)]*[a-zA-Z]{3,}[^)]*\)/.test(propTitle)) {
+      newRules.push({
+        id: 'rule_strip_english_parenthetical_titles',
+        type: 'TITLE_CLEAN_ENGLISH',
+        title: 'Loại bỏ tên tiếng Anh trong ngoặc đơn ở sách tiếng Việt',
+        description: 'Tự động lược bỏ phần dịch tên tiếng Anh đặt trong ngoặc đơn sau tên sách tiếng Việt',
+        targetField: 'title',
+        pattern: '\\s*\\([^)]*[A-Za-z]{3,}[^)]*\\)$',
+        action: 'STRIP',
+        source: 'USER_LOCAL',
+        voteCount: 1,
+        confidenceRate: 0.98,
         updatedAt: Date.now(),
       });
     }
@@ -580,6 +610,11 @@ export function applyActiveRulesToBookRecord(book: BookRecord, activeRules: Cons
           }
         } catch {}
       }
+    } else if (rule.type === 'TITLE_CLEAN_ENGLISH' || rule.id === 'rule_strip_english_parenthetical_titles') {
+      try {
+        const re = new RegExp(rule.pattern || '\\s*\\([^)]*[A-Za-z]{3,}[^)]*\\)$', 'i');
+        title = title.replace(re, '').trim();
+      } catch {}
     }
   }
 

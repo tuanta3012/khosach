@@ -74,6 +74,7 @@ export interface Settings {
   autoNormalizeEnabled?: boolean;
   normalizeFields?: NormalizeFieldKey[];
   geminiApiKeys: string[];
+  shareGeminiKeys?: boolean;
   selectedModel?: string;
 }
 
@@ -88,6 +89,7 @@ export interface LibrarySettings {
   autoNormalizeEnabled?: boolean;
   normalizeFields?: NormalizeFieldKey[];
   geminiApiKeys?: string[];
+  shareGeminiKeys?: boolean;
   selectedModel?: string;
 }
 
@@ -248,7 +250,8 @@ export type RuleType =
   | 'AUTHOR_EDITORIAL_STRIP'
   | 'TITLE_NORMALIZATION'
   | 'SUBTITLE_PRESERVE'
-  | 'CATEGORY_KEYWORD_MAP';
+  | 'CATEGORY_KEYWORD_MAP'
+  | 'TITLE_CLEAN_ENGLISH';
 
 export interface ConsensusRule {
   id: string;

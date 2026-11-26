@@ -1426,7 +1426,7 @@ NHIỆM VỤ BIÊN MỤC & TRA CỨU:
 
 2. NGUYÊN TẮC TÊN SÁCH (title):
    - SÁCH TIẾNG VIỆT (kể cả tác phẩm dịch sang tiếng Việt): BẮT BUỘC trả về TÊN TIẾNG VIỆT chuẩn chính tả, viết hoa chữ cái đầu và tên riêng (ví dụ: "Những cuộc phiêu lưu của Mít Đặc và các bạn", "Dế Mèn phiêu lưu ký", "Đắc nhân tâm", "Nhà giả kim", "Rừng Na Uy", "Chiến tranh và hòa bình"). TUYỆT ĐỐI KHÔNG dịch ngược sang tiếng Anh hay chèn tên gốc nước ngoài.
-   - SÁCH NGOẠI VĂN GỐC (chỉ khi người dùng cố ý nhập tên tiếng nước ngoài như "Thinking, Fast and Slow", "Atomic Habits"): Giữ tên tiếng nước ngoài và bổ sung bản dịch tiếng Việt phổ biến trong ngoặc đơn "Tên Tiếng Nước Ngoài (Tên Bản Dịch Phổ Biến)". TUYỆT ĐỐI CẤM DỊCH THÔ TỪNG TỪ (WORD-BY-WORD). Nếu chưa có bản dịch chính thức thì giữ nguyên tên tiếng nước ngoài gốc.
+   - SÁCH NGOẠI VĂN GỐC (khi người dùng nhập tên tiếng nước ngoài như "Thinking, Fast and Slow", "Atomic Habits"): BẮT BUỘC trả về theo định dạng "Tên sách tiếng anh (Tên sách tiếng việt phổ biến)" (ví dụ: "Atomic Habits (Thói quen nguyên tử)"). Tìm kiếm bản dịch tiếng Việt chính thức phổ biến tại Việt Nam thay vì dịch thô word-by-word.
 
 3. TÁC GIẢ (author):
    - Tác giả chuẩn xác của cuốn sách (ví dụ: "mit dac" -> "Nikolay Nosov", "de men" -> "Tô Hoài", "nha gia kim" -> "Paulo Coelho", "khong gia dinh" -> "Hector Malot", "hoang tu be" -> "Antoine de Saint-Exupéry").

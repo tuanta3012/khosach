@@ -232,6 +232,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     await onSaveSettings({ ...settings, normalizeFields: updated });
   };
 
+  const [shareKeys, setShareKeys] = useState<boolean>(() => !!settings.shareGeminiKeys);
+
+  useEffect(() => {
+    setShareKeys(!!settings.shareGeminiKeys);
+  }, [settings.shareGeminiKeys, isOpen]);
+
+  const handleToggleShareKeys = async (val: boolean) => {
+    setShareKeys(val);
+    await onSaveSettings({ ...settings, shareGeminiKeys: val });
+    if (
+      currentUser &&
+      (currentUser.userRole === 'ADMIN' || currentUser.userRole === 'EDITOR') &&
+      currentUser.email &&
+      spreadsheetInfo?.id
+    ) {
+      getAccessToken().then(async (token) => {
+        if (token && spreadsheetInfo?.id) {
+          await saveUserApiKeyToSheetConfig(
+            token,
+            spreadsheetInfo.id,
+            currentUser.email,
+            apiKeys,
+            val,
+            currentUser.userRole
+          );
+          showToast(val ? 'Đã bật chia sẻ key vào kho chung!' : 'Đã tắt chia sẻ key.', 'info');
+        }
+      }).catch(() => {});
+    }
+  };
+
   // States cho danh sách Gemini API Keys cá nhân (hoàn toàn do người dùng nhập, không có key mặc định)
   const [newKeyInput, setNewKeyInput] = useState<string>('');
   
@@ -363,6 +394,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             spreadsheetInfo.id,
             currentUser.email,
             updatedKeys,
+            shareKeys,
             currentUser.userRole
           );
           if (synced) {
@@ -400,6 +432,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             spreadsheetInfo.id,
             currentUser.email,
             updatedKeys,
+            shareKeys,
             currentUser.userRole
           );
         }
@@ -1388,12 +1421,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* Nội dung chi tiết (Chỉ hiển thị khi Mở Rộng) */}
               {isKeySectionExpanded && (
                 <div className="space-y-2.5 pt-1.5 mt-1 border-t border-slate-100">
-                  {/* Ô nhập Key mới - Luôn hiển thị để thêm bao nhiêu tuỳ ý */}
+                  {/* Công tắc Chia sẻ key */}
+                  <div className="p-2 px-3 bg-purple-50/50 border border-purple-100/90 rounded-xl flex items-center justify-between shadow-3xs">
+                    <span className="text-xs font-bold text-slate-800">
+                      Chia sẻ key với nhóm
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleShareKeys(!shareKeys)}
+                      className={`w-10 h-5.5 flex items-center rounded-full p-0.5 transition-colors cursor-pointer shrink-0 ${
+                        shareKeys ? 'bg-[#8233ff]' : 'bg-slate-300'
+                      }`}
+                    >
+                      <div
+                        className={`bg-white w-4.5 h-4.5 rounded-full shadow-md transform transition-transform ${
+                          shareKeys ? 'translate-x-4.5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Ô nhập Key mới */}
                   <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10.5px] font-bold text-slate-500">
-                        Thêm Key (dán từng key hoặc nhiều key cách nhau dấu phẩy)
-                      </span>
+                    <div className="flex items-center justify-end gap-2">
                       <a
                         href="https://aistudio.google.com/app/apikey"
                         target="_blank"

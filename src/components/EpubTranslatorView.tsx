@@ -290,16 +290,13 @@ export const EpubTranslatorView: React.FC = () => {
           <p className="mt-3 text-sm sm:text-base font-bold text-slate-800">
             {queue.isParsingFiles
               ? queue.parseStatusText || 'Đang xử lý tệp...'
-              : 'Chọn 1 hoặc nhiều sách .EPUB / .PDF Digital'}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">
-            Dịch tuần tự theo hàng chờ · Tạm dừng/tiếp tục · Lưu vào Download
+              : 'Chọn 1 hoặc nhiều sách .EPUB / .PDF'}
           </p>
         </button>
       ) : (
         <>
           {/* Thanh điều khiển hàng chờ */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
             <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-slate-800 tabular-nums">
               <span
                 className={`w-2.5 h-2.5 rounded-full shrink-0 ${
@@ -312,7 +309,6 @@ export const EpubTranslatorView: React.FC = () => {
               />
               <span>
                 Hàng chờ: {completedCount}/{queue.jobs.length} xong
-                {queue.isRunning ? ' · Đang dịch ngầm ổn định' : ''}
               </span>
             </div>
 
@@ -321,19 +317,10 @@ export const EpubTranslatorView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => void startOrResumeBookQueue()}
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95"
+                  className="min-h-[40px] px-4 py-2 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95"
                 >
-                  {hasPausedOrStartedPending ? (
-                    <>
-                      <Play className="w-4 h-4 fill-current" />
-                      <span>Tiếp tục hàng chờ</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4" />
-                      <span>Dịch tuần tự ({pendingCount})</span>
-                    </>
-                  )}
+                  <Play className="w-4 h-4 fill-current" />
+                  <span>{hasPausedOrStartedPending ? 'Tiếp tục toàn bộ' : 'Dịch toàn bộ'}</span>
                 </button>
               )}
 
@@ -342,7 +329,7 @@ export const EpubTranslatorView: React.FC = () => {
                   type="button"
                   disabled={queue.isStopping}
                   onClick={pauseBookQueue}
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95"
+                  className="min-h-[40px] px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95"
                 >
                   <Pause className="w-4 h-4 fill-current" />
                   <span>{queue.isStopping ? 'Đang dừng...' : 'Tạm dừng'}</span>
@@ -353,7 +340,7 @@ export const EpubTranslatorView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => void clearCompletedFromQueue()}
-                  className="min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95"
+                  className="min-h-[40px] px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   <span>Xóa đã xong</span>

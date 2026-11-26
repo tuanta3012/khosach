@@ -3,6 +3,7 @@ import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 
 const LOG_STORAGE_KEY = 'app_debug_logs';
+const LOG_DATE_KEY = 'app_debug_log_date';
 const MAX_LOG_CHARS = 160_000;
 const FLUSH_DEBOUNCE_MS = 1_200;
 
@@ -10,11 +11,24 @@ let logBuffer = '';
 let bufferInitialized = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+function getTodayString(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function ensureBufferLoaded() {
   if (bufferInitialized) return;
   bufferInitialized = true;
   try {
-    logBuffer = (localStorage.getItem(LOG_STORAGE_KEY) || '').slice(-MAX_LOG_CHARS);
+    const today = getTodayString();
+    const storedDate = localStorage.getItem(LOG_DATE_KEY);
+    if (storedDate !== today) {
+      logBuffer = '';
+      localStorage.setItem(LOG_DATE_KEY, today);
+      localStorage.removeItem(LOG_STORAGE_KEY);
+    } else {
+      logBuffer = (localStorage.getItem(LOG_STORAGE_KEY) || '').slice(-MAX_LOG_CHARS);
+    }
   } catch {
     logBuffer = '';
   }
@@ -58,6 +72,12 @@ function formatArg(arg: any): string {
 function appendLog(level: string, message: string, ...args: any[]) {
   try {
     ensureBufferLoaded();
+    const today = getTodayString();
+    const storedDate = localStorage.getItem(LOG_DATE_KEY);
+    if (storedDate !== today) {
+      logBuffer = '';
+      localStorage.setItem(LOG_DATE_KEY, today);
+    }
     const formattedArgs = args.length > 0 ? ' ' + args.map(formatArg).join(' ') : '';
     const entry = `[${level}] ${new Date().toISOString()}: ${message}${formattedArgs}\n`;
     logBuffer = (logBuffer + entry).slice(-MAX_LOG_CHARS);

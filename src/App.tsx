@@ -519,7 +519,14 @@ export default function App() {
             if (role === 'ADMIN' || role === 'EDITOR') {
               try {
                 const localKeys = getStoredGeminiApiKeys();
-                const res = await syncUserApiKeyWithSheetConfig(token, activeSheet.id, userEmail, role, localKeys);
+                const res = await syncUserApiKeyWithSheetConfig(
+                  token,
+                  activeSheet.id,
+                  userEmail,
+                  role,
+                  localKeys,
+                  settings.shareGeminiKeys ?? false
+                );
                 if (res.hasUpdatedLocal) {
                   setSettings((prev) => ({ ...prev, geminiApiKeys: res.syncedKeys }));
                   saveStoredGeminiApiKeys(res.syncedKeys);
@@ -781,7 +788,8 @@ export default function App() {
                 sheetInfo.id,
                 currentUser.email,
                 activeRole,
-                localKeys
+                localKeys,
+                settings.shareGeminiKeys ?? false
               );
               if (keyRes.hasUpdatedLocal) {
                 setSettings((prev) => ({ ...prev, geminiApiKeys: keyRes.syncedKeys }));
@@ -1750,6 +1758,7 @@ export default function App() {
             spreadsheetInfo.id,
             currentUser.email,
             updatedKeys,
+            newSettings.shareGeminiKeys ?? false,
             currentUser.userRole
           );
           if (synced) {
