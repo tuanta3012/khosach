@@ -1285,7 +1285,7 @@ export default function App() {
       if (book.is_ai_normalized) {
         let needsField = false;
         if (activeFields.includes('summary') && !book.summary?.trim()) needsField = true;
-        if (activeFields.includes('cover_url') && (!book.cover_url?.trim() || book.cover_url.trim().toUpperCase() === 'NONE')) needsField = true;
+        if (activeFields.includes('cover_url') && !book.cover_url?.trim()) needsField = true;
         if (activeFields.includes('category') && (!book.category?.trim() || book.category.trim() === 'Chung')) needsField = true;
         if (activeFields.includes('author') && !book.author?.trim()) needsField = true;
         if (activeFields.includes('publisher') && !book.publisher?.trim()) needsField = true;

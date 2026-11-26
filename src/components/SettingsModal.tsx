@@ -173,7 +173,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const isBookComplete = (b: BookRecord) => {
     if (!b.is_ai_normalized) return false;
     if (selectedNormalizeFields.includes('summary') && !b.summary?.trim()) return false;
-    if (selectedNormalizeFields.includes('cover_url') && (!b.cover_url?.trim() || b.cover_url.trim().toUpperCase() === 'NONE')) return false;
+    if (selectedNormalizeFields.includes('cover_url') && !b.cover_url?.trim()) return false;
     if (selectedNormalizeFields.includes('category') && (!b.category?.trim() || b.category.trim() === 'Chung')) return false;
     if (selectedNormalizeFields.includes('author') && !b.author?.trim()) return false;
     if (selectedNormalizeFields.includes('publisher') && !b.publisher?.trim()) return false;
