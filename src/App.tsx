@@ -3,6 +3,7 @@ import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { BookRecord, LibrarySettings, AuthUser, UserRole } from './types';
 import {
+  initLocalBooksStorage,
   loadLocalBooks,
   saveAllLocalBooks,
   upsertLocalBook,
@@ -166,10 +167,11 @@ export default function App() {
   });
 
   const [showSplash, setShowSplash] = useState<boolean>(true);
+  const firstLaunchGateRef = useRef<Promise<boolean> | null>(null);
 
   // TẦNG 3: KIỂM TRA LẦN ĐẦU CÀI ĐẶT (CHỐNG DỮ LIỆU RÁC AUTO-RESTORE CỦA ANDROID)
   useEffect(() => {
-    (async () => {
+    const gate = (async () => {
       try {
         const isFirstLaunch = await checkAndHandleFirstLaunch(CURRENT_APP_VERSION);
         if (isFirstLaunch) {
@@ -180,10 +182,13 @@ export default function App() {
           setCurrentUser(null);
           setSpreadsheetInfo(null);
         }
+        return isFirstLaunch;
       } catch (e) {
         console.warn('[CleanSlate] Lỗi khởi tạo lần đầu:', e);
+        return false;
       }
     })();
+    firstLaunchGateRef.current = gate;
   }, []);
 
   // Tự động kiểm tra và cập nhật quy tắc đồng thuận từ Cloud Firestore khi đang ở chế độ Online
@@ -1001,12 +1006,15 @@ export default function App() {
     initStatusBar();
   }, []);
 
-  // 2. Nạp dữ liệu ban đầu từ bộ nhớ máy & chạy đồng bộ nếu ở chế độ Online
+  // 2. Nạp dữ liệu ban đầu từ IndexedDB (tự động di chuyển dữ liệu cũ từ LocalStorage nếu có) & đồng bộ Online
   useEffect(() => {
     const initData = async () => {
       setIsLoading(true);
       try {
-        const localBooks = loadLocalBooks();
+        if (firstLaunchGateRef.current) {
+          await firstLaunchGateRef.current;
+        }
+        const localBooks = await initLocalBooksStorage();
         setBooks(localBooks);
 
         const localSettings = loadLocalSettings();

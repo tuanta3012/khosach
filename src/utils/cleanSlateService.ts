@@ -1,4 +1,5 @@
 import { Preferences } from '@capacitor/preferences';
+import { resetLocalBooksMemoryCache } from './localBooksStorage';
 
 /**
  * 1. HÀM DỌN SẠCH TOÀN DIỆN MỌI DỮ LIỆU CỤC BỘ (DEEP CLEAN SLATE)
@@ -7,6 +8,9 @@ import { Preferences } from '@capacitor/preferences';
 export async function deepClearAllApplicationData(): Promise<void> {
   try {
     console.info('[Storage Cleanup] Đang tiến hành xóa sạch dữ liệu đa tầng...');
+
+    // Đóng kết nối IndexedDB & xóa bộ nhớ đệm RAM trước khi xóa database
+    resetLocalBooksMemoryCache();
 
     // TẦNG 1: Dọn sạch Web Storage (localStorage, sessionStorage)
     if (typeof window !== 'undefined') {

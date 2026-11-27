@@ -1,5 +1,14 @@
 import { BookRecord, DEFAULT_NORMALIZE_FIELDS, LibrarySettings, NormalizeFieldKey } from '../types';
 import { getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from '../services/geminiService';
+import {
+  clearLibraryDataInIdb,
+  markLibraryMigratedInIdb,
+  readLibrarySnapshotFromIdb,
+  resetLibraryDbConnection,
+  writeAllBooksToIdb,
+  writeAllMutationsToIdb,
+  writeInitialMigrationToIdb,
+} from './booksIndexedDb';
 
 export const BOOKS_STORAGE_KEY = 'local_books_cache_v2';
 export const SETTINGS_STORAGE_KEY = 'library_settings_v2';
@@ -98,10 +107,79 @@ export const DEFAULT_SETTINGS: LibrarySettings = {
   normalizeFields: [...DEFAULT_NORMALIZE_FIELDS],
 };
 
-/**
- * HÀNG ĐỢI MUTATION NGOẠI TUYẾN (OFFLINE MUTATION QUEUE)
- */
-export function getPendingBookMutations(): BookMutation[] {
+// Bộ nhớ đệm RAM tức thì (in-memory cache) đồng bộ 2 chiều với IndexedDB (không chặn UI)
+let inMemoryBooksCache: BookRecord[] | null = null;
+let inMemoryMutationsCache: BookMutation[] | null = null;
+let booksWriteGeneration = 0;
+let mutationsWriteGeneration = 0;
+let initStoragePromise: Promise<BookRecord[]> | null = null;
+
+// Hàng đợi ghi tuần tự xuống IndexedDB: luôn ghi snapshot mới nhất để tránh xung đột thứ tự
+let booksIdbFlushInFlight: Promise<void> | null = null;
+let booksIdbDirty = false;
+let mutationsIdbFlushInFlight: Promise<void> | null = null;
+let mutationsIdbDirty = false;
+
+function scheduleBooksIdbFlush(): void {
+  if (typeof indexedDB === 'undefined') return;
+  booksIdbDirty = true;
+  if (booksIdbFlushInFlight) return;
+
+  booksIdbFlushInFlight = (async () => {
+    while (booksIdbDirty) {
+      booksIdbDirty = false;
+      const snapshot = inMemoryBooksCache ? [...inMemoryBooksCache] : [];
+      try {
+        await writeAllBooksToIdb(snapshot);
+      } catch (err) {
+        console.warn('[IndexedDB] Lỗi lưu danh sách sách xuống IndexedDB:', err);
+      }
+    }
+  })().finally(() => {
+    booksIdbFlushInFlight = null;
+    if (booksIdbDirty) {
+      scheduleBooksIdbFlush();
+    }
+  });
+}
+
+function scheduleMutationsIdbFlush(): void {
+  if (typeof indexedDB === 'undefined') return;
+  mutationsIdbDirty = true;
+  if (mutationsIdbFlushInFlight) return;
+
+  mutationsIdbFlushInFlight = (async () => {
+    while (mutationsIdbDirty) {
+      mutationsIdbDirty = false;
+      const snapshot = inMemoryMutationsCache ? [...inMemoryMutationsCache] : [];
+      try {
+        await writeAllMutationsToIdb(snapshot);
+      } catch (err) {
+        console.warn('[IndexedDB] Lỗi lưu hàng đợi mutation xuống IndexedDB:', err);
+      }
+    }
+  })().finally(() => {
+    mutationsIdbFlushInFlight = null;
+    if (mutationsIdbDirty) {
+      scheduleMutationsIdbFlush();
+    }
+  });
+}
+
+function readLegacyLocalBooks(): BookRecord[] {
+  try {
+    const raw = localStorage.getItem(BOOKS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (err) {
+    console.warn('[LocalStorage] Lỗi đọc cache sách cũ:', err);
+  }
+  return [];
+}
+
+function readLegacyLocalMutations(): BookMutation[] {
   try {
     const raw = localStorage.getItem(BOOK_MUTATION_QUEUE_KEY);
     if (raw) {
@@ -109,9 +187,145 @@ export function getPendingBookMutations(): BookMutation[] {
       if (Array.isArray(parsed)) return parsed;
     }
   } catch (err) {
-    console.warn('[MutationQueue] Lỗi đọc queue:', err);
+    console.warn('[LocalStorage] Lỗi đọc mutation queue cũ:', err);
   }
   return [];
+}
+
+function removeLegacyStorageKeys(): void {
+  try {
+    localStorage.removeItem(BOOKS_STORAGE_KEY);
+    localStorage.removeItem(BOOK_MUTATION_QUEUE_KEY);
+  } catch {}
+}
+
+/**
+ * Đặt lại bộ nhớ đệm RAM (dùng khi dọn sạch dữ liệu / Reset app)
+ */
+export function resetLocalBooksMemoryCache(): void {
+  booksWriteGeneration += 1;
+  mutationsWriteGeneration += 1;
+  inMemoryBooksCache = [];
+  inMemoryMutationsCache = [];
+  booksIdbDirty = false;
+  mutationsIdbDirty = false;
+  initStoragePromise = null;
+  resetLibraryDbConnection();
+}
+
+/**
+ * Khởi tạo IndexedDB cho kho sách & tự động di chuyển dữ liệu cũ từ localStorage (1 lần duy nhất)
+ */
+export function initLocalBooksStorage(): Promise<BookRecord[]> {
+  if (typeof indexedDB === 'undefined') {
+    return Promise.resolve(loadLocalBooks());
+  }
+  if (initStoragePromise) {
+    return initStoragePromise;
+  }
+
+  initStoragePromise = (async () => {
+    const startBooksGen = booksWriteGeneration;
+    const startMutGen = mutationsWriteGeneration;
+
+    try {
+      const snapshot = await readLibrarySnapshotFromIdb();
+      const legacyBooks = readLegacyLocalBooks();
+      const legacyMutations = readLegacyLocalMutations();
+
+      if (!snapshot.hasMigrated) {
+        if (legacyBooks.length > 0 || legacyMutations.length > 0) {
+          const sanitizedLegacyBooks = legacyBooks.map(sanitizeBookRecord);
+          await writeInitialMigrationToIdb(sanitizedLegacyBooks, legacyMutations);
+          removeLegacyStorageKeys();
+
+          if (booksWriteGeneration === startBooksGen) {
+            inMemoryBooksCache = sanitizedLegacyBooks;
+          } else {
+            scheduleBooksIdbFlush();
+          }
+
+          if (mutationsWriteGeneration === startMutGen) {
+            inMemoryMutationsCache = legacyMutations;
+          } else {
+            scheduleMutationsIdbFlush();
+          }
+
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('local-books-changed', {
+                detail: { count: (inMemoryBooksCache || sanitizedLegacyBooks).length },
+              })
+            );
+          }
+
+          return inMemoryBooksCache || sanitizedLegacyBooks;
+        }
+
+        await markLibraryMigratedInIdb();
+        removeLegacyStorageKeys();
+      } else if (legacyBooks.length > 0 || legacyMutations.length > 0) {
+        // Nếu còn sót key cũ từ phiên bản trước thì dọn sạch để tránh chiếm dung lượng localStorage
+        removeLegacyStorageKeys();
+      }
+
+      if (booksWriteGeneration === startBooksGen) {
+        inMemoryBooksCache = snapshot.books;
+      } else {
+        scheduleBooksIdbFlush();
+      }
+
+      if (mutationsWriteGeneration === startMutGen) {
+        inMemoryMutationsCache = snapshot.mutations;
+      } else {
+        scheduleMutationsIdbFlush();
+      }
+
+      if (typeof window !== 'undefined' && snapshot.books.length > 0) {
+        window.dispatchEvent(
+          new CustomEvent('local-books-changed', {
+            detail: { count: (inMemoryBooksCache || snapshot.books).length },
+          })
+        );
+      }
+
+      return inMemoryBooksCache || snapshot.books;
+    } catch (err) {
+      console.warn('[IndexedDB] Lỗi khởi tạo kho sách IndexedDB, dùng fallback bộ nhớ tạm:', err);
+      return loadLocalBooks();
+    }
+  })();
+
+  return initStoragePromise;
+}
+
+/**
+ * HÀNG ĐỢI MUTATION NGOẠI TUYẾN (OFFLINE MUTATION QUEUE)
+ */
+export function getPendingBookMutations(): BookMutation[] {
+  if (inMemoryMutationsCache !== null) {
+    return inMemoryMutationsCache;
+  }
+  const legacy = readLegacyLocalMutations();
+  inMemoryMutationsCache = legacy;
+  return legacy;
+}
+
+function persistPendingBookMutations(nextQueue: BookMutation[]): void {
+  mutationsWriteGeneration += 1;
+  inMemoryMutationsCache = nextQueue;
+  if (typeof indexedDB !== 'undefined') {
+    scheduleMutationsIdbFlush();
+    try {
+      localStorage.removeItem(BOOK_MUTATION_QUEUE_KEY);
+    } catch {}
+    return;
+  }
+  try {
+    localStorage.setItem(BOOK_MUTATION_QUEUE_KEY, JSON.stringify(nextQueue));
+  } catch (err) {
+    console.warn('[MutationQueue] Lỗi ghi queue:', err);
+  }
 }
 
 export function enqueueBookMutation(
@@ -120,11 +334,10 @@ export function enqueueBookMutation(
   book?: BookRecord
 ): void {
   try {
-    const current = getPendingBookMutations();
-    // Tạo id duy nhất cho mutation
+    const current = [...getPendingBookMutations()];
     const mutationId = `mut_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    
-    // Nếu là UPDATE và đã có CREATE hoặc UPDATE chưa sync cho bookId này, gộp lại
+
+    // Nếu là UPDATE và đã có CREATE chưa sync cho bookId này, gộp lại
     const existingIndex = current.findIndex((m) => m.bookId === bookId);
     if (existingIndex !== -1 && type === 'UPDATE') {
       const existing = current[existingIndex];
@@ -134,7 +347,7 @@ export function enqueueBookMutation(
           book: book || existing.book,
           timestamp: Date.now(),
         };
-        localStorage.setItem(BOOK_MUTATION_QUEUE_KEY, JSON.stringify(current));
+        persistPendingBookMutations(current);
         return;
       }
     } else if (existingIndex !== -1 && type === 'DELETE') {
@@ -142,7 +355,7 @@ export function enqueueBookMutation(
       // Nếu vừa mới CREATE ở local và chưa sync mà đã DELETE, chỉ cần xóa khỏi queue
       if (existing.type === 'CREATE') {
         current.splice(existingIndex, 1);
-        localStorage.setItem(BOOK_MUTATION_QUEUE_KEY, JSON.stringify(current));
+        persistPendingBookMutations(current);
         return;
       }
     }
@@ -155,7 +368,7 @@ export function enqueueBookMutation(
       timestamp: Date.now(),
     });
 
-    localStorage.setItem(BOOK_MUTATION_QUEUE_KEY, JSON.stringify(current));
+    persistPendingBookMutations(current);
   } catch (err) {
     console.warn('[MutationQueue] Lỗi ghi queue:', err);
   }
@@ -166,7 +379,7 @@ export function removePendingBookMutationsByIds(ids: string[]): void {
     const current = getPendingBookMutations();
     const idSet = new Set(ids);
     const filtered = current.filter((m) => !idSet.has(m.id));
-    localStorage.setItem(BOOK_MUTATION_QUEUE_KEY, JSON.stringify(filtered));
+    persistPendingBookMutations(filtered);
   } catch (err) {
     console.warn('[MutationQueue] Lỗi dọn queue:', err);
   }
@@ -174,7 +387,7 @@ export function removePendingBookMutationsByIds(ids: string[]): void {
 
 export function clearPendingBookMutations(): void {
   try {
-    localStorage.removeItem(BOOK_MUTATION_QUEUE_KEY);
+    persistPendingBookMutations([]);
   } catch {}
 }
 
@@ -199,11 +412,8 @@ export function setMasterRestoreRequired(required: boolean): void {
   } catch {}
 }
 
-// Bộ nhớ đệm RAM tức thì (in-memory cache) tránh JSON.parse lặp đi lặp lại
-let inMemoryBooksCache: BookRecord[] | null = null;
-
 /**
- * Làm sạch và chuẩn hóa đối tượng sách trước khi lưu nhằm tối ưu dung lượng LocalStorage
+ * Làm sạch và chuẩn hóa đối tượng sách trước khi lưu
  */
 export function sanitizeBookRecord(book: BookRecord): BookRecord {
   const cleanCover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
@@ -223,56 +433,48 @@ export function sanitizeBookRecord(book: BookRecord): BookRecord {
 }
 
 /**
- * 1. NẠP TOÀN BỘ SÁCH TỪ BỘ NHỚ MÁY (LOCAL STORAGE) - Tối ưu 0ms với Cache RAM
+ * 1. NẠP TOÀN BỘ SÁCH - Tối ưu 0ms với Cache RAM + IndexedDB
  */
 export function loadLocalBooks(): BookRecord[] {
   if (inMemoryBooksCache !== null) {
     return inMemoryBooksCache;
   }
-  try {
-    const raw = localStorage.getItem(BOOKS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        inMemoryBooksCache = parsed;
-        return parsed;
-      }
-    }
-  } catch (err) {
-    console.warn('[LocalStorage] Lỗi đọc bộ nhớ máy:', err);
+  const legacy = readLegacyLocalBooks();
+  if (legacy.length > 0) {
+    inMemoryBooksCache = legacy;
+    return legacy;
   }
   inMemoryBooksCache = [];
   return [];
 }
 
 /**
- * 2. LƯU TOÀN BỘ SÁCH VÀO BỘ NHỚ MÁY - Xử lý an toàn chống lỗi tràn bộ nhớ (QuotaExceeded)
+ * 2. LƯU TOÀN BỘ SÁCH VÀO INDEXEDDB (không chặn UI, không giới hạn 5MB của LocalStorage)
  */
 export function saveAllLocalBooks(books: BookRecord[]): void {
   const sanitized = books.map(sanitizeBookRecord);
+  booksWriteGeneration += 1;
   inMemoryBooksCache = sanitized;
+
+  if (typeof indexedDB !== 'undefined') {
+    scheduleBooksIdbFlush();
+    try {
+      localStorage.removeItem(BOOKS_STORAGE_KEY);
+    } catch {}
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('local-books-changed', { detail: { count: sanitized.length } }));
+    }
+    return;
+  }
 
   try {
     const serialized = JSON.stringify(sanitized);
     localStorage.setItem(BOOKS_STORAGE_KEY, serialized);
-    
-    // Phát sự kiện để đồng bộ giữa các components
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('local-books-changed', { detail: { count: sanitized.length } }));
     }
   } catch (err: any) {
     console.error('[LocalStorage] Lỗi ghi sách vào bộ nhớ máy:', err);
-    // Nếu gặp lỗi bộ nhớ đầy (QuotaExceededError)
-    if (err?.name === 'QuotaExceededError' || err?.code === 22) {
-      console.warn('[LocalStorage] QuotaExceeded: Đang dọn dẹp bộ nhớ đệm phụ...');
-      try {
-        localStorage.removeItem('local_drive_cache_sheets_list');
-        localStorage.removeItem('last_detected_dup_signatures');
-        localStorage.setItem(BOOKS_STORAGE_KEY, JSON.stringify(sanitized));
-      } catch (retryErr) {
-        console.error('[LocalStorage] Thử lại sau dọn dẹp vẫn thất bại:', retryErr);
-      }
-    }
   }
 }
 
@@ -371,11 +573,20 @@ export function batchUpsertLocalBooks(newOrUpdatedBooks: BookRecord[]): BookReco
  */
 export function clearAllLocalBooks(): void {
   try {
+    booksWriteGeneration += 1;
+    mutationsWriteGeneration += 1;
     inMemoryBooksCache = [];
-    localStorage.removeItem(BOOKS_STORAGE_KEY);
+    inMemoryMutationsCache = [];
+    booksIdbDirty = false;
+    mutationsIdbDirty = false;
+    removeLegacyStorageKeys();
     // Đánh dấu cờ cần phục hồi từ Master Sheet: chống việc xóa sạch trên máy đẩy mảng rỗng xóa sạch file chung
     setMasterRestoreRequired(true);
-    clearPendingBookMutations();
+    if (typeof indexedDB !== 'undefined') {
+      void clearLibraryDataInIdb().catch((err) => {
+        console.warn('[IndexedDB] Lỗi xóa dữ liệu kho sách:', err);
+      });
+    }
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('local-books-changed', { detail: { count: 0 } }));
     }
@@ -468,14 +679,32 @@ export interface LocalStorageHealth {
   pendingMutationCount: number;
 }
 
+function estimateBookBytes(book: BookRecord): number {
+  const charCount =
+    (book.id?.length || 0) +
+    (book.title?.length || 0) +
+    (book.author?.length || 0) +
+    (book.category?.length || 0) +
+    (book.publisher?.length || 0) +
+    (book.summary?.length || 0) +
+    (book.cover_url?.length || 0) +
+    120;
+  return charCount * 2;
+}
+
 export function getLocalStorageHealth(): LocalStorageHealth {
   try {
-    const rawBooks = localStorage.getItem(BOOKS_STORAGE_KEY) || '[]';
-    const rawQueue = localStorage.getItem(BOOK_MUTATION_QUEUE_KEY) || '[]';
-    // Ước tính dung lượng UTF-16 (mỗi ký tự 2 bytes)
-    const estimatedBytes = (rawBooks.length + rawQueue.length) * 2;
     const books = loadLocalBooks();
     const pending = getPendingBookMutations();
+
+    let estimatedBytes = 0;
+    for (let i = 0; i < books.length; i++) {
+      estimatedBytes += estimateBookBytes(books[i]);
+    }
+    for (let i = 0; i < pending.length; i++) {
+      const m = pending[i];
+      estimatedBytes += 140 + (m.book ? estimateBookBytes(m.book) : 0);
+    }
 
     let formattedSize = '';
     if (estimatedBytes < 1024) {

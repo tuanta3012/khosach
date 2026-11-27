@@ -1,0 +1,1030 @@
+import * as pdfjsLib from 'pdfjs-dist';
+import {
+  ParsedPdfData,
+  PdfBlockTag,
+  PdfChapterInfo,
+  PdfExtractedAsset,
+  PdfParsedPage,
+  PdfPreParsedBlock,
+} from '../types';
+
+export interface PdfCanvasLike {
+  width: number;
+  height: number;
+  getContext(
+    contextId: '2d',
+    options?: unknown
+  ): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+}
+
+export interface PdfParserRuntimeAdapter {
+  createCanvas: (width: number, height: number) => PdfCanvasLike;
+  canvasToJpegBytes: (canvas: PdfCanvasLike, quality?: number) => Promise<Uint8Array>;
+  documentOptions?: Record<string, unknown>;
+  pageYieldMs?: number;
+}
+
+interface PositionedTextRun {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  fontName: string;
+  isMono: boolean;
+  isBold: boolean;
+  hasEOL: boolean;
+}
+
+interface PositionedLine {
+  y: number;
+  x: number;
+  maxX: number;
+  height: number;
+  fontSize: number;
+  isMono: boolean;
+  isBold: boolean;
+  text: string;
+  runs: PositionedTextRun[];
+}
+
+interface RectBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+interface FigurePlacement {
+  assetId: string;
+  minY: number;
+  maxY: number;
+  area: number;
+}
+
+interface CroppedFigureEntry {
+  asset: PdfExtractedAsset;
+  placement: FigurePlacement;
+}
+
+function normalizeHeaderFooterLine(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\d+/g, '#')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isPurePageNumber(text: string): boolean {
+  const clean = text.trim();
+  return (
+    /^\d{1,4}$/.test(clean) ||
+    /^(page|trang|p\.)\s*\d{1,4}(\s*\/\s*\d{1,4})?$/i.test(clean) ||
+    /^[-–—]\s*\d{1,4}\s*[-–—]$/.test(clean)
+  );
+}
+
+function transformBox(
+  matrix: number[],
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+): RectBox {
+  const pts = [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const [px, py] of pts) {
+    const nx = matrix[0] * px + matrix[2] * py + matrix[4];
+    const ny = matrix[1] * px + matrix[3] * py + matrix[5];
+    if (Number.isFinite(nx) && Number.isFinite(ny)) {
+      if (nx < minX) minX = nx;
+      if (ny < minY) minY = ny;
+      if (nx > maxX) maxX = nx;
+      if (ny > maxY) maxY = ny;
+    }
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function mergeNearbyBoxes(boxes: RectBox[], pad = 18): RectBox[] {
+  const filtered = boxes.filter(
+    (b) =>
+      Number.isFinite(b.minX) &&
+      Number.isFinite(b.minY) &&
+      b.maxX > b.minX &&
+      b.maxY > b.minY
+  );
+  if (filtered.length <= 1) return filtered;
+
+  const working = filtered.map((b) => ({ ...b }));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < working.length; i++) {
+      for (let j = i + 1; j < working.length; j++) {
+        const a = working[i];
+        const b = working[j];
+        const overlaps =
+          a.minX - pad <= b.maxX &&
+          a.maxX + pad >= b.minX &&
+          a.minY - pad <= b.maxY &&
+          a.maxY + pad >= b.minY;
+        if (overlaps) {
+          a.minX = Math.min(a.minX, b.minX);
+          a.minY = Math.min(a.minY, b.minY);
+          a.maxX = Math.max(a.maxX, b.maxX);
+          a.maxY = Math.max(a.maxY, b.maxY);
+          working.splice(j, 1);
+          changed = true;
+          break;
+        }
+      }
+      if (changed) break;
+    }
+  }
+  return working;
+}
+
+async function detectPageFigureBoxes(
+  page: pdfjsLib.PDFPageProxy,
+  viewport: pdfjsLib.PageViewport
+): Promise<RectBox[]> {
+  const OPS = pdfjsLib.OPS;
+  const opList = await page.getOperatorList();
+  const ctmStack: number[][] = [];
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const rawBoxes: RectBox[] = [];
+
+  const pageArea = viewport.width * viewport.height;
+
+  const pushViewportBox = (box: RectBox, minW: number, minH: number) => {
+    const clamped: RectBox = {
+      minX: Math.max(0, box.minX),
+      minY: Math.max(0, box.minY),
+      maxX: Math.min(viewport.width, box.maxX),
+      maxY: Math.min(viewport.height, box.maxY),
+    };
+    const w = clamped.maxX - clamped.minX;
+    const h = clamped.maxY - clamped.minY;
+    if (w < minW || h < minH) return;
+    if (
+      (w * h > pageArea * 0.72 && w > viewport.width * 0.85 && h > viewport.height * 0.8) ||
+      (w > viewport.width * 0.9 && h > viewport.height * 0.88)
+    ) {
+      return;
+    }
+    rawBoxes.push(clamped);
+  };
+
+  for (let i = 0; i < opList.fnArray.length; i++) {
+    const fn = opList.fnArray[i];
+    const args = opList.argsArray[i];
+
+    if (fn === OPS.save) {
+      ctmStack.push([...ctm]);
+    } else if (fn === OPS.restore) {
+      ctm = ctmStack.pop() || [1, 0, 0, 1, 0, 0];
+    } else if (fn === OPS.transform && Array.isArray(args) && args.length >= 6) {
+      ctm = pdfjsLib.Util.transform(ctm, args as number[]);
+    } else if (
+      fn === OPS.paintImageXObject ||
+      fn === OPS.paintInlineImageXObject ||
+      fn === OPS.paintImageMaskXObject ||
+      fn === OPS.paintImageXObjectRepeat
+    ) {
+      const fullMatrix = pdfjsLib.Util.transform(viewport.transform, ctm);
+      const box = transformBox(fullMatrix, 0, 0, 1, 1);
+      pushViewportBox(box, 42, 34);
+    } else if (fn === OPS.constructPath && Array.isArray(args)) {
+      const coords = args[1];
+      if (Array.isArray(coords) || ArrayBuffer.isView(coords)) {
+        const arr = Array.from(coords as ArrayLike<number>);
+        let minPx = Infinity;
+        let minPy = Infinity;
+        let maxPx = -Infinity;
+        let maxPy = -Infinity;
+        for (let k = 0; k + 1 < arr.length; k += 2) {
+          const px = arr[k];
+          const py = arr[k + 1];
+          if (Number.isFinite(px) && Number.isFinite(py)) {
+            if (px < minPx) minPx = px;
+            if (py < minPy) minPy = py;
+            if (px > maxPx) maxPx = px;
+            if (py > maxPy) maxPy = py;
+          }
+        }
+        if (Number.isFinite(minPx) && maxPx > minPx && maxPy > minPy) {
+          const fullMatrix = pdfjsLib.Util.transform(viewport.transform, ctm);
+          const box = transformBox(fullMatrix, minPx, minPy, maxPx, maxPy);
+          pushViewportBox(box, 54, 44);
+        }
+      }
+    }
+  }
+
+  const merged = mergeNearbyBoxes(rawBoxes, 16);
+  return merged
+    .filter((b) => {
+      const w = b.maxX - b.minX;
+      const h = b.maxY - b.minY;
+      const area = w * h;
+      return (
+        w >= 52 &&
+        h >= 40 &&
+        !(area > pageArea * 0.74 && w > viewport.width * 0.86 && h > viewport.height * 0.82)
+      );
+    })
+    .sort((a, b) => a.minY - b.minY || a.minX - b.minX)
+    .slice(0, 6);
+}
+
+async function cropFiguresFromPage(
+  page: pdfjsLib.PDFPageProxy,
+  pageNumber: number,
+  baseViewport: pdfjsLib.PageViewport,
+  boxes: RectBox[],
+  adapter: PdfParserRuntimeAdapter
+): Promise<CroppedFigureEntry[]> {
+  if (boxes.length === 0) return [];
+
+  const targetScale = Math.min(2.0, Math.max(1.2, 1600 / Math.max(1, baseViewport.width)));
+  const renderViewport = page.getViewport({ scale: targetScale });
+  const pageCanvas = adapter.createCanvas(
+    Math.max(1, Math.round(renderViewport.width)),
+    Math.max(1, Math.round(renderViewport.height))
+  );
+
+  const ctx = pageCanvas.getContext('2d');
+  if (!ctx) return [];
+
+  const extracted: CroppedFigureEntry[] = [];
+  try {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+
+    await page.render({
+      canvas: pageCanvas as unknown as HTMLCanvasElement,
+      canvasContext: ctx as unknown as CanvasRenderingContext2D,
+      viewport: renderViewport,
+    }).promise;
+
+    const scaleRatio = renderViewport.width / Math.max(1, baseViewport.width);
+    const pad = Math.round(6 * scaleRatio);
+
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      const sx = Math.max(0, Math.floor(b.minX * scaleRatio) - pad);
+      const sy = Math.max(0, Math.floor(b.minY * scaleRatio) - pad);
+      const ex = Math.min(pageCanvas.width, Math.ceil(b.maxX * scaleRatio) + pad);
+      const ey = Math.min(pageCanvas.height, Math.ceil(b.maxY * scaleRatio) + pad);
+      const cw = ex - sx;
+      const ch = ey - sy;
+      if (cw < 48 || ch < 36) continue;
+
+      const cropCanvas = adapter.createCanvas(cw, ch);
+      const cropCtx = cropCanvas.getContext('2d');
+      if (cropCtx) {
+        cropCtx.fillStyle = '#ffffff';
+        cropCtx.fillRect(0, 0, cw, ch);
+        cropCtx.drawImage(pageCanvas as unknown as CanvasImageSource, sx, sy, cw, ch, 0, 0, cw, ch);
+        const bytes = await adapter.canvasToJpegBytes(cropCanvas, 0.86);
+        const assetId = `p${pageNumber}_fig${i + 1}`;
+        extracted.push({
+          asset: {
+            assetId,
+            pageNumber,
+            fileName: `${assetId}.jpg`,
+            mimeType: 'image/jpeg',
+            data: bytes,
+            width: cw,
+            height: ch,
+          },
+          placement: {
+            assetId,
+            minY: b.minY,
+            maxY: b.maxY,
+            area: Math.max(0, b.maxX - b.minX) * Math.max(0, b.maxY - b.minY),
+          },
+        });
+      }
+      cropCanvas.width = 0;
+      cropCanvas.height = 0;
+    }
+  } finally {
+    pageCanvas.width = 0;
+    pageCanvas.height = 0;
+  }
+
+  return extracted;
+}
+
+function buildLinesFromRuns(
+  runs: PositionedTextRun[],
+  styles: Record<string, { fontFamily?: string }>
+): PositionedLine[] {
+  if (runs.length === 0) return [];
+  const sorted = [...runs].sort((a, b) => a.y - b.y || a.x - b.x);
+  const lines: PositionedLine[] = [];
+
+  const commitGroup = (groupRuns: PositionedTextRun[]) => {
+    if (groupRuns.length === 0) return;
+    const byX = [...groupRuns].sort((a, b) => a.x - b.x);
+    let text = '';
+    let prevRight = byX[0].x;
+    let totalWeightedSize = 0;
+    let totalChars = 0;
+    let boldChars = 0;
+    let monoChars = 0;
+
+    for (let i = 0; i < byX.length; i++) {
+      const r = byX[i];
+      if (i > 0) {
+        const gap = r.x - prevRight;
+        if (gap > Math.max(2.0, r.fontSize * 0.24)) {
+          text += ' ';
+        }
+      }
+      text += r.str;
+      prevRight = Math.max(prevRight, r.x + r.width);
+
+      const len = r.str.trim().length || 1;
+      totalChars += len;
+      totalWeightedSize += r.fontSize * len;
+      const family = (styles[r.fontName]?.fontFamily || r.fontName || '').toLowerCase();
+      if (r.isBold || /bold|black|heavy|semibold/.test(family)) boldChars += len;
+      if (r.isMono || /mono|courier|consolas|menlo|code/.test(family)) monoChars += len;
+    }
+
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return;
+
+    const avgY = byX.reduce((s, r) => s + r.y, 0) / byX.length;
+    const maxH = byX.reduce((m, r) => Math.max(m, r.height || r.fontSize), 0);
+
+    lines.push({
+      y: avgY,
+      x: byX[0].x,
+      maxX: byX[byX.length - 1].x + byX[byX.length - 1].width,
+      height: maxH,
+      fontSize: totalChars > 0 ? totalWeightedSize / totalChars : byX[0].fontSize,
+      isBold: boldChars > totalChars * 0.55,
+      isMono: monoChars > totalChars * 0.6,
+      text: cleaned,
+      runs: byX,
+    });
+  };
+
+  let currentGroup: PositionedTextRun[] = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const r = sorted[i];
+    const anchor = currentGroup[0];
+    const tolerance = Math.max(3.5, Math.min(anchor.fontSize, r.fontSize) * 0.48);
+    if (Math.abs(r.y - anchor.y) <= tolerance) {
+      currentGroup.push(r);
+    } else {
+      commitGroup(currentGroup);
+      currentGroup = [r];
+    }
+  }
+  commitGroup(currentGroup);
+
+  return lines;
+}
+
+function detectMultiColumnAndTables(
+  lines: PositionedLine[],
+  pageWidth: number
+): { isMultiColumn: boolean; hasTables: boolean } {
+  let multiGapRows = 0;
+  let tableLikeRows = 0;
+  let leftColCount = 0;
+  let rightColCount = 0;
+
+  for (const line of lines) {
+    if (line.text.length < 4) continue;
+    const runs = line.runs;
+    let largeGaps = 0;
+    let midGap = false;
+
+    for (let i = 1; i < runs.length; i++) {
+      const gap = runs[i].x - (runs[i - 1].x + runs[i - 1].width);
+      if (gap >= Math.max(18, line.fontSize * 1.6)) {
+        largeGaps += 1;
+        const gapMid = (runs[i - 1].x + runs[i - 1].width + runs[i].x) / 2;
+        if (gapMid > pageWidth * 0.35 && gapMid < pageWidth * 0.65 && gap > pageWidth * 0.05) {
+          midGap = true;
+        }
+      }
+    }
+
+    if (largeGaps >= 2) {
+      tableLikeRows += 1;
+    } else if (midGap) {
+      multiGapRows += 1;
+    }
+
+    const width = line.maxX - line.x;
+    if (width < pageWidth * 0.46) {
+      if (line.x < pageWidth * 0.25 && line.maxX < pageWidth * 0.52) {
+        leftColCount += 1;
+      } else if (line.x > pageWidth * 0.45) {
+        rightColCount += 1;
+      }
+    }
+  }
+
+  const hasTables = tableLikeRows >= 3;
+  const isMultiColumn = multiGapRows >= 5 || (leftColCount >= 6 && rightColCount >= 6);
+  return { isMultiColumn, hasTables };
+}
+
+function detectMathOrGarbledText(text: string): boolean {
+  if (!text) return false;
+  if (text.includes('\uFFFD')) return true;
+  const mathMatches = text.match(/[∑∏∫∂∇≈≠≤≥∞√∈∉⊂⊃∪∩∀∃αβγδεθλμπσφψω]/g);
+  return (mathMatches?.length || 0) >= 6;
+}
+
+function buildPreParsedBlocks(
+  lines: PositionedLine[],
+  bodyFontSize: number,
+  pageWidth: number,
+  figurePlacements: FigurePlacement[]
+): PdfPreParsedBlock[] {
+  const blocks: PdfPreParsedBlock[] = [];
+  let nextBlockId = 1;
+  const pendingFigures = [...figurePlacements].sort((a, b) => a.minY - b.minY);
+
+  const pushFigureBlock = (assetId: string) => {
+    blocks.push({
+      blockId: nextBlockId++,
+      tag: 'figure',
+      text: `[[PDF_IMG_${assetId}]]`,
+      isFigure: true,
+      assetId,
+    });
+  };
+
+  if (lines.length === 0) {
+    for (const fig of pendingFigures) {
+      pushFigureBlock(fig.assetId);
+    }
+    return blocks;
+  }
+
+  const medianLeftMargin = (() => {
+    const xs = lines.map((l) => Math.round(l.x)).sort((a, b) => a - b);
+    return xs[Math.floor(xs.length * 0.25)] || 40;
+  })();
+
+  const classifyLineTag = (line: PositionedLine): PdfBlockTag => {
+    const ratio = line.fontSize / Math.max(6, bodyFontSize);
+    if (ratio >= 1.48 && line.text.length <= 160) return 'h1';
+    if (ratio >= 1.24 && line.text.length <= 160) return 'h2';
+    if ((ratio >= 1.1 || line.isBold) && line.text.length <= 95 && !/[.,;]$/.test(line.text)) {
+      return 'h3';
+    }
+    if (line.isMono) return 'pre';
+    if (/^[•●▪▫◦‣\-–—*]\s+/.test(line.text)) return 'ul';
+    if (/^\d{1,3}[.)]\s+/.test(line.text)) return 'ol';
+    if (
+      line.x > medianLeftMargin + 22 &&
+      line.maxX < pageWidth - 22 &&
+      line.fontSize <= bodyFontSize * 1.02
+    ) {
+      return 'blockquote';
+    }
+    return 'p';
+  };
+
+  let curTag: PdfBlockTag | null = null;
+  let curText = '';
+  let prevLine: PositionedLine | null = null;
+
+  const flush = () => {
+    const clean = curText.replace(/\s+/g, ' ').trim();
+    if (clean && curTag) {
+      blocks.push({
+        blockId: nextBlockId++,
+        tag: curTag,
+        text: clean,
+      });
+    }
+    curTag = null;
+    curText = '';
+  };
+
+  for (const line of lines) {
+    const lineTag = classifyLineTag(line);
+    const isHeading = lineTag === 'h1' || lineTag === 'h2' || lineTag === 'h3';
+    const isListStart = lineTag === 'ul' || lineTag === 'ol';
+
+    let shouldBreak = false;
+    if (!prevLine || !curTag) {
+      shouldBreak = true;
+    } else if (isHeading || curTag === 'h1' || curTag === 'h2' || curTag === 'h3') {
+      if (lineTag !== curTag || line.y - prevLine.y > line.fontSize * 1.55) {
+        shouldBreak = true;
+      }
+    } else if (isListStart) {
+      shouldBreak = true;
+    } else if (
+      lineTag !== curTag &&
+      !(curTag === 'ul' && lineTag === 'p') &&
+      !(curTag === 'ol' && lineTag === 'p')
+    ) {
+      shouldBreak = true;
+    } else {
+      const verticalGap = line.y - prevLine.y;
+      const normalGap = Math.max(prevLine.fontSize, line.fontSize) * 1.48;
+      const firstLineIndent = line.x - medianLeftMargin > Math.max(12, line.fontSize * 0.9);
+      const prevShort =
+        prevLine.maxX < pageWidth * 0.72 && /[.!?:”"»)]$/.test(prevLine.text);
+      if (verticalGap > normalGap || (firstLineIndent && prevShort) || prevShort) {
+        shouldBreak = true;
+      }
+    }
+
+    const readyFigureBeforeLine =
+      pendingFigures.length > 0 &&
+      ((shouldBreak && line.y >= pendingFigures[0].minY - 6) ||
+        line.y > pendingFigures[0].maxY + 8);
+
+    if (readyFigureBeforeLine) {
+      flush();
+      while (
+        pendingFigures.length > 0 &&
+        ((shouldBreak && line.y >= pendingFigures[0].minY - 6) ||
+          line.y > pendingFigures[0].maxY + 8)
+      ) {
+        const fig = pendingFigures.shift()!;
+        pushFigureBlock(fig.assetId);
+      }
+      curTag = lineTag;
+      curText = line.text;
+    } else if (shouldBreak) {
+      flush();
+      curTag = lineTag;
+      curText = line.text;
+    } else {
+      if (/[-‐‑]$/.test(curText) && /^[a-zà-ỹ]/i.test(line.text)) {
+        curText = curText.slice(0, -1) + line.text;
+      } else {
+        curText = `${curText} ${line.text}`;
+      }
+    }
+    prevLine = line;
+  }
+  flush();
+
+  while (pendingFigures.length > 0) {
+    const fig = pendingFigures.shift()!;
+    pushFigureBlock(fig.assetId);
+  }
+
+  return blocks;
+}
+
+async function resolveOutlineChapters(
+  pdfDoc: pdfjsLib.PDFDocumentProxy,
+  totalPages: number
+): Promise<PdfChapterInfo[]> {
+  try {
+    const outline = await pdfDoc.getOutline();
+    if (!outline || outline.length === 0) return [];
+
+    const entries: Array<{ title: string; startPage: number }> = [];
+
+    const walkOutline = async (items: any[], depth = 0) => {
+      for (const item of items) {
+        if (!item) continue;
+        const title = String(item.title || '').replace(/\s+/g, ' ').trim();
+        let pageNum = 0;
+
+        if (item.dest) {
+          try {
+            const dest =
+              typeof item.dest === 'string'
+                ? await pdfDoc.getDestination(item.dest)
+                : item.dest;
+            if (Array.isArray(dest) && dest[0]) {
+              const pageIdx = await pdfDoc.getPageIndex(dest[0]);
+              pageNum = pageIdx + 1;
+            }
+          } catch {}
+        }
+
+        if (title && pageNum >= 1 && pageNum <= totalPages && depth <= 1) {
+          entries.push({ title, startPage: pageNum });
+        }
+
+        if (Array.isArray(item.items) && item.items.length > 0 && depth < 1) {
+          await walkOutline(item.items, depth + 1);
+        }
+      }
+    };
+
+    await walkOutline(outline);
+    if (entries.length === 0) return [];
+
+    entries.sort((a, b) => a.startPage - b.startPage);
+    const deduped: Array<{ title: string; startPage: number }> = [];
+    for (const e of entries) {
+      const last = deduped[deduped.length - 1];
+      if (!last || last.startPage !== e.startPage) {
+        deduped.push(e);
+      }
+    }
+
+    const chapters: PdfChapterInfo[] = [];
+    if (deduped[0].startPage > 1) {
+      chapters.push({
+        chapterIndex: 0,
+        title: 'Mở đầu',
+        startPage: 1,
+        endPage: deduped[0].startPage - 1,
+      });
+    }
+
+    for (let i = 0; i < deduped.length; i++) {
+      const startPage = deduped[i].startPage;
+      const nextStart = i + 1 < deduped.length ? deduped[i + 1].startPage - 1 : totalPages;
+      chapters.push({
+        chapterIndex: chapters.length,
+        title: deduped[i].title,
+        startPage,
+        endPage: Math.max(startPage, nextStart),
+      });
+    }
+
+    return chapters;
+  } catch {
+    return [];
+  }
+}
+
+export function evaluateHybridVisionNeeded(
+  page: PdfParsedPage,
+  assets?: Record<string, PdfExtractedAsset>
+): boolean {
+  if (page.hasTables || page.isMultiColumn || page.hasMathOrGarbled) {
+    return true;
+  }
+
+  const assetCount = page.assetIds?.length || 0;
+  if (assetCount === 0) {
+    return false;
+  }
+
+  const textCharCount = (page.rawDigitalText || '').replace(/\s+/g, ' ').trim().length;
+  if (textCharCount < 380) {
+    return true;
+  }
+
+  let areaRatio = typeof page.figureAreaRatio === 'number' ? page.figureAreaRatio : -1;
+  if (areaRatio < 0 && assets) {
+    let totalPx = 0;
+    for (const id of page.assetIds) {
+      const asset = assets[id];
+      if (asset) totalPx += asset.width * asset.height;
+    }
+    areaRatio = Math.min(1, totalPx / 1_500_000);
+  }
+
+  if (areaRatio >= 0) {
+    if (areaRatio >= 0.2) return true;
+    if (assetCount >= 2 && areaRatio >= 0.12) return true;
+    return false;
+  }
+
+  return page.requiresVision;
+}
+
+export async function parseDigitalPdfCore(
+  arrayBuffer: ArrayBuffer,
+  fileName: string,
+  adapter: PdfParserRuntimeAdapter,
+  onProgress?: (currentPage: number, totalPages: number) => void,
+  stopSignal?: { current: boolean }
+): Promise<ParsedPdfData> {
+  const bytesCopy = new Uint8Array(arrayBuffer.slice(0));
+  const loadingTask = pdfjsLib.getDocument({
+    data: bytesCopy,
+    ...(adapter.documentOptions || {}),
+  } as any);
+  const pdfDoc = await loadingTask.promise;
+
+  try {
+    const totalPages = pdfDoc.numPages;
+    if (totalPages <= 0) {
+      throw new Error('File PDF không có trang nào.');
+    }
+
+    const sampleCount = Math.min(5, totalPages);
+    let sampleCharCount = 0;
+    for (let p = 1; p <= sampleCount; p++) {
+      if (stopSignal?.current) throw new Error('Đã hủy tách trang theo yêu cầu.');
+      const page = await pdfDoc.getPage(p);
+      const tc = await page.getTextContent();
+      const text = tc.items
+        .map((it: any) => (typeof it?.str === 'string' ? it.str : ''))
+        .join('')
+        .replace(/\s+/g, '');
+      sampleCharCount += text.length;
+    }
+
+    if (sampleCharCount < Math.max(60, sampleCount * 22)) {
+      throw new Error(
+        'PDF này là bản scan ảnh, không có lớp chữ Digital để tách nội dung.'
+      );
+    }
+
+    let bookTitle = fileName.replace(/\.pdf$/i, '').trim() || 'Sach_PDF';
+    let bookAuthor = 'Khuyết danh';
+    let bookPublisher = '';
+
+    try {
+      const meta = await pdfDoc.getMetadata();
+      const info = (meta?.info || {}) as Record<string, unknown>;
+      if (typeof info.Title === 'string' && info.Title.trim().length >= 2) {
+        bookTitle = info.Title.trim();
+      }
+      if (typeof info.Author === 'string' && info.Author.trim()) {
+        bookAuthor = info.Author.trim();
+      }
+      if (typeof info.Producer === 'string' && info.Producer.trim()) {
+        bookPublisher = info.Producer.trim();
+      }
+    } catch {}
+
+    const outlineChapters = await resolveOutlineChapters(pdfDoc, totalPages);
+
+    interface RawPageExtract {
+      pageNumber: number;
+      width: number;
+      height: number;
+      lines: PositionedLine[];
+      assetIds: string[];
+      figurePlacements: FigurePlacement[];
+      figureAreaRatio: number;
+      hasFigures: boolean;
+      isMultiColumn: boolean;
+      hasTables: boolean;
+      hasMathOrGarbled: boolean;
+    }
+
+    const rawPages: RawPageExtract[] = [];
+    const assets: Record<string, PdfExtractedAsset> = {};
+    const fontSizeFreq = new Map<number, number>();
+    const yieldDelay = adapter.pageYieldMs ?? 15;
+
+    for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+      if (stopSignal?.current) {
+        throw new Error('Đã hủy tách trang theo yêu cầu.');
+      }
+      if (onProgress) onProgress(pageNumber, totalPages);
+
+      const page = await pdfDoc.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 1 });
+      const tc = await page.getTextContent();
+
+      const runs: PositionedTextRun[] = [];
+      for (const rawItem of tc.items) {
+        const item = rawItem as any;
+        if (typeof item?.str !== 'string' || !item.str) continue;
+        if (!item.str.trim() && item.str.length <= 1) continue;
+
+        const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+        const fontSize = Math.max(
+          5,
+          Math.round((Math.hypot(tx[0], tx[1]) || item.height || 11) * 10) / 10
+        );
+        const family = (tc.styles[item.fontName]?.fontFamily || item.fontName || '').toLowerCase();
+
+        runs.push({
+          str: item.str,
+          x: tx[4],
+          y: tx[5],
+          width: Math.max(0, item.width || 0),
+          height: Math.max(fontSize, item.height || fontSize),
+          fontSize,
+          fontName: item.fontName || '',
+          isMono: /mono|courier|consolas|menlo|code/.test(family),
+          isBold: /bold|black|heavy|semibold/.test(family),
+          hasEOL: Boolean(item.hasEOL),
+        });
+
+        const roundedSize = Math.round(fontSize * 2) / 2;
+        fontSizeFreq.set(
+          roundedSize,
+          (fontSizeFreq.get(roundedSize) || 0) + item.str.trim().length
+        );
+      }
+
+      const lines = buildLinesFromRuns(runs, tc.styles || {});
+      const { isMultiColumn, hasTables } = detectMultiColumnAndTables(lines, viewport.width);
+      const joinedRawText = lines.map((l) => l.text).join('\n');
+      const hasMathOrGarbled = detectMathOrGarbledText(joinedRawText);
+
+      const figureBoxes = await detectPageFigureBoxes(page, viewport);
+      const croppedEntries = await cropFiguresFromPage(
+        page,
+        pageNumber,
+        viewport,
+        figureBoxes,
+        adapter
+      );
+      const assetIds: string[] = [];
+      const figurePlacements: FigurePlacement[] = [];
+      let totalFigureArea = 0;
+
+      for (const entry of croppedEntries) {
+        assets[entry.asset.assetId] = entry.asset;
+        assetIds.push(entry.asset.assetId);
+        figurePlacements.push(entry.placement);
+        totalFigureArea += entry.placement.area;
+      }
+
+      const pageArea = Math.max(1, viewport.width * viewport.height);
+      const figureAreaRatio = Math.min(1, Math.round((totalFigureArea / pageArea) * 1000) / 1000);
+
+      rawPages.push({
+        pageNumber,
+        width: viewport.width,
+        height: viewport.height,
+        lines,
+        assetIds,
+        figurePlacements,
+        figureAreaRatio,
+        hasFigures: assetIds.length > 0,
+        isMultiColumn,
+        hasTables,
+        hasMathOrGarbled,
+      });
+
+      if (yieldDelay > 0 || pageNumber % 4 === 0) {
+        await new Promise((r) => setTimeout(r, yieldDelay));
+      }
+    }
+
+    let bodyFontSize = 11;
+    let bestWeight = -1;
+    for (const [size, weight] of fontSizeFreq.entries()) {
+      if (size >= 7 && size <= 16 && weight > bestWeight) {
+        bestWeight = weight;
+        bodyFontSize = size;
+      }
+    }
+
+    const marginRepeatCounter = new Map<string, number>();
+    for (const rp of rawPages) {
+      const seenOnPage = new Set<string>();
+      for (const line of rp.lines) {
+        const inTopMargin = line.y < rp.height * 0.095;
+        const inBottomMargin = line.y > rp.height * 0.905;
+        if (!inTopMargin && !inBottomMargin) continue;
+        if (line.text.length > 90) continue;
+        const norm = normalizeHeaderFooterLine(line.text);
+        if (norm && !seenOnPage.has(norm)) {
+          seenOnPage.add(norm);
+          marginRepeatCounter.set(norm, (marginRepeatCounter.get(norm) || 0) + 1);
+        }
+      }
+    }
+
+    const repeatThreshold = Math.max(3, Math.floor(totalPages * 0.25));
+    const filteredPages: Array<{
+      rp: RawPageExtract;
+      cleanLines: PositionedLine[];
+    }> = rawPages.map((rp) => {
+      const cleanLines = rp.lines.filter((line) => {
+        const inTopMargin = line.y < rp.height * 0.095;
+        const inBottomMargin = line.y > rp.height * 0.905;
+        if (!inTopMargin && !inBottomMargin) return true;
+        if (isPurePageNumber(line.text)) return false;
+        const norm = normalizeHeaderFooterLine(line.text);
+        if (norm && (marginRepeatCounter.get(norm) || 0) >= repeatThreshold) {
+          return false;
+        }
+        return true;
+      });
+      return { rp, cleanLines };
+    });
+
+    let chapters: PdfChapterInfo[] = outlineChapters;
+    if (chapters.length === 0) {
+      const detectedStarts: Array<{ title: string; startPage: number }> = [];
+      for (const { rp, cleanLines } of filteredPages) {
+        const firstBigHeading = cleanLines.find(
+          (l) => l.fontSize >= bodyFontSize * 1.48 && l.text.length >= 3 && l.text.length <= 120
+        );
+        if (firstBigHeading) {
+          detectedStarts.push({
+            title: firstBigHeading.text,
+            startPage: rp.pageNumber,
+          });
+        }
+      }
+
+      if (detectedStarts.length >= 2) {
+        chapters = [];
+        if (detectedStarts[0].startPage > 1) {
+          chapters.push({
+            chapterIndex: 0,
+            title: 'Mở đầu',
+            startPage: 1,
+            endPage: detectedStarts[0].startPage - 1,
+          });
+        }
+        for (let i = 0; i < detectedStarts.length; i++) {
+          const s = detectedStarts[i].startPage;
+          const e =
+            i + 1 < detectedStarts.length ? detectedStarts[i + 1].startPage - 1 : totalPages;
+          chapters.push({
+            chapterIndex: chapters.length,
+            title: detectedStarts[i].title,
+            startPage: s,
+            endPage: Math.max(s, e),
+          });
+        }
+      } else {
+        chapters = [];
+        const stride = 15;
+        for (let start = 1; start <= totalPages; start += stride) {
+          const end = Math.min(totalPages, start + stride - 1);
+          chapters.push({
+            chapterIndex: chapters.length,
+            title:
+              totalPages <= stride
+                ? bookTitle
+                : `Phần ${chapters.length + 1} (Trang ${start}–${end})`,
+            startPage: start,
+            endPage: end,
+          });
+        }
+      }
+    }
+
+    const resolveChapterForPage = (pageNum: number): PdfChapterInfo => {
+      for (const ch of chapters) {
+        if (pageNum >= ch.startPage && pageNum <= ch.endPage) return ch;
+      }
+      return chapters[chapters.length - 1];
+    };
+
+    const pages: PdfParsedPage[] = [];
+    let visionPageCount = 0;
+    let textOnlyPageCount = 0;
+
+    for (const { rp, cleanLines } of filteredPages) {
+      const ch = resolveChapterForPage(rp.pageNumber);
+      const blocks = buildPreParsedBlocks(cleanLines, bodyFontSize, rp.width, rp.figurePlacements);
+      const rawDigitalText = cleanLines.map((l) => l.text).join('\n');
+      const parsedPageDraft: PdfParsedPage = {
+        pageNumber: rp.pageNumber,
+        chapterIndex: ch.chapterIndex,
+        chapterTitle: ch.title,
+        rawDigitalText,
+        requiresVision: false,
+        hasFigures: rp.hasFigures,
+        hasTables: rp.hasTables,
+        isMultiColumn: rp.isMultiColumn,
+        hasMathOrGarbled: rp.hasMathOrGarbled,
+        figureAreaRatio: rp.figureAreaRatio,
+        assetIds: rp.assetIds,
+        blocks,
+      };
+      const requiresVision = evaluateHybridVisionNeeded(parsedPageDraft, assets);
+      parsedPageDraft.requiresVision = requiresVision;
+
+      if (requiresVision) visionPageCount += 1;
+      else textOnlyPageCount += 1;
+
+      pages.push(parsedPageDraft);
+    }
+
+    return {
+      bookTitle,
+      bookAuthor,
+      bookPublisher,
+      totalPages,
+      chapters,
+      pages,
+      assets,
+      visionPageCount,
+      textOnlyPageCount,
+    };
+  } finally {
+    await loadingTask.destroy().catch(() => {});
+  }
+}

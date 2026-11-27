@@ -20,6 +20,7 @@ import {
   Share2,
   SlidersHorizontal,
   Trash2,
+  Upload,
 } from 'lucide-react';
 import {
   EpubGenreId,
@@ -205,15 +206,17 @@ export const EpubTranslatorView: React.FC = () => {
           </div>
         </div>
 
-        <button
-          type="button"
-          disabled={queue.isParsingFiles}
-          onClick={() => fileInputRef.current?.click()}
-          className="min-h-[44px] px-4 py-2 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>{queue.jobs.length > 0 ? 'Thêm sách' : 'Chọn file'}</span>
-        </button>
+        {queue.jobs.length > 0 && (
+          <button
+            type="button"
+            disabled={queue.isParsingFiles}
+            onClick={() => fileInputRef.current?.click()}
+            className="min-h-[44px] px-4 py-2 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Thêm sách</span>
+          </button>
+        )}
       </div>
 
       {/* Tiến trình tách trang PDF */}
@@ -242,16 +245,27 @@ export const EpubTranslatorView: React.FC = () => {
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={queue.isParsingFiles}
-          className="w-full bg-white hover:bg-sky-50/40 rounded-2xl border-2 border-dashed border-slate-300 hover:border-[#0284C7] p-8 sm:p-10 text-center transition group"
+          className="w-full min-h-[68px] bg-white hover:bg-sky-50/70 rounded-2xl border border-slate-200/90 hover:border-[#0284C7]/70 px-4 py-3.5 sm:px-5 sm:py-4 flex items-center justify-between gap-3.5 shadow-xs transition-all active:scale-[0.99] disabled:opacity-60 cursor-pointer group"
         >
-          <div className="w-12 h-12 mx-auto rounded-2xl bg-sky-50 border border-sky-200 text-[#0284C7] flex items-center justify-center group-hover:scale-105 transition">
-            <BookOpen className="w-6 h-6" />
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-11 h-11 rounded-xl bg-sky-50 border border-sky-200/80 text-[#0284C7] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+              <BookOpen className="w-5 h-5" />
+            </div>
+            <div className="min-w-0 text-left">
+              <p className="text-sm font-bold text-slate-900 truncate">
+                {queue.isParsingFiles
+                  ? queue.parseStatusText || 'Đang xử lý tệp...'
+                  : 'Chọn file .EPUB hoặc .PDF'}
+              </p>
+              <p className="text-xs font-medium text-slate-500 truncate mt-0.5">
+                Chọn một hoặc nhiều tệp
+              </p>
+            </div>
           </div>
-          <p className="mt-3 text-sm font-bold text-slate-800">
-            {queue.isParsingFiles
-              ? queue.parseStatusText || 'Đang xử lý tệp...'
-              : 'Chọn file .EPUB hoặc .PDF'}
-          </p>
+
+          <span className="w-10 h-10 rounded-xl bg-[#0284C7] group-hover:bg-sky-700 text-white flex items-center justify-center shrink-0 shadow-xs transition-colors">
+            <Upload className="w-4 h-4" />
+          </span>
         </button>
       ) : (
         <>
