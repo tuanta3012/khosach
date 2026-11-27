@@ -162,6 +162,7 @@ export interface RunPdfTranslationResult {
   completedChunkIds: number[];
   failedChunkIds: number[];
   errorMessage?: string;
+  warningMessage?: string;
 }
 
 interface InFlightPdfUnitEntry {
@@ -282,6 +283,8 @@ export async function runParallelPdfTranslation(
 
   let activeWorkersCount = channelSlots.length;
   let lastFatalOrKeyError = '';
+  let contentFilteredUnitsCount = 0;
+  let lastContentFilterReason = '';
 
   const countCompletedPages = () => Object.keys(translatedPdfPages).length;
 
@@ -354,6 +357,7 @@ export async function runParallelPdfTranslation(
     keyExhausted?: boolean;
     rateLimited?: boolean;
     retryable?: boolean;
+    contentBlockedReason?: string;
     error?: string;
   }> => {
     const pageNum = unit.pageNumbers[0];
@@ -372,17 +376,17 @@ export async function runParallelPdfTranslation(
         ? `Ảnh đã cắt sẵn trên trang: ${pageData.assetIds.map((id) => `[[PDF_IMG_${id}]]`).join(', ')}`
         : 'Không có ảnh nhúng.';
 
-    const promptText = [
+    const basePromptText = [
       `Trang ${pageNum}/${totalPages} · Chương: ${pageData.chapterTitle}`,
       assetTokensDesc,
       `<digital_text>\n${pageData.rawDigitalText || '(Không có chữ số hóa)'}\n</digital_text>`,
       `Hãy dịch toàn bộ nội dung trang này sang tiếng Việt tự nhiên theo mảng JSON [{tag, html}].`,
     ].join('\n\n');
 
-    const res = await executePdfVisionFlashLiteWithKey({
+    let res = await executePdfVisionFlashLiteWithKey({
       key: apiKey,
       systemInstruction: visionSystemInstruction,
-      promptText,
+      promptText: basePromptText,
       imageBase64: rendered.base64,
       imageMimeType: rendered.mimeType,
       responseSchema: VISION_PAGE_RESPONSE_SCHEMA,
@@ -396,12 +400,100 @@ export async function runParallelPdfTranslation(
       return { success: false, aborted: true, retryable: true };
     }
 
+    if (!res.success && res.contentBlockedReason === 'RECITATION') {
+      const rephrasePrompt = `${basePromptText}\n\nLưu ý: Dịch thoát ý sang tiếng Việt tự nhiên, diễn đạt lại mạch lạc thay vì bám sát từng cụm từ gốc.`;
+      const retryRes = await executePdfVisionFlashLiteWithKey({
+        key: apiKey,
+        systemInstruction: visionSystemInstruction,
+        promptText: rephrasePrompt,
+        imageBase64: rendered.base64,
+        imageMimeType: rendered.mimeType,
+        responseSchema: VISION_PAGE_RESPONSE_SCHEMA,
+        preferredModels,
+        timeoutMs,
+        temperature: 0.45,
+        abortSignal,
+        stopSignal: effectiveStopSignal,
+      });
+      if (effectiveStopSignal.current || retryRes.aborted || abortSignal.aborted) {
+        return { success: false, aborted: true, retryable: true };
+      }
+      res = retryRes;
+    }
+
+    if (!res.success && res.contentBlockedReason) {
+      const textItemsForFallback: TextInputItem[] = pageData.blocks
+        .filter((b) => !b.isFigure && b.tag !== 'figure' && b.text.trim())
+        .map((b) => ({
+          page: pageNum,
+          blockId: b.blockId,
+          tag: b.tag,
+          text: b.text,
+        }));
+
+      if (textItemsForFallback.length > 0) {
+        const fallbackTextRes = await translateTextItemsWithIsolation(
+          textItemsForFallback,
+          apiKey,
+          preferredModels,
+          timeoutMs,
+          abortSignal
+        );
+        if (fallbackTextRes.aborted) {
+          return { success: false, aborted: true, retryable: true };
+        }
+        if (fallbackTextRes.keyExhausted) {
+          return {
+            success: false,
+            keyExhausted: true,
+            retryable: true,
+            error: fallbackTextRes.error,
+          };
+        }
+        if (fallbackTextRes.success) {
+          const fallbackBlocks: PdfTranslatedBlock[] = [];
+          for (const b of pageData.blocks) {
+            if (b.isFigure || b.tag === 'figure') {
+              fallbackBlocks.push({ tag: 'figure', html: b.text });
+            } else {
+              const hit = fallbackTextRes.translatedMap.get(`${pageNum}_${b.blockId}`);
+              fallbackBlocks.push(hit ? { tag: hit.tag, html: hit.html } : { tag: b.tag, html: b.text });
+            }
+          }
+          return {
+            success: true,
+            pageUpdates: { [pageNum]: ensurePageAssetsIncluded(fallbackBlocks, pageData.assetIds) },
+          };
+        }
+      }
+
+      // Trang ảnh/nội dung bị bộ lọc an toàn Google AI chặn hoàn toàn -> giữ nguyên phần gốc để không treo toàn bộ sách
+      contentFilteredUnitsCount += 1;
+      lastContentFilterReason = res.contentBlockedReason;
+      const preservedBlocks: PdfTranslatedBlock[] = [];
+      for (const b of pageData.blocks) {
+        preservedBlocks.push(
+          b.isFigure || b.tag === 'figure'
+            ? { tag: 'figure', html: b.text }
+            : { tag: b.tag, html: b.text }
+        );
+      }
+      if (preservedBlocks.length === 0 && pageData.rawDigitalText.trim()) {
+        preservedBlocks.push({ tag: 'p', html: pageData.rawDigitalText.trim() });
+      }
+      return {
+        success: true,
+        pageUpdates: { [pageNum]: ensurePageAssetsIncluded(preservedBlocks, pageData.assetIds) },
+      };
+    }
+
     if (!res.success || !Array.isArray(res.data)) {
       return {
         success: false,
         keyExhausted: res.keyExhausted,
         rateLimited: res.rateLimited,
         retryable: res.retryable,
+        contentBlockedReason: res.contentBlockedReason,
         error: res.error,
       };
     }
@@ -435,7 +527,8 @@ export async function runParallelPdfTranslation(
     apiKey: string,
     preferredModels: string[],
     timeoutMs: number,
-    abortSignal: AbortSignal
+    abortSignal: AbortSignal,
+    opts?: { temperature?: number; extraNote?: string }
   ): Promise<{
     success: boolean;
     translatedMap: Map<string, { tag: PdfBlockTag; html: string }>;
@@ -443,9 +536,12 @@ export async function runParallelPdfTranslation(
     keyExhausted?: boolean;
     rateLimited?: boolean;
     retryable?: boolean;
+    contentBlockedReason?: string;
     error?: string;
   }> => {
-    const prompt = `Dịch ${items.length} khối văn bản sau sang tiếng Việt, giữ nguyên {page, blockId, tag} và mã [[PDF_IMG_...]]:\n${JSON.stringify(items)}`;
+    const prompt = `${
+      opts?.extraNote ? `${opts.extraNote}\n` : ''
+    }Dịch ${items.length} khối văn bản sau sang tiếng Việt, giữ nguyên {page, blockId, tag} và mã [[PDF_IMG_...]]:\n${JSON.stringify(items)}`;
 
     const res = await executeEpubFlashLiteWithKey({
       key: apiKey,
@@ -454,6 +550,7 @@ export async function runParallelPdfTranslation(
       responseSchema: TEXT_CHUNK_RESPONSE_SCHEMA,
       preferredModels,
       timeoutMs,
+      temperature: opts?.temperature,
       abortSignal,
       stopSignal: effectiveStopSignal,
     });
@@ -470,6 +567,7 @@ export async function runParallelPdfTranslation(
         keyExhausted: res.keyExhausted,
         rateLimited: res.rateLimited,
         retryable: res.retryable,
+        contentBlockedReason: res.contentBlockedReason,
         error: res.error,
       };
     }
@@ -492,6 +590,99 @@ export async function runParallelPdfTranslation(
     return { success: true, translatedMap: outMap };
   };
 
+  const translateTextItemsWithIsolation = async (
+    items: TextInputItem[],
+    apiKey: string,
+    preferredModels: string[],
+    timeoutMs: number,
+    abortSignal: AbortSignal
+  ): Promise<{
+    success: boolean;
+    translatedMap: Map<string, { tag: PdfBlockTag; html: string }>;
+    aborted?: boolean;
+    keyExhausted?: boolean;
+    rateLimited?: boolean;
+    retryable?: boolean;
+    contentBlockedReason?: string;
+    error?: string;
+  }> => {
+    const firstTry = await translateTextItemsBatch(
+      items,
+      apiKey,
+      preferredModels,
+      timeoutMs,
+      abortSignal
+    );
+
+    if (firstTry.aborted || firstTry.keyExhausted) {
+      return firstTry;
+    }
+
+    if (firstTry.success) {
+      return firstTry;
+    }
+
+    const isNonRetryableOrBlocked =
+      Boolean(firstTry.contentBlockedReason) || firstTry.retryable === false;
+    if (!isNonRetryableOrBlocked) {
+      return firstTry;
+    }
+
+    if (items.length > 1) {
+      const mergedMap = new Map<string, { tag: PdfBlockTag; html: string }>();
+      const mid = Math.ceil(items.length / 2);
+      const halves = [items.slice(0, mid), items.slice(mid)];
+      for (const half of halves) {
+        if (half.length === 0) continue;
+        const halfRes = await translateTextItemsWithIsolation(
+          half,
+          apiKey,
+          preferredModels,
+          timeoutMs,
+          abortSignal
+        );
+        if (!halfRes.success) {
+          return halfRes;
+        }
+        halfRes.translatedMap.forEach((v, k) => mergedMap.set(k, v));
+      }
+      return { success: true, translatedMap: mergedMap };
+    }
+
+    // Đơn vị chỉ còn đúng 1 block và vẫn bị Google AI chặn nội dung
+    if (firstTry.contentBlockedReason === 'RECITATION') {
+      const rephraseRes = await translateTextItemsBatch(
+        items,
+        apiKey,
+        preferredModels,
+        timeoutMs,
+        abortSignal,
+        {
+          temperature: 0.45,
+          extraNote:
+            'Hãy dịch thoát ý tự nhiên sang tiếng Việt, diễn đạt lại mạch lạc thay vì bám sát cấu trúc gốc.',
+        }
+      );
+      if (rephraseRes.aborted || rephraseRes.keyExhausted || rephraseRes.success) {
+        return rephraseRes;
+      }
+      if (rephraseRes.contentBlockedReason) {
+        contentFilteredUnitsCount += 1;
+        lastContentFilterReason = rephraseRes.contentBlockedReason;
+        return { success: true, translatedMap: new Map() };
+      }
+      return rephraseRes;
+    }
+
+    if (firstTry.contentBlockedReason) {
+      contentFilteredUnitsCount += 1;
+      lastContentFilterReason = firstTry.contentBlockedReason;
+      return { success: true, translatedMap: new Map() };
+    }
+
+    return firstTry;
+  };
+
   const translateTextChunkUnit = async (
     unit: PdfTranslationUnit,
     apiKey: string,
@@ -506,6 +697,7 @@ export async function runParallelPdfTranslation(
     keyExhausted?: boolean;
     rateLimited?: boolean;
     retryable?: boolean;
+    contentBlockedReason?: string;
     error?: string;
   }> => {
     const inputItems: TextInputItem[] = [];
@@ -545,7 +737,7 @@ export async function runParallelPdfTranslation(
       const halves = [inputItems.slice(0, half), inputItems.slice(half)];
       for (const part of halves) {
         if (part.length === 0) continue;
-        const r = await translateTextItemsBatch(
+        const r = await translateTextItemsWithIsolation(
           part,
           apiKey,
           [EPUB_TRANSLATION_MODEL],
@@ -556,7 +748,7 @@ export async function runParallelPdfTranslation(
         r.translatedMap.forEach((v, k) => finalMap.set(k, v));
       }
     } else {
-      const r = await translateTextItemsBatch(
+      const r = await translateTextItemsWithIsolation(
         inputItems,
         apiKey,
         preferredModels,
@@ -571,7 +763,7 @@ export async function runParallelPdfTranslation(
         (it) => !finalMap.has(`${it.page}_${it.blockId}`)
       );
       if (missingItems.length > Math.max(1, Math.floor(inputItems.length * 0.15))) {
-        const deltaRes = await translateTextItemsBatch(
+        const deltaRes = await translateTextItemsWithIsolation(
           missingItems,
           apiKey,
           [EPUB_TRANSLATION_MODEL],
@@ -907,12 +1099,18 @@ export async function runParallelPdfTranslation(
       : `Còn ${failedUnitSet.size} phần lỗi`
   );
 
+  const warningMessage =
+    allCompleted && contentFilteredUnitsCount > 0
+      ? `Có ${contentFilteredUnitsCount} đoạn/trang giữ nguyên bản gốc do bộ lọc Google AI (${lastContentFilterReason || 'SAFETY/RECITATION'}).`
+      : undefined;
+
   return {
     completed: allCompleted,
     stopped: isStopped,
     translatedPdfPages,
     completedChunkIds: Array.from(completedUnitSet),
     failedChunkIds: Array.from(failedUnitSet),
+    ...(warningMessage ? { warningMessage } : {}),
     errorMessage: allCompleted
       ? undefined
       : isStopped

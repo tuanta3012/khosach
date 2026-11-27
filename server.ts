@@ -392,12 +392,29 @@ async function startServer() {
       });
       releaseSlot();
 
+      const formatBlockedMessage = (reason: string, isPromptBlock = false): string => {
+        const upper = String(reason || '').toUpperCase();
+        if (upper === 'RECITATION') {
+          return 'Google AI từ chối vì nội dung trùng khớp tài liệu bản quyền/trích dẫn (RECITATION).';
+        }
+        if (upper === 'SAFETY' || upper === 'IMAGE_SAFETY') {
+          return `Google AI chặn bởi bộ lọc an toàn nội dung (${upper}).`;
+        }
+        if (upper === 'PROHIBITED_CONTENT' || upper === 'BLOCKLIST' || upper === 'SPII') {
+          return `Google AI chặn theo chính sách nội dung (${upper}).`;
+        }
+        return isPromptBlock
+          ? `Nội dung bị chặn bởi bộ lọc an toàn Google AI (${upper || reason}).`
+          : `Yêu cầu bị từ chối bởi Google AI (${upper || reason}).`;
+      };
+
       const candidate = response?.candidates?.[0];
       const finishReason = candidate?.finishReason;
       if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
         res.status(422).json({
-          error: `GEMINI_NON_RETRYABLE: Yêu cầu bị từ chối bởi Google AI (Lý do: ${finishReason}).`,
+          error: formatBlockedMessage(finishReason, false),
           failureKind: 'NON_RETRYABLE',
+          contentBlockedReason: String(finishReason),
         });
         return;
       }
@@ -405,8 +422,9 @@ async function startServer() {
       const blockReason = response?.promptFeedback?.blockReason;
       if (blockReason) {
         res.status(422).json({
-          error: `GEMINI_NON_RETRYABLE: Nội dung bị chặn bởi bộ lọc an toàn Google AI (Lý do: ${blockReason}).`,
+          error: formatBlockedMessage(blockReason, true),
           failureKind: 'NON_RETRYABLE',
+          contentBlockedReason: String(blockReason),
         });
         return;
       }

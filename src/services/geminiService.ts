@@ -493,7 +493,7 @@ function classifyGeminiFailure(err: unknown): GeminiFailureKind {
   }
 
   if (/api.?key.?not.?valid|invalid api key|api_key_invalid|api.?key.?expired|api_key_expired|unauthenticated|permission_denied|http.?401|http.?403/.test(errMsg)) return 'AUTH';
-  if (/gemini_non_retryable|safety|recitation|blocked by|prompt was blocked/.test(errMsg)) return 'NON_RETRYABLE';
+  if (/gemini_non_retryable|từ chối bởi google ai|trùng khớp tài liệu bản quyền|bộ lọc an toàn|chính sách nội dung|safety|recitation|prohibited_content|blocked by|prompt was blocked/.test(errMsg)) return 'NON_RETRYABLE';
   if (/429|resource_exhausted|rate.?limit|too many requests|quota exceeded/.test(errMsg)) return 'RPM';
   if (/503|502|500|timeout|timed out|network|failed to fetch|unavailable|socket/.test(errMsg)) return 'TRANSIENT';
   return 'OTHER';
@@ -720,22 +720,42 @@ async function callNativeApkGeminiHttp(params: {
     throw errObj;
   }
 
+  const formatBlockedReasonMsg = (reason: string, isPromptBlock = false): string => {
+    const upper = String(reason || '').toUpperCase();
+    if (upper === 'RECITATION') {
+      return 'Google AI từ chối vì nội dung trùng khớp tài liệu bản quyền/trích dẫn (RECITATION).';
+    }
+    if (upper === 'SAFETY' || upper === 'IMAGE_SAFETY') {
+      return `Google AI chặn bởi bộ lọc an toàn nội dung (${upper}).`;
+    }
+    if (upper === 'PROHIBITED_CONTENT' || upper === 'BLOCKLIST' || upper === 'SPII') {
+      return `Google AI chặn theo chính sách nội dung (${upper}).`;
+    }
+    return isPromptBlock
+      ? `Nội dung bị chặn bởi bộ lọc an toàn Google AI (${upper || reason}).`
+      : `Yêu cầu bị từ chối bởi Google AI (${upper || reason}).`;
+  };
+
   const candidate = data?.candidates?.[0];
   const finishReason = candidate?.finishReason;
   if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
-    const nonRetryErr: Error & { failureKind?: GeminiFailureKind } = new Error(
-      `GEMINI_NON_RETRYABLE: Yêu cầu bị từ chối bởi Google AI (Lý do: ${finishReason}).`
-    );
+    const nonRetryErr: Error & {
+      failureKind?: GeminiFailureKind;
+      contentBlockedReason?: string;
+    } = new Error(formatBlockedReasonMsg(finishReason, false));
     nonRetryErr.failureKind = 'NON_RETRYABLE';
+    nonRetryErr.contentBlockedReason = String(finishReason);
     throw nonRetryErr;
   }
 
   const blockReason = data?.promptFeedback?.blockReason;
   if (blockReason) {
-    const blockedErr: Error & { failureKind?: GeminiFailureKind } = new Error(
-      `GEMINI_NON_RETRYABLE: Nội dung bị chặn bởi bộ lọc an toàn Google AI (Lý do: ${blockReason}).`
-    );
+    const blockedErr: Error & {
+      failureKind?: GeminiFailureKind;
+      contentBlockedReason?: string;
+    } = new Error(formatBlockedReasonMsg(blockReason, true));
     blockedErr.failureKind = 'NON_RETRYABLE';
+    blockedErr.contentBlockedReason = String(blockReason);
     throw blockedErr;
   }
 
@@ -821,12 +841,16 @@ async function callServerGeminiGenerate(params: {
       status?: number;
       failureKind?: string;
       retryAfterMs?: number;
+      contentBlockedReason?: string;
     } = new Error(
       data?.error || `HTTP ${resp.status}: Lỗi gọi Gemini API từ máy chủ.`
     );
     err.status = resp.status;
     if (data?.failureKind) err.failureKind = data.failureKind;
     if (typeof data?.retryAfterMs === 'number') err.retryAfterMs = data.retryAfterMs;
+    if (typeof data?.contentBlockedReason === 'string') {
+      err.contentBlockedReason = data.contentBlockedReason;
+    }
     throw err;
   }
 
@@ -2415,6 +2439,7 @@ export interface EpubFlashLiteCallResult {
   keyExhausted?: boolean;
   rateLimited?: boolean;
   retryable?: boolean;
+  contentBlockedReason?: string;
   error?: string;
 }
 
@@ -2423,6 +2448,20 @@ function parseEpubJsonOutput(rawText: string): unknown {
   const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
   return JSON.parse(candidate);
+}
+
+function extractContentBlockedReason(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const direct = (err as { contentBlockedReason?: unknown }).contentBlockedReason;
+    if (typeof direct === 'string' && direct.trim()) {
+      return direct.trim().toUpperCase();
+    }
+  }
+  const msg = err instanceof Error ? err.message : String(err || '');
+  const match = msg.match(
+    /\b(RECITATION|SAFETY|IMAGE_SAFETY|PROHIBITED_CONTENT|IMAGE_PROHIBITED_CONTENT|IMAGE_RECITATION|BLOCKLIST|SPII)\b/i
+  );
+  return match ? match[1].toUpperCase() : undefined;
 }
 
 /**
@@ -2436,6 +2475,7 @@ export async function executeEpubFlashLiteWithKey(params: {
   responseSchema?: any;
   preferredModels?: string[];
   timeoutMs?: number;
+  temperature?: number;
   abortSignal?: AbortSignal;
   stopSignal?: { current: boolean };
 }): Promise<EpubFlashLiteCallResult> {
@@ -2446,6 +2486,7 @@ export async function executeEpubFlashLiteWithKey(params: {
     responseSchema,
     preferredModels,
     timeoutMs,
+    temperature,
     abortSignal,
     stopSignal,
   } = params;
@@ -2479,6 +2520,7 @@ export async function executeEpubFlashLiteWithKey(params: {
 
   const keyLabel = isServerKeyToken(cleanKey) ? 'Key máy chủ' : `Key ${cleanKey.slice(0, 6)}...`;
   let lastErrorMsg = 'Không thể nhận phản hồi từ Gemini.';
+  let lastBlockedReason: string | undefined;
   let sawRateLimit = false;
   let sawNonRateLimitRetryable = false;
   let allNonRetryable = true;
@@ -2490,7 +2532,7 @@ export async function executeEpubFlashLiteWithKey(params: {
 
     const reqStart = Date.now();
     try {
-      await acquireRpmSlot(cleanKey, modelName);
+      await acquireRpmSlot(cleanKey, modelName, abortSignal);
       if (stopSignal?.current || abortSignal?.aborted) {
         return { success: false, aborted: true, retryable: true };
       }
@@ -2498,6 +2540,9 @@ export async function executeEpubFlashLiteWithKey(params: {
       const config: Record<string, any> = {
         systemInstruction,
       };
+      if (typeof temperature === 'number' && Number.isFinite(temperature)) {
+        config.temperature = temperature;
+      }
       if (responseSchema) {
         config.responseMimeType = 'application/json';
         config.responseSchema = responseSchema;
@@ -2541,6 +2586,7 @@ export async function executeEpubFlashLiteWithKey(params: {
       const failure = classifyGeminiFailure(err);
       const errMsg = err instanceof Error ? err.message : String(err);
       lastErrorMsg = errMsg;
+      lastBlockedReason = extractContentBlockedReason(err) || lastBlockedReason;
       recordTranslationModelOutcome(modelName, false, Date.now() - reqStart, failure);
 
       console.warn(`[EPUB Gemini] Model ${modelName} (${failure}):`, errMsg);
@@ -2596,6 +2642,7 @@ export async function executeEpubFlashLiteWithKey(params: {
     success: false,
     rateLimited: sawRateLimit && !sawNonRateLimitRetryable,
     retryable: !allNonRetryable,
+    ...(lastBlockedReason ? { contentBlockedReason: lastBlockedReason } : {}),
     error: lastErrorMsg,
   };
 }
@@ -2613,6 +2660,7 @@ export async function executePdfVisionFlashLiteWithKey(params: {
   responseSchema?: any;
   preferredModels?: string[];
   timeoutMs?: number;
+  temperature?: number;
   abortSignal?: AbortSignal;
   stopSignal?: { current: boolean };
 }): Promise<EpubFlashLiteCallResult> {
@@ -2625,6 +2673,7 @@ export async function executePdfVisionFlashLiteWithKey(params: {
     responseSchema,
     preferredModels,
     timeoutMs,
+    temperature,
     abortSignal,
     stopSignal,
   } = params;
@@ -2666,6 +2715,7 @@ export async function executePdfVisionFlashLiteWithKey(params: {
 
   const keyLabel = isServerKeyToken(cleanKey) ? 'Key máy chủ' : `Key ${cleanKey.slice(0, 6)}...`;
   let lastErrorMsg = 'Không thể nhận phản hồi từ Gemini Vision.';
+  let lastBlockedReason: string | undefined;
   let sawRateLimit = false;
   let sawNonRateLimitRetryable = false;
   let allNonRetryable = true;
@@ -2677,7 +2727,7 @@ export async function executePdfVisionFlashLiteWithKey(params: {
 
     const reqStart = Date.now();
     try {
-      await acquireRpmSlot(cleanKey, modelName);
+      await acquireRpmSlot(cleanKey, modelName, abortSignal);
       if (stopSignal?.current || abortSignal?.aborted) {
         return { success: false, aborted: true, retryable: true };
       }
@@ -2685,6 +2735,9 @@ export async function executePdfVisionFlashLiteWithKey(params: {
       const config: Record<string, any> = {
         systemInstruction,
       };
+      if (typeof temperature === 'number' && Number.isFinite(temperature)) {
+        config.temperature = temperature;
+      }
       if (responseSchema) {
         config.responseMimeType = 'application/json';
         config.responseSchema = responseSchema;
@@ -2740,6 +2793,7 @@ export async function executePdfVisionFlashLiteWithKey(params: {
       const failure = classifyGeminiFailure(err);
       const errMsg = err instanceof Error ? err.message : String(err);
       lastErrorMsg = errMsg;
+      lastBlockedReason = extractContentBlockedReason(err) || lastBlockedReason;
       recordTranslationModelOutcome(modelName, false, Date.now() - reqStart, failure);
 
       console.warn(`[PDF Vision Gemini] Model ${modelName} (${failure}):`, errMsg);
@@ -2795,6 +2849,7 @@ export async function executePdfVisionFlashLiteWithKey(params: {
     success: false,
     rateLimited: sawRateLimit && !sawNonRateLimitRetryable,
     retryable: !allNonRetryable,
+    ...(lastBlockedReason ? { contentBlockedReason: lastBlockedReason } : {}),
     error: lastErrorMsg,
   };
 }

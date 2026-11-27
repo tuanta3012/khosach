@@ -445,4 +445,12 @@ export interface EpubTranslationProgress {
   statusMessage: string;
 }
 
+export interface BookExportProgress {
+  stage: string;
+  current: number;
+  total: number;
+  percent: number;
+}
+
+
 

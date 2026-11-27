@@ -1,6 +1,7 @@
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import {
+  BookExportProgress,
   EpubGenreId,
   EpubTranslationJob,
   EpubTranslationProgress,
@@ -46,6 +47,10 @@ export interface QueueNotice {
   type: 'success' | 'info' | 'warning' | 'error';
 }
 
+export interface BookPackagingProgress extends BookExportProgress {
+  jobId: string;
+}
+
 export interface BookQueueSnapshot {
   initialized: boolean;
   isLoading: boolean;
@@ -59,6 +64,7 @@ export interface BookQueueSnapshot {
   isParsingFiles: boolean;
   parseStatusText: string;
   packagingJobId: string | null;
+  packagingProgress: BookPackagingProgress | null;
   lastNotice: QueueNotice | null;
 }
 
@@ -78,6 +84,7 @@ let state: BookQueueSnapshot = {
   isParsingFiles: false,
   parseStatusText: '',
   packagingJobId: null,
+  packagingProgress: null,
   lastNotice: null,
 };
 
@@ -577,7 +584,46 @@ export async function exportBookJobToDevice(
   const targetJob = state.jobs.find((j) => j.jobId === jobId) || (await getEpubJobById(jobId));
   if (!targetJob) return null;
 
-  setState({ packagingJobId: jobId });
+  let lastProgressEmitAt = 0;
+  let lastProgressStage = '';
+  let lastProgressPct = -1;
+
+  const updateExportProgress = (prog: BookExportProgress, force = false) => {
+    const now = Date.now();
+    const clampedPct = Math.max(0, Math.min(100, Math.round(prog.percent)));
+    if (
+      !force &&
+      now - lastProgressEmitAt < 80 &&
+      clampedPct === lastProgressPct &&
+      prog.stage === lastProgressStage
+    ) {
+      return;
+    }
+    lastProgressEmitAt = now;
+    lastProgressStage = prog.stage;
+    lastProgressPct = clampedPct;
+    setState({
+      packagingProgress: {
+        jobId,
+        stage: prog.stage,
+        current: prog.current,
+        total: prog.total,
+        percent: clampedPct,
+      },
+    });
+  };
+
+  setState({
+    packagingJobId: jobId,
+    packagingProgress: {
+      jobId,
+      stage: 'Đang chuẩn bị xuất tệp...',
+      current: 0,
+      total: 100,
+      percent: 1,
+    },
+  });
+
   try {
     const isPdfJob = targetJob.sourceType === 'pdf' && Boolean(targetJob.parsedPdfData);
     let blob: Blob;
@@ -592,7 +638,8 @@ export async function exportBookJobToDevice(
         const exported = await exportTranslatedPdfFile(
           targetJob.parsedPdfData,
           finalPdfPages,
-          targetJob.fileName
+          targetJob.fileName,
+          (p) => updateExportProgress(p)
         );
         blob = exported.blob;
         nextTitle = exported.translatedTitle;
@@ -600,7 +647,8 @@ export async function exportBookJobToDevice(
         const exported = await reassemblePdfTranslationToEpub(
           targetJob.parsedPdfData,
           finalPdfPages,
-          targetJob.fileName
+          targetJob.fileName,
+          (p) => updateExportProgress(p)
         );
         blob = exported.blob;
         nextTitle = exported.translatedTitle;
@@ -609,14 +657,27 @@ export async function exportBookJobToDevice(
       const exported = await reassembleAndPackageEpub(
         targetJob.parsedData,
         targetJob.translatedSegments,
-        targetJob.epubBuffer
+        targetJob.epubBuffer,
+        (p) => updateExportProgress(p)
       );
       blob = exported.blob;
       nextTitle = exported.translatedTitle;
     }
 
     const outFileName = buildVietnameseBookFileName(nextTitle, targetJob.fileName, ext);
-    const saved = await saveTranslatedEpubToDevice(blob, outFileName);
+    const saved = await saveTranslatedEpubToDevice(blob, outFileName, (p) =>
+      updateExportProgress(p, true)
+    );
+
+    updateExportProgress(
+      {
+        stage: `Hoàn tất lưu "${saved.fileName}"`,
+        current: 100,
+        total: 100,
+        percent: 100,
+      },
+      true
+    );
 
     updateJobInMemory(jobId, (j) => ({
       ...j,
@@ -641,7 +702,7 @@ export async function exportBookJobToDevice(
     return null;
   } finally {
     if (state.packagingJobId === jobId) {
-      setState({ packagingJobId: null });
+      setState({ packagingJobId: null, packagingProgress: null });
     }
   }
 }
@@ -949,7 +1010,12 @@ export async function startOrResumeBookQueue(
           const title = currentJob.parsedPdfData.bookTitle || currentJob.fileName;
           const saved = await exportBookJobToDevice(currentJob.jobId, { silentToast: true });
           if (saved) {
-            pushNotice(`Xong "${title}" (${formatElapsedTime(finalElapsed)}) · Đã lưu`, 'success');
+            pushNotice(
+              res.warningMessage
+                ? `Xong "${title}" (${formatElapsedTime(finalElapsed)}) · ${res.warningMessage}`
+                : `Xong "${title}" (${formatElapsedTime(finalElapsed)}) · Đã lưu`,
+              res.warningMessage ? 'info' : 'success'
+            );
           }
           await sendBackgroundNotification(
             'Đã dịch xong sách',
@@ -1010,7 +1076,12 @@ export async function startOrResumeBookQueue(
           const title = currentJob.parsedData?.bookTitle || currentJob.fileName;
           const saved = await exportBookJobToDevice(currentJob.jobId, { silentToast: true });
           if (saved) {
-            pushNotice(`Xong "${title}" (${formatElapsedTime(finalElapsed)}) · Đã lưu`, 'success');
+            pushNotice(
+              res.warningMessage
+                ? `Xong "${title}" (${formatElapsedTime(finalElapsed)}) · ${res.warningMessage}`
+                : `Xong "${title}" (${formatElapsedTime(finalElapsed)}) · Đã lưu`,
+              res.warningMessage ? 'info' : 'success'
+            );
           }
           await sendBackgroundNotification(
             'Đã dịch xong sách',

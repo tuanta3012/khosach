@@ -261,7 +261,11 @@ export const EpubTranslatorView: React.FC = () => {
           <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs px-3.5 py-2.5 flex items-center justify-between gap-2">
             <span className="text-xs sm:text-sm font-bold text-slate-700 tabular-nums truncate">
               {completedCount}/{queue.jobs.length} hoàn tất
-              {queue.isRunning ? ' · Đang dịch' : ''}
+              {queue.packagingJobId
+                ? ' · Đang xuất file'
+                : queue.isRunning
+                ? ' · Đang dịch'
+                : ''}
             </span>
 
             <div className="flex items-center gap-2 shrink-0">
@@ -280,7 +284,7 @@ export const EpubTranslatorView: React.FC = () => {
                 </button>
               )}
 
-              {queue.isRunning && (
+              {queue.isRunning && (pendingCount > 0 || !queue.packagingJobId) && (
                 <button
                   type="button"
                   disabled={queue.isStopping}
@@ -312,7 +316,12 @@ export const EpubTranslatorView: React.FC = () => {
               const stats = getJobStats(job);
               const done = job.status === 'completed' || isJobCompleted(job);
               const isPackaging = queue.packagingJobId === job.jobId;
-              const activeProg = isActive ? queue.activeProgress : null;
+              const pkgProg =
+                isPackaging && queue.packagingProgress?.jobId === job.jobId
+                  ? queue.packagingProgress
+                  : null;
+              const isTranslatingActive = isActive && !done && !isPackaging;
+              const activeProg = isTranslatingActive ? queue.activeProgress : null;
 
               const doneChunks =
                 activeProg && activeProg.totalChunks > 0
@@ -341,13 +350,17 @@ export const EpubTranslatorView: React.FC = () => {
               const configOpen = Boolean(expandedConfigIds[job.jobId]);
               const outFmt: PdfOutputFormat = job.pdfOutputFormat || 'epub';
               const showProgressBar =
-                isActive || done || stats.completedChunks > 0 || job.status === 'error';
+                isTranslatingActive ||
+                isPackaging ||
+                done ||
+                stats.completedChunks > 0 ||
+                job.status === 'error';
 
               return (
                 <div
                   key={job.jobId}
                   className={`px-3.5 py-3 space-y-2 transition-colors ${
-                    isActive
+                    isTranslatingActive || isPackaging
                       ? 'bg-sky-50/50'
                       : done
                       ? 'bg-emerald-50/25'
@@ -371,11 +384,11 @@ export const EpubTranslatorView: React.FC = () => {
                         </span>
                         <span aria-hidden="true">·</span>
                         <span>{formatFileSize(job.fileSize)}</span>
-                        {isActive ? (
+                        {isPackaging ? (
                           <>
                             <span aria-hidden="true">·</span>
                             <span className="font-semibold text-[#0284C7]">
-                              {percent}% · {elapsedLabel}
+                              Xuất {pkgProg?.percent ?? 0}%
                             </span>
                           </>
                         ) : done ? (
@@ -383,6 +396,13 @@ export const EpubTranslatorView: React.FC = () => {
                             <span aria-hidden="true">·</span>
                             <span className="font-semibold text-emerald-700">
                               Xong · {elapsedLabel}
+                            </span>
+                          </>
+                        ) : isTranslatingActive ? (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-semibold text-[#0284C7]">
+                              {percent}% · {elapsedLabel}
                             </span>
                           </>
                         ) : job.status === 'error' ? (
@@ -402,7 +422,7 @@ export const EpubTranslatorView: React.FC = () => {
                     </div>
 
                     <div className="flex items-center gap-1 shrink-0">
-                      {isActive && (
+                      {isTranslatingActive && (
                         <button
                           type="button"
                           disabled={queue.isStopping}
@@ -437,13 +457,19 @@ export const EpubTranslatorView: React.FC = () => {
                                 outputFormat: outFmt,
                               })
                             }
-                            className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap active:scale-95 transition"
+                            className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-75 text-white text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap active:scale-95 transition tabular-nums"
                           >
                             <Download className="w-3.5 h-3.5" />
-                            <span>{isPackaging ? 'Đang xuất' : 'Lưu'}</span>
+                            <span>
+                              {isPackaging
+                                ? pkgProg
+                                  ? `Xuất ${pkgProg.percent}%`
+                                  : 'Đang xuất'
+                                : 'Lưu'}
+                            </span>
                           </button>
 
-                          {job.lastSavedFileUri && (
+                          {job.lastSavedFileUri && !isPackaging && (
                             <>
                               <button
                                 type="button"
@@ -478,7 +504,7 @@ export const EpubTranslatorView: React.FC = () => {
                         </>
                       )}
 
-                      {!isActive && (
+                      {!isTranslatingActive && !isPackaging && (
                         <>
                           <button
                             type="button"
@@ -507,24 +533,36 @@ export const EpubTranslatorView: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Thanh tiến độ gọn (chỉ hiện khi đang dịch, tạm dừng, lỗi hoặc hoàn tất) */}
+                  {/* Thanh tiến độ dịch / tiến trình xuất chi tiết */}
                   {showProgressBar && (
                     <div className="space-y-1">
                       <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
                         <div
                           className={`h-full transition-all duration-300 rounded-full ${
-                            done
+                            isPackaging
+                              ? 'bg-[#0284C7]'
+                              : done
                               ? 'bg-[#10B981]'
                               : job.status === 'error'
                               ? 'bg-rose-500'
-                              : isActive
+                              : isTranslatingActive
                               ? 'bg-[#0284C7]'
                               : 'bg-amber-500'
                           }`}
-                          style={{ width: `${percent}%` }}
+                          style={{
+                            width: `${isPackaging ? Math.max(3, pkgProg?.percent ?? 0) : percent}%`,
+                          }}
                         />
                       </div>
-                      {isActive && activeProg?.statusMessage && (
+
+                      {isPackaging && pkgProg && (
+                        <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-[#0284C7] tabular-nums">
+                          <span className="break-words min-w-0 flex-1">{pkgProg.stage}</span>
+                          <span className="font-bold shrink-0">{pkgProg.percent}%</span>
+                        </div>
+                      )}
+
+                      {!isPackaging && isTranslatingActive && activeProg?.statusMessage && (
                         <p className="text-[11px] font-medium text-[#0284C7] truncate tabular-nums">
                           {activeProg.statusMessage}
                         </p>
@@ -532,14 +570,14 @@ export const EpubTranslatorView: React.FC = () => {
                     </div>
                   )}
 
-                  {job.lastError && !isActive && !done && (
-                    <p className="text-xs text-rose-600 font-medium truncate">
+                  {job.lastError && !isTranslatingActive && !done && (
+                    <p className="text-xs text-rose-600 font-medium break-words leading-relaxed">
                       {job.lastError}
                     </p>
                   )}
 
                   {/* Bảng tùy chọn thu gọn theo từng file */}
-                  {configOpen && !isActive && (
+                  {configOpen && !isTranslatingActive && !isPackaging && (
                     <div className="pt-2.5 border-t border-slate-100 space-y-2.5">
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <select

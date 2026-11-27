@@ -3,6 +3,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import {
+  BookExportProgress,
   ParsedPdfData,
   PdfBlockTag,
   PdfChapterInfo,
@@ -542,13 +543,24 @@ function wrapBlockXhtml(tag: PdfBlockTag, innerHtml: string): string {
 export async function reassemblePdfTranslationToEpub(
   parsedPdf: ParsedPdfData,
   translatedPages: Record<number, PdfTranslatedBlock[]>,
-  originalFileName: string
+  originalFileName: string,
+  onProgress?: (progress: BookExportProgress) => void
 ): Promise<{ blob: Blob; translatedTitle: string }> {
   const baseName = originalFileName.replace(/\.pdf$/i, '').trim();
   const translatedTitle = appendVnSuffix(
     parsedPdf.bookTitle && parsedPdf.bookTitle !== 'Sach_PDF' ? parsedPdf.bookTitle : baseName
   );
   const bookUuid = `urn:uuid:pdf-vn-${Date.now().toString(36)}`;
+
+  const totalAssets = Object.keys(parsedPdf.assets || {}).length;
+  const totalChapters = Math.max(1, parsedPdf.chapters.length);
+
+  onProgress?.({
+    stage: 'Đang chuẩn bị cấu trúc EPUB...',
+    current: 0,
+    total: totalChapters,
+    percent: 2,
+  });
 
   const zip = new JSZip();
   zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
@@ -582,10 +594,21 @@ table.pdf-table th { background: #f1f5f9; font-weight: bold; }`;
 
   zip.file('OEBPS/Styles/style.css', styleCss, { compression: 'DEFLATE' });
 
-  // Lưu toàn bộ ảnh hình minh họa cắt từ PDF
+  // Lưu toàn bộ ảnh hình minh họa cắt từ PDF (dùng STORE vì JPEG/PNG đã nén sẵn)
   const assetEntries = Object.values(parsedPdf.assets);
-  for (const asset of assetEntries) {
-    zip.file(`OEBPS/Images/${asset.fileName}`, asset.data, { compression: 'DEFLATE' });
+  for (let aIdx = 0; aIdx < assetEntries.length; aIdx++) {
+    const asset = assetEntries[aIdx];
+    zip.file(`OEBPS/Images/${asset.fileName}`, asset.data, { compression: 'STORE' });
+    if ((aIdx + 1) % 15 === 0) {
+      const pct = 3 + Math.round(((aIdx + 1) / Math.max(1, totalAssets)) * 10);
+      onProgress?.({
+        stage: `Đang đóng gói hình ảnh (${aIdx + 1}/${totalAssets})...`,
+        current: aIdx + 1,
+        total: totalAssets,
+        percent: pct,
+      });
+      await yieldToEventLoop();
+    }
   }
 
   // Tạo từng file chương XHTML
@@ -636,6 +659,17 @@ ${bodyParts.join('\n')}
 </html>`;
 
     zip.file(`OEBPS/${href}`, xhtml, { compression: 'DEFLATE' });
+
+    if ((i + 1) % 3 === 0 || i + 1 === parsedPdf.chapters.length) {
+      const pct = 14 + Math.round(((i + 1) / totalChapters) * 34);
+      onProgress?.({
+        stage: `Đang tạo chương EPUB (${i + 1}/${totalChapters})...`,
+        current: i + 1,
+        total: totalChapters,
+        percent: pct,
+      });
+      await yieldToEventLoop();
+    }
   }
 
   // OEBPS/nav.xhtml
@@ -736,10 +770,31 @@ ${spineRefs}
     { compression: 'DEFLATE' }
   );
 
-  const blob = await zip.generateAsync({
-    type: 'blob',
-    mimeType: 'application/epub+zip',
+  onProgress?.({
+    stage: 'Đang nén tệp EPUB (0%)...',
+    current: 0,
+    total: 100,
+    percent: 48,
   });
+
+  const blob = await zip.generateAsync(
+    {
+      type: 'blob',
+      mimeType: 'application/epub+zip',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+    },
+    (metadata) => {
+      const zipPct = Math.round(metadata.percent);
+      const overallPct = 48 + Math.round((zipPct / 100) * 40);
+      onProgress?.({
+        stage: `Đang nén tệp EPUB (${zipPct}%)...`,
+        current: zipPct,
+        total: 100,
+        percent: overallPct,
+      });
+    }
+  );
 
   return { blob, translatedTitle };
 }
@@ -834,257 +889,311 @@ async function decodeAssetToImage(asset: PdfExtractedAsset): Promise<HTMLImageEl
 export async function exportTranslatedPdfFile(
   parsedPdf: ParsedPdfData,
   translatedPages: Record<number, PdfTranslatedBlock[]>,
-  originalFileName: string
+  originalFileName: string,
+  onProgress?: (progress: BookExportProgress) => void
 ): Promise<{ blob: Blob; translatedTitle: string }> {
   const baseName = originalFileName.replace(/\.pdf$/i, '').trim();
   const translatedTitle = appendVnSuffix(
     parsedPdf.bookTitle && parsedPdf.bookTitle !== 'Sach_PDF' ? parsedPdf.bookTitle : baseName
   );
 
-  const PAGE_W = 1240; // A4 @ 150 DPI
-  const PAGE_H = 1754;
-  const MARGIN_X = 96;
-  const MARGIN_TOP = 96;
-  const MARGIN_BOTTOM = 104;
+  // Tự động điều chỉnh DPI & nén JPEG theo độ dày sách để tránh tràn RAM / văng WebView Android trên sách >500 trang
+  const estimatedSourcePages = Math.max(
+    parsedPdf.totalPages || 0,
+    Object.keys(translatedPages || {}).length
+  );
+  const PAGE_W =
+    estimatedSourcePages > 450 ? 840 : estimatedSourcePages > 200 ? 960 : 1240;
+  const S = PAGE_W / 1240;
+  const PAGE_H = Math.round(1754 * S);
+  const JPEG_QUALITY =
+    estimatedSourcePages > 450 ? 0.70 : estimatedSourcePages > 200 ? 0.75 : 0.84;
+
+  const px = (v: number) => Math.max(1, Math.round(v * S));
+  const MARGIN_X = px(96);
+  const MARGIN_TOP = px(96);
+  const MARGIN_BOTTOM = px(104);
   const CONTENT_W = PAGE_W - MARGIN_X * 2;
+  const totalChapters = Math.max(1, parsedPdf.chapters.length);
 
-  const pdfDoc = await PDFDocument.create();
-  pdfDoc.setTitle(translatedTitle);
-  pdfDoc.setAuthor(parsedPdf.bookAuthor || 'Khuyết danh');
+  onProgress?.({
+    stage: 'Đang khởi tạo bộ kết xuất PDF...',
+    current: 0,
+    total: Math.max(1, estimatedSourcePages),
+    percent: 2,
+  });
 
-  const canvas = document.createElement('canvas');
-  canvas.width = PAGE_W;
-  canvas.height = PAGE_H;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('Không khởi tạo được bộ kết xuất PDF.');
-  }
+  const buildPdfBytes = async (): Promise<Uint8Array> => {
+    const pdfDoc = await PDFDocument.create();
+    pdfDoc.setTitle(translatedTitle);
+    pdfDoc.setAuthor(parsedPdf.bookAuthor || 'Khuyết danh');
 
-  let pageNumber = 0;
-  let cursorY = MARGIN_TOP;
-
-  const initBlankPage = (drawPageNumber = true) => {
-    pageNumber += 1;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, PAGE_W, PAGE_H);
-    cursorY = MARGIN_TOP;
-    if (drawPageNumber && pageNumber > 1) {
-      ctx.save();
-      ctx.font = '400 20px "Noto Sans", "Segoe UI", Roboto, sans-serif';
-      ctx.fillStyle = '#64748b';
-      ctx.textAlign = 'center';
-      ctx.fillText(String(pageNumber - 1), PAGE_W / 2, PAGE_H - 46);
-      ctx.restore();
-    }
-  };
-
-  const commitCurrentPageToPdf = async () => {
-    const jpegBytes = await canvasToJpegBytes(canvas, 0.88);
-    const embedded = await pdfDoc.embedJpg(jpegBytes);
-    const pdfPage = pdfDoc.addPage([595.28, 841.89]); // A4 pt
-    pdfPage.drawImage(embedded, {
-      x: 0,
-      y: 0,
-      width: 595.28,
-      height: 841.89,
-    });
-  };
-
-  const ensureSpace = async (neededHeight: number) => {
-    if (cursorY + neededHeight > PAGE_H - MARGIN_BOTTOM) {
-      await commitCurrentPageToPdf();
-      initBlankPage(true);
-    }
-  };
-
-  try {
-    // 1. Trang bìa đơn giản
-    initBlankPage(false);
-    ctx.fillStyle = '#0f172a';
-    ctx.font = '700 54px "Noto Serif", Georgia, serif';
-    const titleLines = wrapTextToLines(ctx, translatedTitle, CONTENT_W);
-    cursorY = Math.max(420, Math.round(PAGE_H * 0.36));
-    for (const line of titleLines) {
-      ctx.fillText(line, MARGIN_X, cursorY);
-      cursorY += 72;
+    const canvas = document.createElement('canvas');
+    canvas.width = PAGE_W;
+    canvas.height = PAGE_H;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) {
+      throw new Error('Không khởi tạo được bộ kết xuất PDF.');
     }
 
-    if (parsedPdf.bookAuthor) {
-      cursorY += 24;
-      ctx.fillStyle = '#475569';
-      ctx.font = '500 30px "Noto Sans", "Segoe UI", Roboto, sans-serif';
-      ctx.fillText(parsedPdf.bookAuthor, MARGIN_X, cursorY);
-    }
+    let pageNumber = 0;
+    let cursorY = MARGIN_TOP;
+    let activeChapterIdx = 0;
 
-    await commitCurrentPageToPdf();
-    initBlankPage(true);
+    const initBlankPage = (drawPageNumber = true) => {
+      pageNumber += 1;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, PAGE_W, PAGE_H);
+      cursorY = MARGIN_TOP;
+      if (drawPageNumber && pageNumber > 1) {
+        ctx.save();
+        ctx.font = `400 ${px(20)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
+        ctx.fillStyle = '#64748b';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(pageNumber - 1), PAGE_W / 2, PAGE_H - px(46));
+        ctx.restore();
+      }
+    };
 
-    // 2. Kết xuất nội dung các chương
-    for (let chIdx = 0; chIdx < parsedPdf.chapters.length; chIdx++) {
-      const ch = parsedPdf.chapters[chIdx];
-      if (chIdx > 0 && cursorY > MARGIN_TOP + 80) {
+    const commitCurrentPageToPdf = async () => {
+      const jpegBytes = await canvasToJpegBytes(canvas, JPEG_QUALITY);
+      const embedded = await pdfDoc.embedJpg(jpegBytes);
+      const pdfPage = pdfDoc.addPage([595.28, 841.89]); // A4 pt
+      pdfPage.drawImage(embedded, {
+        x: 0,
+        y: 0,
+        width: 595.28,
+        height: 841.89,
+      });
+
+      const chRatio = (activeChapterIdx + 0.5) / totalChapters;
+      const pct = Math.min(80, Math.max(3, 3 + Math.round(chRatio * 77)));
+      onProgress?.({
+        stage: `Đang kết xuất PDF: trang ${pageNumber} (chương ${Math.min(
+          totalChapters,
+          activeChapterIdx + 1
+        )}/${totalChapters})...`,
+        current: pageNumber,
+        total: Math.max(pageNumber, estimatedSourcePages),
+        percent: pct,
+      });
+
+      // Nhường event loop sau mỗi trang để UI mượt và giải phóng bộ nhớ tạm từng trang
+      await yieldToEventLoop();
+    };
+
+    const ensureSpace = async (neededHeight: number) => {
+      if (cursorY + neededHeight > PAGE_H - MARGIN_BOTTOM) {
         await commitCurrentPageToPdf();
         initBlankPage(true);
       }
+    };
 
-      const chBlocks = mergeChapterBlocksAcrossPages(parsedPdf, translatedPages, ch);
-      const hasFirstHeading = chBlocks.some((b) => b.tag === 'h1' || b.tag === 'h2');
-      const blocksToDraw: PdfTranslatedBlock[] =
-        !hasFirstHeading && ch.title
-          ? [{ tag: 'h1', html: ch.title }, ...chBlocks]
-          : chBlocks;
+    try {
+      // 1. Trang bìa đơn giản
+      initBlankPage(false);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = `700 ${px(54)}px "Noto Serif", Georgia, serif`;
+      const titleLines = wrapTextToLines(ctx, translatedTitle, CONTENT_W);
+      cursorY = Math.max(px(420), Math.round(PAGE_H * 0.36));
+      for (const line of titleLines) {
+        ctx.fillText(line, MARGIN_X, cursorY);
+        cursorY += px(72);
+      }
 
-      for (const block of blocksToDraw) {
-        const imgTokens = Array.from(block.html.matchAll(/\[\[PDF_IMG_([a-zA-Z0-9_-]+)\]\]/g));
-        const textWithoutTokens = block.html.replace(/\[\[PDF_IMG_[a-zA-Z0-9_-]+\]\]/g, '').trim();
+      if (parsedPdf.bookAuthor) {
+        cursorY += px(24);
+        ctx.fillStyle = '#475569';
+        ctx.font = `500 ${px(30)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
+        ctx.fillText(parsedPdf.bookAuthor, MARGIN_X, cursorY);
+      }
 
-        if (textWithoutTokens && block.tag !== 'figure') {
-          if (block.tag === 'table') {
-            const rows = parseTableRowsFromHtml(textWithoutTokens);
-            if (rows.length > 0) {
-              const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 1);
-              const colW = CONTENT_W / maxCols;
-              ctx.font = '400 22px "Noto Sans", "Segoe UI", Roboto, sans-serif';
+      await commitCurrentPageToPdf();
+      initBlankPage(true);
 
-              for (const row of rows) {
-                const cellLineGroups = row.map((cell) => {
-                  ctx.font = cell.isHeader
-                    ? '700 22px "Noto Sans", "Segoe UI", Roboto, sans-serif'
-                    : '400 22px "Noto Sans", "Segoe UI", Roboto, sans-serif';
-                  return wrapTextToLines(ctx, cell.text, colW - 20);
-                });
-                const maxLines = cellLineGroups.reduce((m, g) => Math.max(m, g.length), 1);
-                const rowH = maxLines * 30 + 20;
-                await ensureSpace(rowH + 6);
+      // 2. Kết xuất nội dung các chương
+      for (let chIdx = 0; chIdx < parsedPdf.chapters.length; chIdx++) {
+        activeChapterIdx = chIdx;
+        const ch = parsedPdf.chapters[chIdx];
+        if (chIdx > 0 && cursorY > MARGIN_TOP + px(80)) {
+          await commitCurrentPageToPdf();
+          initBlankPage(true);
+        }
 
-                for (let c = 0; c < maxCols; c++) {
-                  const cell = row[c] || { text: '', isHeader: false };
-                  const cx = MARGIN_X + c * colW;
-                  if (cell.isHeader) {
+        const chBlocks = mergeChapterBlocksAcrossPages(parsedPdf, translatedPages, ch);
+        const hasFirstHeading = chBlocks.some((b) => b.tag === 'h1' || b.tag === 'h2');
+        const blocksToDraw: PdfTranslatedBlock[] =
+          !hasFirstHeading && ch.title
+            ? [{ tag: 'h1', html: ch.title }, ...chBlocks]
+            : chBlocks;
+
+        for (const block of blocksToDraw) {
+          const imgTokens = Array.from(block.html.matchAll(/\[\[PDF_IMG_([a-zA-Z0-9_-]+)\]\]/g));
+          const textWithoutTokens = block.html.replace(/\[\[PDF_IMG_[a-zA-Z0-9_-]+\]\]/g, '').trim();
+
+          if (textWithoutTokens && block.tag !== 'figure') {
+            if (block.tag === 'table') {
+              const rows = parseTableRowsFromHtml(textWithoutTokens);
+              if (rows.length > 0) {
+                const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 1);
+                const colW = CONTENT_W / maxCols;
+                ctx.font = `400 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
+
+                for (const row of rows) {
+                  const cellLineGroups = row.map((cell) => {
+                    ctx.font = cell.isHeader
+                      ? `700 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`
+                      : `400 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
+                    return wrapTextToLines(ctx, cell.text, colW - px(20));
+                  });
+                  const maxLines = cellLineGroups.reduce((m, g) => Math.max(m, g.length), 1);
+                  const rowH = maxLines * px(30) + px(20);
+                  await ensureSpace(rowH + px(6));
+
+                  for (let c = 0; c < maxCols; c++) {
+                    const cell = row[c] || { text: '', isHeader: false };
+                    const cx = MARGIN_X + c * colW;
+                    if (cell.isHeader) {
+                      ctx.fillStyle = '#f1f5f9';
+                      ctx.fillRect(cx, cursorY, colW, rowH);
+                    }
+                    ctx.strokeStyle = '#cbd5e1';
+                    ctx.lineWidth = Math.max(1, 1.5 * S);
+                    ctx.strokeRect(cx, cursorY, colW, rowH);
+
+                    ctx.fillStyle = '#0f172a';
+                    ctx.font = cell.isHeader
+                      ? `700 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`
+                      : `400 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
+                    const lines = cellLineGroups[c] || [];
+                    for (let li = 0; li < lines.length; li++) {
+                      ctx.fillText(lines[li], cx + px(10), cursorY + px(28) + li * px(30));
+                    }
+                  }
+                  cursorY += rowH;
+                }
+                cursorY += px(18);
+              }
+            } else {
+              let fontSpec = `400 ${px(27)}px "Noto Serif", Georgia, serif`;
+              let lineHeight = px(42);
+              let fill = '#1e293b';
+              let indentLeft = 0;
+              let spaceBefore = 0;
+              let spaceAfter = px(18);
+
+              if (block.tag === 'h1') {
+                fontSpec = `700 ${px(40)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
+                lineHeight = px(52);
+                fill = '#0f172a';
+                spaceBefore = px(20);
+                spaceAfter = px(22);
+              } else if (block.tag === 'h2') {
+                fontSpec = `700 ${px(33)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
+                lineHeight = px(44);
+                fill = '#0f172a';
+                spaceBefore = px(16);
+                spaceAfter = px(16);
+              } else if (block.tag === 'h3') {
+                fontSpec = `700 ${px(29)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
+                lineHeight = px(40);
+                fill = '#1e293b';
+                spaceBefore = px(12);
+                spaceAfter = px(12);
+              } else if (block.tag === 'blockquote') {
+                fontSpec = `italic ${px(26)}px "Noto Serif", Georgia, serif`;
+                lineHeight = px(40);
+                fill = '#334155';
+                indentLeft = px(28);
+              } else if (block.tag === 'pre') {
+                fontSpec = `400 ${px(22)}px "Courier New", monospace`;
+                lineHeight = px(32);
+                fill = '#0f172a';
+                indentLeft = px(18);
+              } else if (block.tag === 'ul' || block.tag === 'ol') {
+                indentLeft = px(24);
+                spaceAfter = px(12);
+              }
+
+              let plain = stripTagsToPlainText(textWithoutTokens);
+              if (block.tag === 'ul' && !/^[•●▪\-–*]/.test(plain)) {
+                plain = `• ${plain}`;
+              }
+
+              ctx.font = fontSpec;
+              const lines = wrapTextToLines(ctx, plain, CONTENT_W - indentLeft - px(12));
+              if (lines.length > 0) {
+                cursorY += spaceBefore;
+                if (block.tag === 'h1' || block.tag === 'h2' || block.tag === 'h3') {
+                  await ensureSpace(lines.length * lineHeight + px(60));
+                }
+
+                for (let li = 0; li < lines.length; li++) {
+                  await ensureSpace(lineHeight + px(8));
+                  if (block.tag === 'blockquote') {
+                    ctx.fillStyle = '#0284c7';
+                    ctx.fillRect(MARGIN_X + px(6), cursorY - px(24), px(5), lineHeight);
+                  } else if (block.tag === 'pre') {
                     ctx.fillStyle = '#f1f5f9';
-                    ctx.fillRect(cx, cursorY, colW, rowH);
+                    ctx.fillRect(MARGIN_X, cursorY - px(24), CONTENT_W, lineHeight);
                   }
-                  ctx.strokeStyle = '#cbd5e1';
-                  ctx.lineWidth = 1.5;
-                  ctx.strokeRect(cx, cursorY, colW, rowH);
-
-                  ctx.fillStyle = '#0f172a';
-                  ctx.font = cell.isHeader
-                    ? '700 22px "Noto Sans", "Segoe UI", Roboto, sans-serif'
-                    : '400 22px "Noto Sans", "Segoe UI", Roboto, sans-serif';
-                  const lines = cellLineGroups[c] || [];
-                  for (let li = 0; li < lines.length; li++) {
-                    ctx.fillText(lines[li], cx + 10, cursorY + 28 + li * 30);
-                  }
+                  ctx.fillStyle = fill;
+                  ctx.font = fontSpec;
+                  ctx.fillText(lines[li], MARGIN_X + indentLeft, cursorY);
+                  cursorY += lineHeight;
                 }
-                cursorY += rowH;
+                cursorY += spaceAfter;
               }
-              cursorY += 18;
             }
-          } else {
-            let fontSpec = '400 27px "Noto Serif", Georgia, serif';
-            let lineHeight = 42;
-            let fill = '#1e293b';
-            let indentLeft = 0;
-            let spaceBefore = 0;
-            let spaceAfter = 18;
+          }
 
-            if (block.tag === 'h1') {
-              fontSpec = '700 40px "Noto Sans", "Segoe UI", Roboto, sans-serif';
-              lineHeight = 52;
-              fill = '#0f172a';
-              spaceBefore = 20;
-              spaceAfter = 22;
-            } else if (block.tag === 'h2') {
-              fontSpec = '700 33px "Noto Sans", "Segoe UI", Roboto, sans-serif';
-              lineHeight = 44;
-              fill = '#0f172a';
-              spaceBefore = 16;
-              spaceAfter = 16;
-            } else if (block.tag === 'h3') {
-              fontSpec = '700 29px "Noto Sans", "Segoe UI", Roboto, sans-serif';
-              lineHeight = 40;
-              fill = '#1e293b';
-              spaceBefore = 12;
-              spaceAfter = 12;
-            } else if (block.tag === 'blockquote') {
-              fontSpec = 'italic 26px "Noto Serif", Georgia, serif';
-              lineHeight = 40;
-              fill = '#334155';
-              indentLeft = 28;
-            } else if (block.tag === 'pre') {
-              fontSpec = '400 22px "Courier New", monospace';
-              lineHeight = 32;
-              fill = '#0f172a';
-              indentLeft = 18;
-            } else if (block.tag === 'ul' || block.tag === 'ol') {
-              indentLeft = 24;
-              spaceAfter = 12;
-            }
+          // Vẽ ảnh nhúng nếu có và giải phóng bitmap ngay sau khi vẽ
+          for (const match of imgTokens) {
+            const asset = parsedPdf.assets[match[1]];
+            if (!asset) continue;
+            const img = await decodeAssetToImage(asset);
+            if (!img) continue;
 
-            let plain = stripTagsToPlainText(textWithoutTokens);
-            if (block.tag === 'ul' && !/^[•●▪\-–*]/.test(plain)) {
-              plain = `• ${plain}`;
-            }
+            try {
+              const maxImgW = CONTENT_W;
+              const maxImgH = Math.round((PAGE_H - MARGIN_TOP - MARGIN_BOTTOM) * 0.72);
+              const scale = Math.min(
+                1.6 * S,
+                maxImgW / Math.max(1, img.width),
+                maxImgH / Math.max(1, img.height)
+              );
+              const drawW = Math.max(1, Math.round(img.width * scale));
+              const drawH = Math.max(1, Math.round(img.height * scale));
 
-            ctx.font = fontSpec;
-            const lines = wrapTextToLines(ctx, plain, CONTENT_W - indentLeft - 12);
-            if (lines.length > 0) {
-              cursorY += spaceBefore;
-              if (block.tag === 'h1' || block.tag === 'h2' || block.tag === 'h3') {
-                await ensureSpace(lines.length * lineHeight + 60);
-              }
-
-              for (let li = 0; li < lines.length; li++) {
-                await ensureSpace(lineHeight + 8);
-                if (block.tag === 'blockquote') {
-                  ctx.fillStyle = '#0284c7';
-                  ctx.fillRect(MARGIN_X + 6, cursorY - 24, 5, lineHeight);
-                } else if (block.tag === 'pre') {
-                  ctx.fillStyle = '#f1f5f9';
-                  ctx.fillRect(MARGIN_X, cursorY - 24, CONTENT_W, lineHeight);
-                }
-                ctx.fillStyle = fill;
-                ctx.font = fontSpec;
-                ctx.fillText(lines[li], MARGIN_X + indentLeft, cursorY);
-                cursorY += lineHeight;
-              }
-              cursorY += spaceAfter;
+              await ensureSpace(drawH + px(28));
+              const drawX = MARGIN_X + Math.round((CONTENT_W - drawW) / 2);
+              ctx.drawImage(img, drawX, cursorY, drawW, drawH);
+              cursorY += drawH + px(22);
+            } finally {
+              img.src = '';
             }
           }
         }
-
-        // Vẽ ảnh nhúng nếu có
-        for (const match of imgTokens) {
-          const asset = parsedPdf.assets[match[1]];
-          if (!asset) continue;
-          const img = await decodeAssetToImage(asset);
-          if (!img) continue;
-
-          const maxImgW = CONTENT_W;
-          const maxImgH = Math.round((PAGE_H - MARGIN_TOP - MARGIN_BOTTOM) * 0.72);
-          const scale = Math.min(1.6, maxImgW / Math.max(1, img.width), maxImgH / Math.max(1, img.height));
-          const drawW = Math.round(img.width * scale);
-          const drawH = Math.round(img.height * scale);
-
-          await ensureSpace(drawH + 28);
-          const drawX = MARGIN_X + Math.round((CONTENT_W - drawW) / 2);
-          ctx.drawImage(img, drawX, cursorY, drawW, drawH);
-          cursorY += drawH + 22;
-        }
       }
 
-      if (chIdx % 2 === 0) {
-        await yieldToEventLoop();
-      }
+      await commitCurrentPageToPdf();
+
+      onProgress?.({
+        stage: `Đang đóng gói tệp PDF (${pageNumber} trang)...`,
+        current: pageNumber,
+        total: pageNumber,
+        percent: 84,
+      });
+      await yieldToEventLoop();
+
+      return await pdfDoc.save({ useObjectStreams: false });
+    } finally {
+      canvas.width = 0;
+      canvas.height = 0;
     }
+  };
 
-    await commitCurrentPageToPdf();
-    const pdfBytes = await pdfDoc.save();
-    const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
-    return { blob, translatedTitle };
-  } finally {
-    canvas.width = 0;
-    canvas.height = 0;
-  }
+  const pdfBytes = await buildPdfBytes();
+  const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
+  return { blob, translatedTitle };
 }

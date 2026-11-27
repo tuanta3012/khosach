@@ -178,6 +178,7 @@ export interface RunEpubTranslationResult {
   completedChunkIds: number[];
   failedChunkIds: number[];
   errorMessage?: string;
+  warningMessage?: string;
 }
 
 interface InFlightEpubChunkEntry {
@@ -273,6 +274,8 @@ export async function runParallelEpubTranslation(
 
   let activeWorkersCount = channelSlots.length;
   let lastFatalOrKeyError = '';
+  let contentFilteredSegmentsCount = 0;
+  let lastContentFilterReason = '';
 
   const countCompletedSegments = () => {
     let count = 0;
@@ -314,6 +317,130 @@ export async function runParallelEpubTranslation(
     return parsedMap;
   };
 
+  const translateItemsWithIsolation = async (
+    items: Array<{ id: number; text: string }>,
+    apiKey: string,
+    timeoutMs: number,
+    abortSignal: AbortSignal
+  ): Promise<{
+    success: boolean;
+    parsedMap: Map<number, string>;
+    aborted?: boolean;
+    keyExhausted?: boolean;
+    rateLimited?: boolean;
+    retryable?: boolean;
+    contentBlockedReason?: string;
+    error?: string;
+  }> => {
+    const firstTry = await executeEpubFlashLiteWithKey({
+      key: apiKey,
+      systemInstruction,
+      promptText: buildChunkPrompt(items),
+      responseSchema: CHUNK_RESPONSE_SCHEMA,
+      preferredModels: [EPUB_TRANSLATION_MODEL],
+      timeoutMs,
+      abortSignal,
+      stopSignal: effectiveStopSignal,
+    });
+
+    if (effectiveStopSignal.current || abortSignal.aborted || firstTry.aborted) {
+      return { success: false, parsedMap: new Map(), aborted: true, retryable: true };
+    }
+
+    if (firstTry.success && Array.isArray(firstTry.data)) {
+      return { success: true, parsedMap: extractValidMap(firstTry.data) };
+    }
+
+    if (firstTry.keyExhausted) {
+      return {
+        success: false,
+        parsedMap: new Map(),
+        keyExhausted: true,
+        retryable: true,
+        error: firstTry.error,
+      };
+    }
+
+    const isNonRetryableOrBlocked =
+      Boolean(firstTry.contentBlockedReason) || firstTry.retryable === false;
+    if (!isNonRetryableOrBlocked) {
+      return {
+        success: false,
+        parsedMap: new Map(),
+        rateLimited: firstTry.rateLimited,
+        retryable: firstTry.retryable,
+        error: firstTry.error,
+      };
+    }
+
+    if (items.length > 1) {
+      const merged = new Map<number, string>();
+      const mid = Math.ceil(items.length / 2);
+      const halves = [items.slice(0, mid), items.slice(mid)];
+      for (const half of halves) {
+        if (half.length === 0) continue;
+        const halfRes = await translateItemsWithIsolation(half, apiKey, timeoutMs, abortSignal);
+        if (!halfRes.success) return halfRes;
+        halfRes.parsedMap.forEach((v, k) => merged.set(k, v));
+      }
+      return { success: true, parsedMap: merged };
+    }
+
+    if (firstTry.contentBlockedReason === 'RECITATION') {
+      const rephraseRes = await executeEpubFlashLiteWithKey({
+        key: apiKey,
+        systemInstruction,
+        promptText: `${buildChunkPrompt(items)}\n\nLưu ý: Dịch thoát ý sang tiếng Việt tự nhiên, diễn đạt lại mạch lạc thay vì bám sát từng cụm từ gốc.`,
+        responseSchema: CHUNK_RESPONSE_SCHEMA,
+        preferredModels: [EPUB_TRANSLATION_MODEL],
+        timeoutMs,
+        temperature: 0.45,
+        abortSignal,
+        stopSignal: effectiveStopSignal,
+      });
+      if (effectiveStopSignal.current || abortSignal.aborted || rephraseRes.aborted) {
+        return { success: false, parsedMap: new Map(), aborted: true, retryable: true };
+      }
+      if (rephraseRes.keyExhausted) {
+        return {
+          success: false,
+          parsedMap: new Map(),
+          keyExhausted: true,
+          retryable: true,
+          error: rephraseRes.error,
+        };
+      }
+      if (rephraseRes.success && Array.isArray(rephraseRes.data)) {
+        return { success: true, parsedMap: extractValidMap(rephraseRes.data) };
+      }
+      if (rephraseRes.contentBlockedReason) {
+        contentFilteredSegmentsCount += 1;
+        lastContentFilterReason = rephraseRes.contentBlockedReason;
+        return { success: true, parsedMap: new Map() };
+      }
+      return {
+        success: false,
+        parsedMap: new Map(),
+        rateLimited: rephraseRes.rateLimited,
+        retryable: rephraseRes.retryable,
+        error: rephraseRes.error,
+      };
+    }
+
+    if (firstTry.contentBlockedReason) {
+      contentFilteredSegmentsCount += 1;
+      lastContentFilterReason = firstTry.contentBlockedReason;
+      return { success: true, parsedMap: new Map() };
+    }
+
+    return {
+      success: false,
+      parsedMap: new Map(),
+      retryable: firstTry.retryable,
+      error: firstTry.error,
+    };
+  };
+
   const translateItemsInSubBatches = async (
     items: Array<{ id: number; text: string }>,
     apiKey: string,
@@ -338,21 +465,11 @@ export async function runParallelEpubTranslation(
       }
 
       const subItems = items.slice(offset, offset + subBatchSize);
-      const res = await executeEpubFlashLiteWithKey({
-        key: apiKey,
-        systemInstruction,
-        promptText: buildChunkPrompt(subItems),
-        responseSchema: CHUNK_RESPONSE_SCHEMA,
-        preferredModels: [EPUB_TRANSLATION_MODEL],
-        timeoutMs,
-        abortSignal,
-        stopSignal: effectiveStopSignal,
-      });
-
-      if (effectiveStopSignal.current || abortSignal.aborted || res.aborted) {
+      const res = await translateItemsWithIsolation(subItems, apiKey, timeoutMs, abortSignal);
+      if (res.aborted) {
         return { success: false, parsedMap: merged, aborted: true, retryable: true };
       }
-      if (!res.success || !Array.isArray(res.data)) {
+      if (!res.success) {
         return {
           success: false,
           parsedMap: merged,
@@ -363,9 +480,8 @@ export async function runParallelEpubTranslation(
         };
       }
 
-      const subMap = extractValidMap(res.data);
       for (const it of subItems) {
-        const val = subMap.get(it.id);
+        const val = res.parsedMap.get(it.id);
         if (val && val.length > 0) {
           merged.set(it.id, val);
         }
@@ -530,16 +646,12 @@ export async function runParallelEpubTranslation(
               lastCallFailure = splitRes;
             }
           } else {
-            const res = await executeEpubFlashLiteWithKey({
-              key: slot.apiKey,
-              systemInstruction,
-              promptText: buildChunkPrompt(inputItems),
-              responseSchema: CHUNK_RESPONSE_SCHEMA,
-              preferredModels: [EPUB_TRANSLATION_MODEL],
+            const res = await translateItemsWithIsolation(
+              inputItems,
+              slot.apiKey,
               timeoutMs,
-              abortSignal: abortCtrl.signal,
-              stopSignal: effectiveStopSignal,
-            });
+              abortCtrl.signal
+            );
 
             if (effectiveStopSignal.current || abortCtrl.signal.aborted || res.aborted) {
               flightEntry.activeAttempts = Math.max(0, flightEntry.activeAttempts - 1);
@@ -550,8 +662,8 @@ export async function runParallelEpubTranslation(
               break;
             }
 
-            if (res.success && Array.isArray(res.data)) {
-              const parsedMap = extractValidMap(res.data);
+            if (res.success) {
+              const parsedMap = res.parsedMap;
               const missingItems = inputItems.filter(
                 (it) => !parsedMap.has(it.id) || !parsedMap.get(it.id)
               );
@@ -560,16 +672,12 @@ export async function runParallelEpubTranslation(
                 // Chỉ gửi dịch bù đúng các đoạn còn thiếu (Delta Retry)
                 const deltaRes =
                   missingItems.length <= 8
-                    ? await executeEpubFlashLiteWithKey({
-                        key: slot.apiKey,
-                        systemInstruction,
-                        promptText: buildChunkPrompt(missingItems),
-                        responseSchema: CHUNK_RESPONSE_SCHEMA,
-                        preferredModels: [EPUB_TRANSLATION_MODEL],
-                        timeoutMs: 32_000,
-                        abortSignal: abortCtrl.signal,
-                        stopSignal: effectiveStopSignal,
-                      })
+                    ? await translateItemsWithIsolation(
+                        missingItems,
+                        slot.apiKey,
+                        32_000,
+                        abortCtrl.signal
+                      )
                     : await translateItemsInSubBatches(
                         missingItems,
                         slot.apiKey,
@@ -587,11 +695,7 @@ export async function runParallelEpubTranslation(
                 }
 
                 if (deltaRes.success) {
-                  const deltaMap =
-                    'parsedMap' in deltaRes && deltaRes.parsedMap
-                      ? deltaRes.parsedMap
-                      : extractValidMap((deltaRes as { data?: unknown }).data);
-                  deltaMap.forEach((val, keyId) => {
+                  deltaRes.parsedMap.forEach((val, keyId) => {
                     if (val) parsedMap.set(keyId, val);
                   });
                 }
@@ -776,12 +880,18 @@ export async function runParallelEpubTranslation(
       : `Dừng với ${failedChunkSet.size} phần chưa hoàn tất (${completedChunkSet.size}/${totalChunks} đã lưu).`
   );
 
+  const warningMessage =
+    allCompleted && contentFilteredSegmentsCount > 0
+      ? `Có ${contentFilteredSegmentsCount} đoạn giữ nguyên bản gốc do bộ lọc Google AI (${lastContentFilterReason || 'SAFETY/RECITATION'}).`
+      : undefined;
+
   return {
     completed: allCompleted,
     stopped: isStopped,
     translatedSegments,
     completedChunkIds: Array.from(completedChunkSet),
     failedChunkIds: Array.from(failedChunkSet),
+    ...(warningMessage ? { warningMessage } : {}),
     errorMessage: allCompleted
       ? undefined
       : isStopped

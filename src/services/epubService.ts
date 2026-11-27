@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import {
+  BookExportProgress,
   EpubTranslatableSegment,
   EpubTranslationChunk,
   ParsedEpubData,
@@ -757,8 +758,18 @@ function collectNcxTextElements(ncxDoc: Document): Element[] {
 export async function reassembleAndPackageEpub(
   parsed: ParsedEpubData,
   translatedSegments: Record<number, string>,
-  rawBuffer: ArrayBuffer
+  rawBuffer: ArrayBuffer,
+  onProgress?: (progress: BookExportProgress) => void
 ): Promise<{ blob: Blob; translatedTitle: string }> {
+  const yieldTick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  onProgress?.({
+    stage: 'Đang nạp cấu trúc EPUB gốc...',
+    current: 0,
+    total: 100,
+    percent: 2,
+  });
+
   const sourceZip = await JSZip.loadAsync(rawBuffer);
   const outZip = new JSZip();
 
@@ -851,38 +862,52 @@ export async function reassembleAndPackageEpub(
   }
   htmlFilePaths.push(...parsed.spineFilePaths);
 
-  for (const htmlPath of htmlFilePaths) {
+  const totalHtml = Math.max(1, htmlFilePaths.length);
+  for (let hIdx = 0; hIdx < htmlFilePaths.length; hIdx++) {
+    const htmlPath = htmlFilePaths[hIdx];
     const entry = findZipEntry(sourceZip, htmlPath);
     const fileSegs = (segsByFile.get(htmlPath) || []).filter((s) => s.kind === 'html-block');
-    if (!entry || fileSegs.length === 0) continue;
+    if (entry && fileSegs.length > 0) {
+      const rawHtml = await entry.async('string');
+      const { doc, isXmlMode, xmlDecl, doctypeDecl } = parseXhtmlOrHtmlDoc(rawHtml);
+      const slots = collectTranslatableDomSlots(doc);
 
-    const rawHtml = await entry.async('string');
-    const { doc, isXmlMode, xmlDecl, doctypeDecl } = parseXhtmlOrHtmlDoc(rawHtml);
-    const slots = collectTranslatableDomSlots(doc);
+      let segIdx = 0;
+      for (const slot of slots) {
+        const { tokenText, domTagNodes } = serializeNodesToTokenText(slot.nodes);
+        if (!hasTranslatableText(tokenText)) continue;
 
-    let segIdx = 0;
-    for (const slot of slots) {
-      const { tokenText, domTagNodes } = serializeNodesToTokenText(slot.nodes);
-      if (!hasTranslatableText(tokenText)) continue;
-
-      const matchingSeg = fileSegs[segIdx++];
-      if (matchingSeg) {
-        const translated = translatedSegments[matchingSeg.segId];
-        if (translated && translated.trim()) {
-          replaceSlotNodesInDom(doc, slot, translated, domTagNodes);
+        const matchingSeg = fileSegs[segIdx++];
+        if (matchingSeg) {
+          const translated = translatedSegments[matchingSeg.segId];
+          if (translated && translated.trim()) {
+            replaceSlotNodesInDom(doc, slot, translated, domTagNodes);
+          }
         }
       }
+
+      rewrittenFileMap.set(
+        entry.name,
+        serializeXhtmlOrHtmlDoc(doc, isXmlMode, xmlDecl, doctypeDecl)
+      );
     }
 
-    rewrittenFileMap.set(
-      entry.name,
-      serializeXhtmlOrHtmlDoc(doc, isXmlMode, xmlDecl, doctypeDecl)
-    );
+    if ((hIdx + 1) % 3 === 0 || hIdx + 1 === htmlFilePaths.length) {
+      onProgress?.({
+        stage: `Đang lắp ráp chương EPUB (${hIdx + 1}/${totalHtml})...`,
+        current: hIdx + 1,
+        total: totalHtml,
+        percent: 5 + Math.round(((hIdx + 1) / totalHtml) * 35),
+      });
+      await yieldTick();
+    }
   }
 
   // 5. Ghi lại toàn bộ file vào archive mới (giữ nguyên toàn bộ ảnh, CSS, font...)
   const entryNames = Object.keys(sourceZip.files);
-  for (const name of entryNames) {
+  const totalEntries = Math.max(1, entryNames.length);
+  for (let eIdx = 0; eIdx < entryNames.length; eIdx++) {
+    const name = entryNames[eIdx];
     if (name === 'mimetype') continue;
     const obj = sourceZip.files[name];
     if (obj.dir) continue;
@@ -891,14 +916,46 @@ export async function reassembleAndPackageEpub(
       outZip.file(name, rewrittenFileMap.get(name)!, { compression: 'DEFLATE' });
     } else {
       const binaryData = await obj.async('uint8array');
-      outZip.file(name, binaryData, { compression: 'DEFLATE' });
+      const alreadyCompressed = /\.(jpe?g|png|webp|gif|mp3|mp4|woff2)$/i.test(name);
+      outZip.file(name, binaryData, { compression: alreadyCompressed ? 'STORE' : 'DEFLATE' });
+    }
+
+    if ((eIdx + 1) % 15 === 0) {
+      onProgress?.({
+        stage: `Đang đóng gói tài nguyên (${eIdx + 1}/${totalEntries})...`,
+        current: eIdx + 1,
+        total: totalEntries,
+        percent: 40 + Math.round(((eIdx + 1) / totalEntries) * 12),
+      });
+      await yieldTick();
     }
   }
 
-  const blob = await outZip.generateAsync({
-    type: 'blob',
-    mimeType: 'application/epub+zip',
+  onProgress?.({
+    stage: 'Đang nén tệp EPUB (0%)...',
+    current: 0,
+    total: 100,
+    percent: 52,
   });
+
+  const blob = await outZip.generateAsync(
+    {
+      type: 'blob',
+      mimeType: 'application/epub+zip',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+    },
+    (metadata) => {
+      const zipPct = Math.round(metadata.percent);
+      const overallPct = 52 + Math.round((zipPct / 100) * 36);
+      onProgress?.({
+        stage: `Đang nén tệp EPUB (${zipPct}%)...`,
+        current: zipPct,
+        total: 100,
+        percent: overallPct,
+      });
+    }
+  );
 
   return { blob, translatedTitle };
 }

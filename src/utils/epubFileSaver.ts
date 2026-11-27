@@ -74,17 +74,89 @@ function triggerWebBlobDownload(blob: Blob, fileName: string): void {
   }, 1500);
 }
 
+const NATIVE_WRITE_CHUNK_BYTES = 1_572_864; // 1.5 MiB (chia hết cho 3 cho base64 sạch)
+
+function formatMb(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function writeBlobToDirectoryChunked(
+  directory: Directory,
+  path: string,
+  blob: Blob,
+  onChunkProgress?: (writtenBytes: number, totalBytes: number) => void
+): Promise<string> {
+  const totalBytes = blob.size;
+  if (totalBytes <= NATIVE_WRITE_CHUNK_BYTES) {
+    const base64Data = await blobToBase64(blob);
+    const res = await Filesystem.writeFile({
+      path,
+      data: base64Data,
+      directory,
+      recursive: true,
+    });
+    onChunkProgress?.(totalBytes, totalBytes);
+    return res.uri;
+  }
+
+  let fileUri = '';
+  let offset = 0;
+  let chunkIndex = 0;
+
+  try {
+    while (offset < totalBytes) {
+      const end = Math.min(totalBytes, offset + NATIVE_WRITE_CHUNK_BYTES);
+      const chunkBlob = blob.slice(offset, end);
+      const chunkBase64 = await blobToBase64(chunkBlob);
+
+      if (chunkIndex === 0) {
+        const res = await Filesystem.writeFile({
+          path,
+          data: chunkBase64,
+          directory,
+          recursive: true,
+        });
+        fileUri = res.uri;
+      } else {
+        await Filesystem.appendFile({
+          path,
+          data: chunkBase64,
+          directory,
+        });
+      }
+
+      offset = end;
+      chunkIndex += 1;
+      onChunkProgress?.(offset, totalBytes);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return fileUri;
+  } catch (err) {
+    if (chunkIndex > 0) {
+      await Filesystem.deleteFile({ path, directory }).catch(() => {});
+    }
+    throw err;
+  }
+}
+
 /**
- * Lưu file .epub đã dịch vào thư mục Download trên máy Android (Capacitor)
+ * Lưu file .epub / .pdf đã dịch vào thư mục Download trên máy Android (Capacitor)
  * hoặc tải xuống trực tiếp trên trình duyệt Web.
  */
 export async function saveTranslatedEpubToDevice(
   blob: Blob,
-  fileName: string
+  fileName: string,
+  onProgress?: (progress: { stage: string; current: number; total: number; percent: number }) => void
 ): Promise<SavedEpubResult> {
   const safeName = fileName.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
 
   if (!Capacitor.isNativePlatform()) {
+    onProgress?.({
+      stage: `Đang tải xuống (${formatMb(blob.size)})...`,
+      current: 1,
+      total: 1,
+      percent: 96,
+    });
     triggerWebBlobDownload(blob, safeName);
     return {
       fileName: safeName,
@@ -93,8 +165,6 @@ export async function saveTranslatedEpubToDevice(
     };
   }
 
-  const base64Data = await blobToBase64(blob);
-
   try {
     const permStatus = await Filesystem.checkPermissions();
     if (permStatus.publicStorage !== 'granted') {
@@ -102,18 +172,35 @@ export async function saveTranslatedEpubToDevice(
     }
   } catch {}
 
-  // Ưu tiên 1: Ghi trực tiếp vào thư mục Download công khai của máy Android
-  try {
-    const writeRes = await Filesystem.writeFile({
-      path: `Download/${safeName}`,
-      data: base64Data,
-      directory: Directory.ExternalStorage,
-      recursive: true,
+  const reportWriteProgress = (written: number, total: number) => {
+    const writePct = total > 0 ? Math.round((written / total) * 100) : 100;
+    onProgress?.({
+      stage: `Đang ghi tệp vào máy (${formatMb(written)} / ${formatMb(total)} · ${writePct}%)...`,
+      current: written,
+      total,
+      percent: Math.min(99, 88 + Math.round((writePct / 100) * 11)),
     });
+  };
+
+  onProgress?.({
+    stage: `Đang ghi tệp vào máy (${formatMb(blob.size)})...`,
+    current: 0,
+    total: blob.size,
+    percent: 88,
+  });
+
+  // Ưu tiên 1: Ghi trực tiếp theo luồng từng mảnh vào thư mục Download công khai của máy Android
+  try {
+    const uri = await writeBlobToDirectoryChunked(
+      Directory.ExternalStorage,
+      `Download/${safeName}`,
+      blob,
+      reportWriteProgress
+    );
     return {
       fileName: safeName,
       locationLabel: `Download/${safeName}`,
-      fileUri: writeRes.uri,
+      fileUri: uri,
       isNative: true,
     };
   } catch (extErr) {
@@ -122,16 +209,16 @@ export async function saveTranslatedEpubToDevice(
 
   // Ưu tiên 2: Thư mục Documents (trên Android 11+ scoped storage)
   try {
-    const docRes = await Filesystem.writeFile({
-      path: safeName,
-      data: base64Data,
-      directory: Directory.Documents,
-      recursive: true,
-    });
+    const uri = await writeBlobToDirectoryChunked(
+      Directory.Documents,
+      safeName,
+      blob,
+      reportWriteProgress
+    );
     return {
       fileName: safeName,
       locationLabel: `Documents/${safeName}`,
-      fileUri: docRes.uri,
+      fileUri: uri,
       isNative: true,
     };
   } catch (docErr) {
@@ -139,17 +226,17 @@ export async function saveTranslatedEpubToDevice(
   }
 
   // Ưu tiên 3: Cache + Share / Open
-  const cacheRes = await Filesystem.writeFile({
-    path: safeName,
-    data: base64Data,
-    directory: Directory.Cache,
-    recursive: true,
-  });
+  const cacheUri = await writeBlobToDirectoryChunked(
+    Directory.Cache,
+    safeName,
+    blob,
+    reportWriteProgress
+  );
 
   return {
     fileName: safeName,
     locationLabel: `Bộ nhớ đệm ứng dụng (${safeName})`,
-    fileUri: cacheRes.uri,
+    fileUri: cacheUri,
     isNative: true,
   };
 }
