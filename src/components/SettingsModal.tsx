@@ -42,6 +42,7 @@ import {
   getStoredSharedGeminiApiKeys,
   getEffectiveGeminiKeys,
   saveStoredGeminiApiKeys,
+  saveStoredSharedGeminiApiKeys,
   testGeminiApiKey,
   testAllGeminiApiKeys,
   ensureGeminiAccessAvailable,
@@ -60,6 +61,7 @@ import {
   SpreadsheetInfo,
   saveUserApiKeyToSheetConfig,
   fetchUserApiKeysFromSheetConfig,
+  fetchAllSharedApiKeys,
 } from '../services/driveSyncService';
 import { getAccessToken } from '../services/googleAuthService';
 import { saveAllLocalBooks, resolveNormalizeFields } from '../utils/localBooksStorage';
@@ -248,13 +250,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       currentUser.email &&
       spreadsheetInfo?.id
     ) {
+      const keysToSync = apiKeys.length > 0 ? apiKeys : getStoredGeminiApiKeys();
       getAccessToken().then(async (token) => {
         if (token && spreadsheetInfo?.id) {
           await saveUserApiKeyToSheetConfig(
             token,
             spreadsheetInfo.id,
             currentUser.email,
-            apiKeys,
+            keysToSync,
             val,
             currentUser.userRole
           );
@@ -288,6 +291,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     return getCleanKeys();
   });
   const [sharedGroupKeysCount, setSharedGroupKeysCount] = useState<number>(() => getStoredSharedGeminiApiKeys().length);
+
+  useEffect(() => {
+    const syncSharedCount = () => {
+      setSharedGroupKeysCount(getStoredSharedGeminiApiKeys().length);
+    };
+    window.addEventListener('gemini-keys-updated', syncSharedCount);
+    return () => window.removeEventListener('gemini-keys-updated', syncSharedCount);
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -445,28 +456,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     showToast('Đã xóa Gemini API Key!', 'info');
   };
 
-  // Tự động đồng bộ nạp API Key từ Google Sheet Config về máy nếu máy này chưa có key
+  // Tự động đồng bộ nạp API Key cá nhân & kho key chia sẻ của nhóm từ Google Sheet Config
   useEffect(() => {
-    if (
-      isOpen &&
+    if (!isOpen || !currentUser?.email || !spreadsheetInfo?.id) return;
+
+    const userEmail = currentUser.email;
+    const sheetId = spreadsheetInfo.id;
+    const canRestorePersonal =
       apiKeys.length === 0 &&
-      currentUser &&
-      (currentUser.userRole === 'ADMIN' || currentUser.userRole === 'EDITOR') &&
-      currentUser.email &&
-      spreadsheetInfo?.id
-    ) {
-      getAccessToken().then(async (token) => {
-        if (token && spreadsheetInfo?.id && currentUser?.email) {
-          const remoteKeys = await fetchUserApiKeysFromSheetConfig(token, spreadsheetInfo.id, currentUser.email);
-          if (remoteKeys && remoteKeys.length > 0) {
-            setApiKeys(remoteKeys);
-            saveStoredGeminiApiKeys(remoteKeys);
-            await onSaveSettings({ ...settings, geminiApiKeys: remoteKeys });
-            showToast('✨ Đã tự động nhận Gemini API Key của bạn từ Google Sheet!', 'info');
-          }
+      (currentUser.userRole === 'ADMIN' || currentUser.userRole === 'EDITOR');
+
+    getAccessToken().then(async (token) => {
+      if (!token) return;
+
+      let effectivePersonal = getStoredGeminiApiKeys();
+      if (canRestorePersonal) {
+        const remoteKeys = await fetchUserApiKeysFromSheetConfig(token, sheetId, userEmail);
+        if (remoteKeys && remoteKeys.length > 0) {
+          effectivePersonal = remoteKeys;
+          setApiKeys(remoteKeys);
+          saveStoredGeminiApiKeys(remoteKeys);
+          await onSaveSettings({ ...settings, geminiApiKeys: remoteKeys });
+          showToast('✨ Đã tự động nhận Gemini API Key của bạn từ Google Sheet!', 'info');
         }
-      }).catch(() => {});
-    }
+      }
+
+      const sharedRes = await fetchAllSharedApiKeys(token, sheetId, userEmail, true);
+      const personalSet = new Set(effectivePersonal);
+      const otherSharedKeys = sharedRes.keys.filter((k) => !personalSet.has(k));
+      saveStoredSharedGeminiApiKeys(otherSharedKeys);
+      setSharedGroupKeysCount(otherSharedKeys.length);
+    }).catch(() => {});
   }, [isOpen, currentUser?.email, currentUser?.userRole, spreadsheetInfo?.id]);
 
   if (!isOpen) return null;

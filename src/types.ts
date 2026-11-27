@@ -325,7 +325,7 @@ export interface ParsedEpubData {
 }
 
 export type PdfOutputFormat = 'epub' | 'pdf';
-export type PdfProcessingMode = 'hybrid-digital' | 'full-vision';
+export type PdfProcessingMode = 'auto' | 'hybrid-digital' | 'full-vision';
 
 export type PdfBlockTag =
   | 'h1'
@@ -385,6 +385,7 @@ export interface PdfChapterInfo {
 }
 
 export interface ParsedPdfData {
+  parserVersion?: number;
   bookTitle: string;
   bookAuthor: string;
   bookPublisher: string;

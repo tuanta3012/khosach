@@ -1966,11 +1966,13 @@ export async function addFamilyMember(
   const existingMembers = (state?.members && state.members.length > 0)
     ? state.members
     : await fetchFamilyMembers(accessToken, spreadsheetId, true);
+  const prevMember = existingMembers.find((m) => m.email.toLowerCase() === cleanEmail);
   const updatedMembers = existingMembers.filter((m) => m.email.toLowerCase() !== cleanEmail);
   const newMemberItem: FamilyMember = {
+    ...(prevMember || {}),
     email: cleanEmail,
     role,
-    addedAt: new Date().toISOString(),
+    addedAt: prevMember?.addedAt || new Date().toISOString(),
   };
   updatedMembers.push(newMemberItem);
 
@@ -2158,11 +2160,12 @@ export async function removeFamilyMember(
 export async function fetchAllSharedApiKeys(
   accessToken: string,
   spreadsheetId: string,
-  excludeEmail?: string
+  excludeEmail?: string,
+  bypassCache = false
 ): Promise<{ keys: string[]; sharedEmails: string[] }> {
   try {
     if (!accessToken || !spreadsheetId) return { keys: [], sharedEmails: [] };
-    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
+    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId, bypassCache);
     if (!state) return { keys: [], sharedEmails: [] };
 
     const cleanExclude = (excludeEmail || '').trim().toLowerCase();
@@ -2230,7 +2233,7 @@ export async function saveUserApiKeyToSheetConfig(
   userRole?: UserRole
 ): Promise<boolean> {
   const cleanEmail = (userEmail || '').trim().toLowerCase();
-  if (!accessToken || !spreadsheetId || !cleanEmail) return false;
+  if (!accessToken || !spreadsheetId || !cleanEmail || userRole === 'VIEWER') return false;
 
   try {
     const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId, true);
@@ -2341,22 +2344,38 @@ export async function syncUserApiKeyWithSheetConfig(
   userEmail: string,
   userRole: UserRole,
   localKeys: string[],
-  shareKeys = true
+  shareKeys?: boolean
 ): Promise<{
   syncedKeys: string[];
   sharedKeys: string[];
+  resolvedShareKeys?: boolean;
   hasUpdatedLocal: boolean;
   hasUpdatedRemote: boolean;
+  hasUpdatedShareSetting: boolean;
 }> {
   const cleanEmail = (userEmail || '').trim().toLowerCase();
   const cleanLocal = Array.from(new Set((localKeys || []).map((k) => String(k || '').trim()).filter(Boolean)));
   if (!accessToken || !spreadsheetId || !cleanEmail) {
-    return { syncedKeys: cleanLocal, sharedKeys: [], hasUpdatedLocal: false, hasUpdatedRemote: false };
+    return {
+      syncedKeys: cleanLocal,
+      sharedKeys: [],
+      resolvedShareKeys: shareKeys,
+      hasUpdatedLocal: false,
+      hasUpdatedRemote: false,
+      hasUpdatedShareSetting: false,
+    };
   }
 
   const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId, true);
   if (!state) {
-    return { syncedKeys: cleanLocal, sharedKeys: [], hasUpdatedLocal: false, hasUpdatedRemote: false };
+    return {
+      syncedKeys: cleanLocal,
+      sharedKeys: [],
+      resolvedShareKeys: shareKeys,
+      hasUpdatedLocal: false,
+      hasUpdatedRemote: false,
+      hasUpdatedShareSetting: false,
+    };
   }
 
   const matchedMember = state.members.find((m) => (m.email || '').trim().toLowerCase() === cleanEmail);
@@ -2367,33 +2386,50 @@ export async function syncUserApiKeyWithSheetConfig(
   const cleanRemote = Array.from(new Set((remoteRaw || []).map((k) => String(k || '').trim()).filter(Boolean)));
 
   let effectivePersonalKeys = cleanLocal;
+  let resolvedShareKeys = shareKeys;
   let hasUpdatedLocal = false;
   let hasUpdatedRemote = false;
+  let hasUpdatedShareSetting = false;
 
   // Thiết bị mới chưa có key cá nhân -> kéo từ Sheet về thay vì ghi đè rỗng lên Sheet
   if (cleanLocal.length === 0 && cleanRemote.length > 0) {
     effectivePersonalKeys = cleanRemote;
     saveStoredGeminiApiKeys(effectivePersonalKeys);
     hasUpdatedLocal = true;
-  } else {
-    const keysDiffer =
-      cleanLocal.length !== cleanRemote.length ||
-      cleanLocal.some((k, idx) => k !== cleanRemote[idx]);
-    const shareFlagDiffers = matchedMember?.shareKeys !== shareKeys;
+    if (matchedMember?.shareKeys !== undefined && shareKeys === undefined) {
+      resolvedShareKeys = matchedMember.shareKeys;
+      hasUpdatedShareSetting = true;
+    }
+  } else if (shareKeys === undefined && matchedMember?.shareKeys !== undefined) {
+    // Thiết bị mới chưa cấu hình cờ chia sẻ -> đồng bộ cờ từ Sheet về thay vì ghi đè false ngược lên Sheet
+    resolvedShareKeys = matchedMember.shareKeys;
+    hasUpdatedShareSetting = true;
+  }
 
-    if ((cleanLocal.length > 0 && (keysDiffer || shareFlagDiffers)) || (matchedMember && shareFlagDiffers)) {
+  if (userRole !== 'VIEWER') {
+    const targetShareKeys = typeof resolvedShareKeys === 'boolean' ? resolvedShareKeys : false;
+    const keysDiffer =
+      effectivePersonalKeys.length !== cleanRemote.length ||
+      effectivePersonalKeys.some((k, idx) => k !== cleanRemote[idx]);
+    const shareFlagDiffers = matchedMember?.shareKeys !== targetShareKeys;
+
+    if (
+      !hasUpdatedLocal &&
+      ((effectivePersonalKeys.length > 0 && (keysDiffer || shareFlagDiffers)) ||
+        (matchedMember && shareFlagDiffers && typeof shareKeys === 'boolean'))
+    ) {
       hasUpdatedRemote = await saveUserApiKeyToSheetConfig(
         accessToken,
         spreadsheetId,
         cleanEmail,
         effectivePersonalKeys,
-        shareKeys,
+        targetShareKeys,
         userRole
       );
     }
   }
 
-  // Nạp kho key chia sẻ từ các thành viên khác (đã lọc bỏ thành viên tắt chia sẻ và chính user hiện tại)
+  // Nạp kho key chia sẻ từ các thành viên khác cho mọi vai trò (bao gồm ADMIN, EDITOR và VIEWER)
   const sharedResult = await fetchAllSharedApiKeys(accessToken, spreadsheetId, cleanEmail);
   const otherSharedKeys = sharedResult.keys.filter((k) => !effectivePersonalKeys.includes(k));
   saveStoredSharedGeminiApiKeys(otherSharedKeys);
@@ -2401,8 +2437,10 @@ export async function syncUserApiKeyWithSheetConfig(
   return {
     syncedKeys: effectivePersonalKeys,
     sharedKeys: otherSharedKeys,
+    resolvedShareKeys,
     hasUpdatedLocal,
     hasUpdatedRemote,
+    hasUpdatedShareSetting,
   };
 }
 

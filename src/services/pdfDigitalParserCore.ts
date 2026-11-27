@@ -8,6 +8,8 @@ import {
   PdfPreParsedBlock,
 } from '../types';
 
+export const DIGITAL_PDF_PARSER_VERSION = 2;
+
 export interface PdfCanvasLike {
   width: number;
   height: number;
@@ -22,6 +24,7 @@ export interface PdfParserRuntimeAdapter {
   canvasToJpegBytes: (canvas: PdfCanvasLike, quality?: number) => Promise<Uint8Array>;
   documentOptions?: Record<string, unknown>;
   pageYieldMs?: number;
+  isWorker?: boolean;
 }
 
 interface PositionedTextRun {
@@ -116,13 +119,39 @@ function transformBox(
   return { minX, minY, maxX, maxY };
 }
 
-function mergeNearbyBoxes(boxes: RectBox[], pad = 18): RectBox[] {
+interface CandidateBox extends RectBox {
+  hasBitmap: boolean;
+  primitiveCount: number;
+  complexCount: number;
+}
+
+function toMatrix6(raw: unknown): number[] | null {
+  if (!raw) return null;
+  if (Array.isArray(raw) || ArrayBuffer.isView(raw)) {
+    const arr = Array.from(raw as ArrayLike<number>);
+    if (arr.length >= 6 && arr.slice(0, 6).every((n) => Number.isFinite(n))) {
+      return arr.slice(0, 6);
+    }
+  }
+  return null;
+}
+
+function toNumArray(raw: unknown): number[] | null {
+  if (!raw) return null;
+  if (Array.isArray(raw) || ArrayBuffer.isView(raw)) {
+    return Array.from(raw as ArrayLike<number>);
+  }
+  return null;
+}
+
+function mergeNearbyBoxes(boxes: CandidateBox[], pad = 22): CandidateBox[] {
   const filtered = boxes.filter(
     (b) =>
       Number.isFinite(b.minX) &&
       Number.isFinite(b.minY) &&
-      b.maxX > b.minX &&
-      b.maxY > b.minY
+      b.maxX >= b.minX &&
+      b.maxY >= b.minY &&
+      (b.maxX > b.minX || b.maxY > b.minY)
   );
   if (filtered.length <= 1) return filtered;
 
@@ -144,6 +173,9 @@ function mergeNearbyBoxes(boxes: RectBox[], pad = 18): RectBox[] {
           a.minY = Math.min(a.minY, b.minY);
           a.maxX = Math.max(a.maxX, b.maxX);
           a.maxY = Math.max(a.maxY, b.maxY);
+          a.hasBitmap = a.hasBitmap || b.hasBitmap;
+          a.primitiveCount += b.primitiveCount;
+          a.complexCount += b.complexCount;
           working.splice(j, 1);
           changed = true;
           break;
@@ -157,17 +189,29 @@ function mergeNearbyBoxes(boxes: RectBox[], pad = 18): RectBox[] {
 
 async function detectPageFigureBoxes(
   page: pdfjsLib.PDFPageProxy,
-  viewport: pdfjsLib.PageViewport
+  viewport: pdfjsLib.PageViewport,
+  hasTables = false
 ): Promise<RectBox[]> {
   const OPS = pdfjsLib.OPS;
   const opList = await page.getOperatorList();
   const ctmStack: number[][] = [];
   let ctm = [1, 0, 0, 1, 0, 0];
-  const rawBoxes: RectBox[] = [];
+  const rawBoxes: CandidateBox[] = [];
 
-  const pageArea = viewport.width * viewport.height;
+  const pageArea = Math.max(1, viewport.width * viewport.height);
 
-  const pushViewportBox = (box: RectBox, minW: number, minH: number) => {
+  const isNearFullPage = (w: number, h: number) =>
+    (w * h > pageArea * 0.68 && w > viewport.width * 0.82 && h > viewport.height * 0.78) ||
+    (w > viewport.width * 0.88 && h > viewport.height * 0.85);
+
+  const pushCandidateBox = (
+    box: RectBox,
+    opts: {
+      minMaxSide: number;
+      hasBitmap: boolean;
+      isComplex?: boolean;
+    }
+  ) => {
     const clamped: RectBox = {
       minX: Math.max(0, box.minX),
       minY: Math.max(0, box.minY),
@@ -176,14 +220,23 @@ async function detectPageFigureBoxes(
     };
     const w = clamped.maxX - clamped.minX;
     const h = clamped.maxY - clamped.minY;
-    if (w < minW || h < minH) return;
-    if (
-      (w * h > pageArea * 0.72 && w > viewport.width * 0.85 && h > viewport.height * 0.8) ||
-      (w > viewport.width * 0.9 && h > viewport.height * 0.88)
-    ) {
-      return;
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 0 || h < 0 || (w === 0 && h === 0)) return;
+    if (Math.max(w, h) < opts.minMaxSide) return;
+    if (isNearFullPage(w, h)) return;
+
+    // Bỏ qua đường kẻ ngang/dọc đơn lẻ (gạch chân tiêu đề, đường phân cách header/footer)
+    if (!opts.hasBitmap) {
+      if ((h < 3 && w > viewport.width * 0.38) || (w < 3 && h > viewport.height * 0.38)) {
+        return;
+      }
     }
-    rawBoxes.push(clamped);
+
+    rawBoxes.push({
+      ...clamped,
+      hasBitmap: opts.hasBitmap,
+      primitiveCount: 1,
+      complexCount: opts.isComplex ? 1 : 0,
+    });
   };
 
   for (let i = 0; i < opList.fnArray.length; i++) {
@@ -194,58 +247,195 @@ async function detectPageFigureBoxes(
       ctmStack.push([...ctm]);
     } else if (fn === OPS.restore) {
       ctm = ctmStack.pop() || [1, 0, 0, 1, 0, 0];
-    } else if (fn === OPS.transform && Array.isArray(args) && args.length >= 6) {
-      ctm = pdfjsLib.Util.transform(ctm, args as number[]);
+    } else if (fn === OPS.transform) {
+      const m = toMatrix6(args);
+      if (m) {
+        ctm = pdfjsLib.Util.transform(ctm, m);
+      }
+    } else if (fn === OPS.paintFormXObjectBegin) {
+      ctmStack.push([...ctm]);
+      const formMatrix = Array.isArray(args) ? toMatrix6(args[0]) : null;
+      if (formMatrix) {
+        ctm = pdfjsLib.Util.transform(ctm, formMatrix);
+      }
+    } else if (fn === OPS.paintFormXObjectEnd) {
+      ctm = ctmStack.pop() || [1, 0, 0, 1, 0, 0];
+    } else if (fn === OPS.beginGroup) {
+      ctmStack.push([...ctm]);
+      const group = Array.isArray(args) ? (args[0] as Record<string, unknown> | null) : null;
+      if (
+        group &&
+        (group.needsIsolation ||
+          group.isolated ||
+          group.hasSoftMask ||
+          group.knockout ||
+          group.isGray)
+      ) {
+        const gm = toMatrix6(group.matrix);
+        if (gm) {
+          ctm = pdfjsLib.Util.transform(ctm, gm);
+        }
+      }
+    } else if (fn === OPS.endGroup) {
+      ctm = ctmStack.pop() || [1, 0, 0, 1, 0, 0];
     } else if (
       fn === OPS.paintImageXObject ||
       fn === OPS.paintInlineImageXObject ||
       fn === OPS.paintImageMaskXObject ||
-      fn === OPS.paintImageXObjectRepeat
+      fn === OPS.paintSolidColorImageMask
     ) {
       const fullMatrix = pdfjsLib.Util.transform(viewport.transform, ctm);
       const box = transformBox(fullMatrix, 0, 0, 1, 1);
-      pushViewportBox(box, 42, 34);
+      pushCandidateBox(box, { minMaxSide: 28, hasBitmap: true, isComplex: true });
+    } else if (fn === OPS.paintImageXObjectRepeat && Array.isArray(args)) {
+      const scaleX = Number(args[1]);
+      const scaleY = Number(args[2]);
+      const positions = toNumArray(args[3]);
+      if (Number.isFinite(scaleX) && Number.isFinite(scaleY) && positions) {
+        for (let p = 0; p + 1 < positions.length; p += 2) {
+          const localCtm = pdfjsLib.Util.transform(ctm, [
+            scaleX,
+            0,
+            0,
+            scaleY,
+            positions[p],
+            positions[p + 1],
+          ]);
+          const fullMatrix = pdfjsLib.Util.transform(viewport.transform, localCtm);
+          pushCandidateBox(transformBox(fullMatrix, 0, 0, 1, 1), {
+            minMaxSide: 28,
+            hasBitmap: true,
+            isComplex: true,
+          });
+        }
+      }
+    } else if (fn === OPS.paintImageMaskXObjectRepeat && Array.isArray(args)) {
+      const scaleX = Number(args[1]);
+      const skewX = Number(args[2]) || 0;
+      const skewY = Number(args[3]) || 0;
+      const scaleY = Number(args[4]);
+      const positions = toNumArray(args[5]);
+      if (Number.isFinite(scaleX) && Number.isFinite(scaleY) && positions) {
+        for (let p = 0; p + 1 < positions.length; p += 2) {
+          const localCtm = pdfjsLib.Util.transform(ctm, [
+            scaleX,
+            skewX,
+            skewY,
+            scaleY,
+            positions[p],
+            positions[p + 1],
+          ]);
+          const fullMatrix = pdfjsLib.Util.transform(viewport.transform, localCtm);
+          pushCandidateBox(transformBox(fullMatrix, 0, 0, 1, 1), {
+            minMaxSide: 28,
+            hasBitmap: true,
+            isComplex: true,
+          });
+        }
+      }
+    } else if (fn === OPS.paintImageMaskXObjectGroup && Array.isArray(args) && Array.isArray(args[0])) {
+      for (const item of args[0] as Array<{ transform?: unknown }>) {
+        const m = toMatrix6(item?.transform);
+        if (!m) continue;
+        const localCtm = pdfjsLib.Util.transform(ctm, m);
+        const fullMatrix = pdfjsLib.Util.transform(viewport.transform, localCtm);
+        pushCandidateBox(transformBox(fullMatrix, 0, 0, 1, 1), {
+          minMaxSide: 24,
+          hasBitmap: true,
+          isComplex: true,
+        });
+      }
+    } else if (
+      fn === OPS.paintInlineImageXObjectGroup &&
+      Array.isArray(args) &&
+      Array.isArray(args[1])
+    ) {
+      for (const entry of args[1] as Array<{ transform?: unknown }>) {
+        const m = toMatrix6(entry?.transform);
+        if (!m) continue;
+        const localCtm = pdfjsLib.Util.transform(ctm, m);
+        const fullMatrix = pdfjsLib.Util.transform(viewport.transform, localCtm);
+        pushCandidateBox(transformBox(fullMatrix, 0, 0, 1, 1), {
+          minMaxSide: 24,
+          hasBitmap: true,
+          isComplex: true,
+        });
+      }
     } else if (fn === OPS.constructPath && Array.isArray(args)) {
-      const coords = args[1];
-      if (Array.isArray(coords) || ArrayBuffer.isView(coords)) {
-        const arr = Array.from(coords as ArrayLike<number>);
-        let minPx = Infinity;
-        let minPy = Infinity;
-        let maxPx = -Infinity;
-        let maxPy = -Infinity;
-        for (let k = 0; k + 1 < arr.length; k += 2) {
-          const px = arr[k];
-          const py = arr[k + 1];
-          if (Number.isFinite(px) && Number.isFinite(py)) {
-            if (px < minPx) minPx = px;
-            if (py < minPy) minPy = py;
-            if (px > maxPx) maxPx = px;
-            if (py > maxPy) maxPy = py;
+      const pathOp = args[0];
+      // OPS.endPath (28) là clip path / không vẽ nét hay tô màu
+      if (pathOp === OPS.endPath) continue;
+
+      let minPx = Infinity;
+      let minPy = Infinity;
+      let maxPx = -Infinity;
+      let maxPy = -Infinity;
+      let isComplex = false;
+
+      // Định dạng pdfjs-dist v6+: args = [op, [Float32Array | Path2D], minMax]
+      const minMax = toNumArray(args[2]);
+      if (minMax && minMax.length >= 4) {
+        [minPx, minPy, maxPx, maxPy] = minMax;
+        const dataFirst = Array.isArray(args[1]) ? toNumArray(args[1][0]) : null;
+        if (dataFirst && dataFirst.length >= 15) {
+          isComplex = true;
+        }
+      } else {
+        // Fallback nếu dữ liệu dạng mảng tọa độ phẳng [x0, y0, ...]
+        const coords = toNumArray(args[1]);
+        if (coords && coords.length >= 4 && typeof coords[0] === 'number') {
+          for (let k = 0; k + 1 < coords.length; k += 2) {
+            const px = coords[k];
+            const py = coords[k + 1];
+            if (Number.isFinite(px) && Number.isFinite(py)) {
+              if (px < minPx) minPx = px;
+              if (py < minPy) minPy = py;
+              if (px > maxPx) maxPx = px;
+              if (py > maxPy) maxPy = py;
+            }
           }
+          if (coords.length >= 10) isComplex = true;
         }
-        if (Number.isFinite(minPx) && maxPx > minPx && maxPy > minPy) {
-          const fullMatrix = pdfjsLib.Util.transform(viewport.transform, ctm);
-          const box = transformBox(fullMatrix, minPx, minPy, maxPx, maxPy);
-          pushViewportBox(box, 54, 44);
-        }
+      }
+
+      if (
+        Number.isFinite(minPx) &&
+        Number.isFinite(minPy) &&
+        Number.isFinite(maxPx) &&
+        Number.isFinite(maxPy) &&
+        (maxPx > minPx || maxPy > minPy)
+      ) {
+        const fullMatrix = pdfjsLib.Util.transform(viewport.transform, ctm);
+        const box = transformBox(fullMatrix, minPx, minPy, maxPx, maxPy);
+        pushCandidateBox(box, {
+          minMaxSide: 10,
+          hasBitmap: false,
+          isComplex,
+        });
       }
     }
   }
 
-  const merged = mergeNearbyBoxes(rawBoxes, 16);
+  const merged = mergeNearbyBoxes(rawBoxes, 22);
   return merged
     .filter((b) => {
       const w = b.maxX - b.minX;
       const h = b.maxY - b.minY;
       const area = w * h;
-      return (
-        w >= 52 &&
-        h >= 40 &&
-        !(area > pageArea * 0.74 && w > viewport.width * 0.86 && h > viewport.height * 0.82)
-      );
+      if (isNearFullPage(w, h) || (area > pageArea * 0.72 && w > viewport.width * 0.85)) {
+        return false;
+      }
+      if (b.hasBitmap) {
+        return w >= 34 && h >= 26;
+      }
+      if (w < 52 || h < 40) return false;
+      if (b.complexCount === 0 && b.primitiveCount < 3) return false;
+      if (hasTables && b.complexCount === 0 && b.primitiveCount >= 4) return false;
+      return true;
     })
+    .map(({ minX, minY, maxX, maxY }) => ({ minX, minY, maxX, maxY }))
     .sort((a, b) => a.minY - b.minY || a.minX - b.minX)
-    .slice(0, 6);
+    .slice(0, 8);
 }
 
 async function cropFiguresFromPage(
@@ -448,16 +638,17 @@ function detectMultiColumnAndTables(
     }
   }
 
-  const hasTables = tableLikeRows >= 3;
-  const isMultiColumn = multiGapRows >= 5 || (leftColCount >= 6 && rightColCount >= 6);
+  const hasTables = tableLikeRows >= 2;
+  const isMultiColumn = multiGapRows >= 3 || (leftColCount >= 4 && rightColCount >= 4);
   return { isMultiColumn, hasTables };
 }
 
 function detectMathOrGarbledText(text: string): boolean {
   if (!text) return false;
   if (text.includes('\uFFFD')) return true;
+  if (/[\uE000-\uF8FF]/.test(text)) return true;
   const mathMatches = text.match(/[∑∏∫∂∇≈≠≤≥∞√∈∉⊂⊃∪∩∀∃αβγδεθλμπσφψω]/g);
-  return (mathMatches?.length || 0) >= 6;
+  return (mathMatches?.length || 0) >= 3;
 }
 
 function buildPreParsedBlocks(
@@ -682,37 +873,59 @@ export function evaluateHybridVisionNeeded(
   page: PdfParsedPage,
   assets?: Record<string, PdfExtractedAsset>
 ): boolean {
-  if (page.hasTables || page.isMultiColumn || page.hasMathOrGarbled) {
+  // 1. Trang có bất kỳ hình ảnh, hình vẽ, sơ đồ vector hoặc asset nào được phát hiện
+  if (page.hasFigures || (page.assetIds && page.assetIds.length > 0)) {
+    return true;
+  }
+  if (page.blocks && page.blocks.some((b) => b.isFigure || b.tag === 'figure' || Boolean(b.assetId))) {
     return true;
   }
 
-  const assetCount = page.assetIds?.length || 0;
-  if (assetCount === 0) {
-    return false;
+  // 2. Trang có bảng biểu hoặc bố cục đa cột (báo chí, tài liệu kỹ thuật, bảng dữ liệu)
+  if (page.hasTables || page.isMultiColumn) {
+    return true;
+  }
+  if (page.blocks && page.blocks.some((b) => b.tag === 'table')) {
+    return true;
   }
 
+  // 3. Trang có công thức toán học, ký hiệu đặc biệt hoặc chữ số hóa lỗi font
+  if (page.hasMathOrGarbled) {
+    return true;
+  }
+
+  // 4. Trang có khối mã nguồn (code block / preformatted text)
+  const codeBlockCount = (page.blocks || []).filter((b) => b.tag === 'pre').length;
+  if (codeBlockCount > 0) {
+    return true;
+  }
+
+  // 5. Trang chữ ngắn, trang bìa, lời tựa, ngắt chương, hộp chú ý (callout)
   const textCharCount = (page.rawDigitalText || '').replace(/\s+/g, ' ').trim().length;
-  if (textCharCount < 380) {
+  if (textCharCount < 520) {
     return true;
   }
 
-  let areaRatio = typeof page.figureAreaRatio === 'number' ? page.figureAreaRatio : -1;
-  if (areaRatio < 0 && assets) {
-    let totalPx = 0;
-    for (const id of page.assetIds) {
-      const asset = assets[id];
-      if (asset) totalPx += asset.width * asset.height;
-    }
-    areaRatio = Math.min(1, totalPx / 1_500_000);
+  // 6. Tỷ lệ diện tích hình vẽ/sơ đồ trên trang > 2%
+  if (typeof page.figureAreaRatio === 'number' && page.figureAreaRatio > 0.02) {
+    return true;
+  }
+  if (assets && page.assetIds && page.assetIds.length > 0) {
+    return true;
   }
 
-  if (areaRatio >= 0) {
-    if (areaRatio >= 0.2) return true;
-    if (assetCount >= 2 && areaRatio >= 0.12) return true;
-    return false;
+  // 7. Trang có cấu trúc phân tầng phức tạp (nhiều tiêu đề, trích dẫn, danh sách)
+  const nonPBlocks = (page.blocks || []).filter((b) => b.tag !== 'p').length;
+  if (nonPBlocks >= 3) {
+    return true;
   }
 
-  return page.requiresVision;
+  // 8. Định dạng nhiều dòng ngắn bất thường (dạng thơ, danh lục, chú giải)
+  if (page.blocks && page.blocks.length >= 8 && textCharCount / page.blocks.length < 45) {
+    return true;
+  }
+
+  return Boolean(page.requiresVision);
 }
 
 export async function parseDigitalPdfCore(
@@ -828,6 +1041,8 @@ export async function parseDigitalPdfCore(
     const assets: Record<string, PdfExtractedAsset> = {};
     const fontSizeFreq = new Map<number, number>();
     const yieldDelay = adapter.pageYieldMs ?? 15;
+    let workerCroppedPages = 0;
+    let workerRenderFailures = 0;
 
     for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
       if (stopSignal?.current) {
@@ -885,22 +1100,33 @@ export async function parseDigitalPdfCore(
       let totalFigureArea = 0;
 
       try {
-        const figureBoxes = await detectPageFigureBoxes(page, viewport);
-        const croppedEntries = await cropFiguresFromPage(
-          page,
-          pageNumber,
-          viewport,
-          figureBoxes,
-          adapter
-        );
-        for (const entry of croppedEntries) {
-          assets[entry.asset.assetId] = entry.asset;
-          assetIds.push(entry.asset.assetId);
-          figurePlacements.push(entry.placement);
-          totalFigureArea += entry.placement.area;
+        const figureBoxes = await detectPageFigureBoxes(page, viewport, hasTables);
+        if (figureBoxes.length > 0) {
+          const croppedEntries = await cropFiguresFromPage(
+            page,
+            pageNumber,
+            viewport,
+            figureBoxes,
+            adapter
+          );
+          if (croppedEntries.length > 0) {
+            workerCroppedPages += 1;
+          }
+          for (const entry of croppedEntries) {
+            assets[entry.asset.assetId] = entry.asset;
+            assetIds.push(entry.asset.assetId);
+            figurePlacements.push(entry.placement);
+            totalFigureArea += entry.placement.area;
+          }
         }
       } catch (figErr) {
+        workerRenderFailures += 1;
         console.warn(`[PdfParser] Bỏ qua cắt ảnh trang ${pageNumber}:`, figErr);
+        if (adapter.isWorker && workerCroppedPages === 0 && workerRenderFailures >= 2) {
+          throw new Error(
+            `WORKER_IMAGE_RENDER_FAILED: ${figErr instanceof Error ? figErr.message : String(figErr)}`
+          );
+        }
       }
 
       const pageArea = Math.max(1, viewport.width * viewport.height);
@@ -1062,6 +1288,7 @@ export async function parseDigitalPdfCore(
     }
 
     return {
+      parserVersion: DIGITAL_PDF_PARSER_VERSION,
       bookTitle,
       bookAuthor,
       bookPublisher,

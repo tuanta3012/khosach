@@ -30,6 +30,7 @@ import {
   parseDigitalPdfFile,
   reassemblePdfTranslationToEpub,
 } from './pdfDigitalService';
+import { DIGITAL_PDF_PARSER_VERSION } from './pdfDigitalParserCore';
 import { runParallelPdfTranslation } from './pdfTranslatorService';
 import {
   getEpubKeyDiagnostics,
@@ -293,7 +294,7 @@ export async function initBookQueueManager(): Promise<void> {
           job.status !== 'completed' &&
           (job.completedChunkIds?.length || 0) === 0
         ) {
-          const mode: PdfProcessingMode = 'hybrid-digital';
+          const mode: PdfProcessingMode = 'auto';
           const freshUnits = buildPdfTranslationUnits(job.parsedPdfData, mode);
           const prevCount = job.pdfUnits?.length || 0;
           const prevKinds = (job.pdfUnits || []).map((u) => u.kind).join(',');
@@ -418,7 +419,13 @@ export async function addFilesToQueue(
           }
 
           const existingDb = await getEpubJobById(jobId);
-          if (existingDb && existingDb.parsedPdfData) {
+          const needsReparse =
+            existingDb &&
+            existingDb.parsedPdfData &&
+            (existingDb.completedChunkIds?.length || 0) === 0 &&
+            (existingDb.parsedPdfData.parserVersion || 1) < DIGITAL_PDF_PARSER_VERSION;
+
+          if (existingDb && existingDb.parsedPdfData && !needsReparse) {
             const restored: EpubTranslationJob = {
               ...existingDb,
               queueOrder: existingDb.queueOrder ?? getNextQueueOrder(workingJobs),
@@ -439,7 +446,7 @@ export async function addFilesToQueue(
             });
           }, stopParsingRef);
 
-          const initialMode: PdfProcessingMode = 'hybrid-digital';
+          const initialMode: PdfProcessingMode = 'auto';
           const initialUnits = buildPdfTranslationUnits(parsedPdf, initialMode);
           const placeholderParsedData: ParsedEpubData = {
             opfPath: '',
@@ -460,12 +467,12 @@ export async function addFilesToQueue(
             fileName: file.name,
             fileSize: file.size,
             lastModified: file.lastModified,
-            genre: defaultGenre,
-            customNotes: defaultNotes,
+            genre: existingDb?.genre || defaultGenre,
+            customNotes: existingDb?.customNotes ?? defaultNotes,
             epubBuffer: buffer,
             parsedData: placeholderParsedData,
             translatedSegments: {},
-            pdfOutputFormat: 'epub',
+            pdfOutputFormat: existingDb?.pdfOutputFormat || 'epub',
             pdfProcessingMode: initialMode,
             parsedPdfData: parsedPdf,
             pdfUnits: initialUnits,
@@ -473,8 +480,8 @@ export async function addFilesToQueue(
             completedChunkIds: [],
             failedChunkIds: [],
             status: 'idle',
-            queueOrder: getNextQueueOrder(workingJobs),
-            createdAt: now,
+            queueOrder: existingDb?.queueOrder ?? getNextQueueOrder(workingJobs),
+            createdAt: existingDb?.createdAt ?? now,
             elapsedMs: 0,
             updatedAt: now,
           };
@@ -755,13 +762,41 @@ export async function resetQueuedJob(jobId: string): Promise<void> {
   if (!job) return;
 
   const isPdfJob = job.sourceType === 'pdf' && Boolean(job.parsedPdfData);
+  let nextParsedPdf = job.parsedPdfData;
+  const targetMode: PdfProcessingMode = 'auto';
+
+  if (
+    isPdfJob &&
+    job.epubBuffer &&
+    (job.parsedPdfData?.parserVersion || 1) < DIGITAL_PDF_PARSER_VERSION
+  ) {
+    stopParsingRef.current = false;
+    setState({ isParsingFiles: true, parseStatusText: `Đang tách lại ảnh & trang: ${job.fileName}...` });
+    try {
+      nextParsedPdf = await parseDigitalPdfFile(
+        job.epubBuffer,
+        job.fileName,
+        (cur, total) => {
+          setState({ parseStatusText: `Tách lại PDF: ${cur}/${total} trang` });
+        },
+        stopParsingRef
+      );
+    } catch (err) {
+      console.warn('[BookQueue] Không tách lại được PDF khi reset:', err);
+    } finally {
+      setState({ isParsingFiles: false, parseStatusText: '' });
+    }
+  }
+
   const rebuiltUnits =
-    isPdfJob && job.parsedPdfData
-      ? buildPdfTranslationUnits(job.parsedPdfData, job.pdfProcessingMode || 'hybrid-digital')
+    isPdfJob && nextParsedPdf
+      ? buildPdfTranslationUnits(nextParsedPdf, targetMode)
       : job.pdfUnits;
 
   const resetJob: EpubTranslationJob = {
     ...job,
+    ...(nextParsedPdf ? { parsedPdfData: nextParsedPdf } : {}),
+    pdfProcessingMode: isPdfJob ? targetMode : job.pdfProcessingMode,
     pdfUnits: rebuiltUnits,
     translatedSegments: {},
     translatedPdfPages: {},
@@ -779,7 +814,7 @@ export async function resetQueuedJob(jobId: string): Promise<void> {
 
   await saveEpubJob(resetJob);
   updateJobInMemory(jobId, () => resetJob);
-  pushNotice(`Đã đặt lại "${job.parsedPdfData?.bookTitle || job.parsedData.bookTitle || job.fileName}"`, 'info');
+  pushNotice(`Đã đặt lại "${resetJob.parsedPdfData?.bookTitle || resetJob.parsedData.bookTitle || resetJob.fileName}"`, 'info');
 }
 
 export async function removeQueuedJob(jobId: string): Promise<void> {
@@ -966,7 +1001,7 @@ export async function startOrResumeBookQueue(
         const res = await runParallelPdfTranslation({
           job: currentJob,
           parsedPdf: currentJob.parsedPdfData,
-          processingMode: currentJob.pdfProcessingMode || 'hybrid-digital',
+          processingMode: currentJob.pdfProcessingMode || 'auto',
           genre: currentJob.genre,
           customNotes: currentJob.customNotes,
           stopSignal,

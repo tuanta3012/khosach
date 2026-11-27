@@ -198,7 +198,7 @@ export async function parseDigitalPdfFile(
 
 export function buildPdfTranslationUnits(
   parsedPdf: ParsedPdfData,
-  mode: PdfProcessingMode
+  mode: PdfProcessingMode = 'auto'
 ): PdfTranslationUnit[] {
   const units: PdfTranslationUnit[] = [];
   let textPageNumbers: number[] = [];
@@ -220,12 +220,17 @@ export function buildPdfTranslationUnits(
   };
 
   for (const page of parsedPdf.pages) {
+    // Tự động phân loại chế độ xử lý trên từng trang sách:
+    // Trang có hình ảnh/sơ đồ, bảng biểu, đa cột, code, công thức hoặc chữ ngắn -> AI Vision
+    // Trang chữ văn xuôi liên tục dài không hình/bảng -> Tách chữ số hóa nhanh
     const useVision =
-      mode === 'full-vision' || evaluateHybridVisionNeeded(page, parsedPdf.assets);
+      mode === 'full-vision'
+        ? true
+        : Boolean(page.requiresVision || evaluateHybridVisionNeeded(page, parsedPdf.assets));
     const pageChars = Math.max(80, page.rawDigitalText.length);
     const nonFigureBlocks = page.blocks.filter((b) => !b.isFigure);
 
-    // Trang trống hoàn toàn (không chữ, không ảnh) bỏ qua chunk text nếu không phải full-vision
+    // Trang trống hoàn toàn (không chữ, không ảnh) bỏ qua chunk text nếu không phải vision
     if (!useVision && nonFigureBlocks.length === 0 && page.assetIds.length === 0) {
       continue;
     }
@@ -280,7 +285,7 @@ export async function renderPdfPageForVision(
 ): Promise<{ base64: string; mimeType: 'image/jpeg' }> {
   const page = await pdfDoc.getPage(pageNumber);
   const baseVp = page.getViewport({ scale: 1 });
-  const targetScale = Math.min(1.55, Math.max(0.95, 920 / Math.max(1, baseVp.width)));
+  const targetScale = Math.min(1.75, Math.max(1.0, 1080 / Math.max(1, baseVp.width)));
   const viewport = page.getViewport({ scale: targetScale });
 
   const canvas = document.createElement('canvas');
@@ -298,9 +303,10 @@ export async function renderPdfPageForVision(
       canvas,
       canvasContext: ctx,
       viewport,
+      annotationMode: 0,
     }).promise;
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
     const commaIdx = dataUrl.indexOf(',');
     return {
       base64: commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl,
@@ -457,7 +463,7 @@ function expandImageTokensToXhtml(
   assets: Record<string, PdfExtractedAsset>
 ): string {
   const rawHtml = block.html.trim();
-  const imgRegex = /\[\[PDF_IMG_([a-zA-Z0-9_-]+)\]\]/g;
+  const imgRegex = /`?\[{1,2}\s*PDF_IMG_([a-zA-Z0-9_-]+)\s*\]{1,2}`?/g;
 
   const renderFigureTag = (assetId: string): string => {
     const asset = assets[assetId];
@@ -465,7 +471,7 @@ function expandImageTokensToXhtml(
     return `<figure class="pdf-figure"><img src="../Images/${escapeXml(asset.fileName)}" alt="Hình ${escapeXml(assetId)}" /></figure>`;
   };
 
-  if (block.tag === 'figure' || /^\[\[PDF_IMG_[a-zA-Z0-9_-]+\]\]$/.test(rawHtml)) {
+  if (block.tag === 'figure' || /^`?\[{1,2}\s*PDF_IMG_[a-zA-Z0-9_-]+\s*\]{1,2}`?$/.test(rawHtml)) {
     const matches = Array.from(rawHtml.matchAll(imgRegex));
     if (matches.length > 0) {
       return matches.map((m) => renderFigureTag(m[1])).filter(Boolean).join('\n');
@@ -861,10 +867,33 @@ function parseTableRowsFromHtml(html: string): Array<Array<{ text: string; isHea
   return rows;
 }
 
-async function decodeAssetToImage(asset: PdfExtractedAsset): Promise<HTMLImageElement | null> {
+type DecodedDrawableAsset = {
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  dispose: () => void;
+};
+
+async function decodeAssetToDrawable(
+  asset: PdfExtractedAsset
+): Promise<DecodedDrawableAsset | null> {
   try {
     const safeBytes = new Uint8Array(asset.data);
-    const blob = new Blob([safeBytes], { type: asset.mimeType });
+    const blob = new Blob([safeBytes], { type: asset.mimeType || 'image/jpeg' });
+    if (typeof createImageBitmap === 'function') {
+      const bitmap = await createImageBitmap(blob);
+      return {
+        source: bitmap,
+        width: bitmap.width || asset.width,
+        height: bitmap.height || asset.height,
+        dispose: () => {
+          try {
+            bitmap.close();
+          } catch {}
+        },
+      };
+    }
+
     const url = URL.createObjectURL(blob);
     try {
       const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -873,7 +902,14 @@ async function decodeAssetToImage(asset: PdfExtractedAsset): Promise<HTMLImageEl
         el.onerror = () => reject(new Error('Không tải được ảnh PDF.'));
         el.src = url;
       });
-      return img;
+      return {
+        source: img,
+        width: img.naturalWidth || img.width || asset.width,
+        height: img.naturalHeight || img.height || asset.height,
+        dispose: () => {
+          img.src = '';
+        },
+      };
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -1028,8 +1064,9 @@ export async function exportTranslatedPdfFile(
             : chBlocks;
 
         for (const block of blocksToDraw) {
-          const imgTokens = Array.from(block.html.matchAll(/\[\[PDF_IMG_([a-zA-Z0-9_-]+)\]\]/g));
-          const textWithoutTokens = block.html.replace(/\[\[PDF_IMG_[a-zA-Z0-9_-]+\]\]/g, '').trim();
+          const imgRegex = /`?\[{1,2}\s*PDF_IMG_([a-zA-Z0-9_-]+)\s*\]{1,2}`?/g;
+          const imgTokens = Array.from(block.html.matchAll(imgRegex));
+          const textWithoutTokens = block.html.replace(imgRegex, '').trim();
 
           if (textWithoutTokens && block.tag !== 'figure') {
             if (block.tag === 'table') {
@@ -1151,26 +1188,26 @@ export async function exportTranslatedPdfFile(
           for (const match of imgTokens) {
             const asset = parsedPdf.assets[match[1]];
             if (!asset) continue;
-            const img = await decodeAssetToImage(asset);
-            if (!img) continue;
+            const drawable = await decodeAssetToDrawable(asset);
+            if (!drawable) continue;
 
             try {
               const maxImgW = CONTENT_W;
               const maxImgH = Math.round((PAGE_H - MARGIN_TOP - MARGIN_BOTTOM) * 0.72);
               const scale = Math.min(
-                1.6 * S,
-                maxImgW / Math.max(1, img.width),
-                maxImgH / Math.max(1, img.height)
+                1.45 * S,
+                maxImgW / Math.max(1, drawable.width),
+                maxImgH / Math.max(1, drawable.height)
               );
-              const drawW = Math.max(1, Math.round(img.width * scale));
-              const drawH = Math.max(1, Math.round(img.height * scale));
+              const drawW = Math.max(1, Math.round(drawable.width * scale));
+              const drawH = Math.max(1, Math.round(drawable.height * scale));
 
               await ensureSpace(drawH + px(28));
               const drawX = MARGIN_X + Math.round((CONTENT_W - drawW) / 2);
-              ctx.drawImage(img, drawX, cursorY, drawW, drawH);
+              ctx.drawImage(drawable.source, drawX, cursorY, drawW, drawH);
               cursorY += drawH + px(22);
             } finally {
-              img.src = '';
+              drawable.dispose();
             }
           }
         }

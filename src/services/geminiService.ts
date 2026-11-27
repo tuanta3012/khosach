@@ -2421,13 +2421,15 @@ export function getEpubKeyDiagnostics(): {
   usingServerKey: boolean;
 } {
   const personalKeys = getStoredGeminiApiKeys();
-  const allKeys = personalKeys.length > 0 ? personalKeys : getServerVirtualKeys();
+  const sharedKeys = getStoredSharedGeminiApiKeys();
+  const combinedUserKeys = Array.from(new Set([...personalKeys, ...sharedKeys]));
+  const allKeys = combinedUserKeys.length > 0 ? combinedUserKeys : getServerVirtualKeys();
   const ready = getAvailableEpubTranslationKeys();
   return {
     totalKeys: allKeys.length,
     readyKeys: ready.length,
     cooldownKeys: Math.max(0, allKeys.length - ready.length),
-    usingServerKey: personalKeys.length === 0 && serverStatusCache.serverConfigured,
+    usingServerKey: combinedUserKeys.length === 0 && serverStatusCache.serverConfigured,
   };
 }
 

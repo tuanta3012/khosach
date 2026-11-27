@@ -125,11 +125,18 @@ import {
   saveKnownSpreadsheet,
   saveUserApiKeyToSheetConfig,
   syncUserApiKeyWithSheetConfig,
+  fetchAllSharedApiKeys,
   syncSheetConfigVaultName,
   saveCategoriesListToSheetConfig,
   syncCategoriesListWithSheetConfig,
 } from './services/driveSyncService';
-import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys, clearStoredSharedGeminiApiKeys } from './utils/geminiService';
+import {
+  batchNormalize,
+  getStoredGeminiApiKeys,
+  saveStoredGeminiApiKeys,
+  saveStoredSharedGeminiApiKeys,
+  clearStoredSharedGeminiApiKeys,
+} from './utils/geminiService';
 import { batchFindBookCovers, PrecomputedCoverHint } from './services/bookCoverService';
 import { isMeaningfulChange } from './utils/fuzzyMatcher';
 import {
@@ -519,25 +526,36 @@ export default function App() {
             log.warn('[AutoConnect] Lỗi đồng bộ dữ liệu sau liên kết:', syncErr);
           }
 
-          // Đồng bộ tuần tự API key và danh sách thể loại chung trong Tab __CONFIG__
-          (async () => {
-            if (role === 'ADMIN' || role === 'EDITOR') {
-              try {
-                const localKeys = getStoredGeminiApiKeys();
-                const res = await syncUserApiKeyWithSheetConfig(
-                  token,
-                  activeSheet.id,
-                  userEmail,
-                  role,
-                  localKeys,
-                  settings.shareGeminiKeys ?? false
-                );
+          // Đồng bộ tuần tự API key (cho mọi vai trò kể cả VIEWER để kéo kho key chia sẻ) và danh sách thể loại chung trong Tab __CONFIG__
+          await (async () => {
+            try {
+              const localKeys = getStoredGeminiApiKeys();
+              const latestLocalSettings = loadLocalSettings();
+              const res = await syncUserApiKeyWithSheetConfig(
+                token,
+                activeSheet.id,
+                userEmail,
+                role,
+                localKeys,
+                latestLocalSettings.shareGeminiKeys
+              );
+              if (res.hasUpdatedLocal || res.hasUpdatedShareSetting) {
+                const updatedSettings: LibrarySettings = {
+                  ...loadLocalSettings(),
+                  ...(res.hasUpdatedLocal ? { geminiApiKeys: res.syncedKeys } : {}),
+                  ...(res.hasUpdatedShareSetting ? { shareGeminiKeys: res.resolvedShareKeys } : {}),
+                };
+                saveLocalSettings(updatedSettings);
+                setSettings((prev) => ({
+                  ...prev,
+                  ...(res.hasUpdatedLocal ? { geminiApiKeys: res.syncedKeys } : {}),
+                  ...(res.hasUpdatedShareSetting ? { shareGeminiKeys: res.resolvedShareKeys } : {}),
+                }));
                 if (res.hasUpdatedLocal) {
-                  setSettings((prev) => ({ ...prev, geminiApiKeys: res.syncedKeys }));
                   saveStoredGeminiApiKeys(res.syncedKeys);
                 }
-              } catch {}
-            }
+              }
+            } catch {}
 
             try {
               const localCats = loadLocalSettings().categoriesList || DEFAULT_CATEGORIES;
@@ -770,8 +788,8 @@ export default function App() {
             .catch((err) => log.warn('[Sync] Kiểm toán quyền Drive thất bại:', err));
         }
 
-        // 3b. Chạy tuần tự các thao tác cập nhật Tab __CONFIG__ (Vault Name, API Key, Danh sách thể loại) để tránh ghi đè chéo
-        (async () => {
+        // 3b. Chạy tuần tự các thao tác cập nhật Tab __CONFIG__ (Vault Name, API Key cho mọi vai trò, Danh sách thể loại) để tránh ghi đè chéo
+        await (async () => {
           if (
             activeRole === 'ADMIN' &&
             liveDriveName &&
@@ -785,20 +803,33 @@ export default function App() {
             }
           }
 
-          if ((activeRole === 'ADMIN' || activeRole === 'EDITOR') && currentUser?.email) {
+          if (currentUser?.email) {
             try {
               const localKeys = getStoredGeminiApiKeys();
+              const latestLocalSettings = loadLocalSettings();
               const keyRes = await syncUserApiKeyWithSheetConfig(
                 token,
                 sheetInfo.id,
                 currentUser.email,
                 activeRole,
                 localKeys,
-                settings.shareGeminiKeys ?? false
+                latestLocalSettings.shareGeminiKeys
               );
-              if (keyRes.hasUpdatedLocal) {
-                setSettings((prev) => ({ ...prev, geminiApiKeys: keyRes.syncedKeys }));
-                saveStoredGeminiApiKeys(keyRes.syncedKeys);
+              if (keyRes.hasUpdatedLocal || keyRes.hasUpdatedShareSetting) {
+                const updatedSettings: LibrarySettings = {
+                  ...loadLocalSettings(),
+                  ...(keyRes.hasUpdatedLocal ? { geminiApiKeys: keyRes.syncedKeys } : {}),
+                  ...(keyRes.hasUpdatedShareSetting ? { shareGeminiKeys: keyRes.resolvedShareKeys } : {}),
+                };
+                saveLocalSettings(updatedSettings);
+                setSettings((prev) => ({
+                  ...prev,
+                  ...(keyRes.hasUpdatedLocal ? { geminiApiKeys: keyRes.syncedKeys } : {}),
+                  ...(keyRes.hasUpdatedShareSetting ? { shareGeminiKeys: keyRes.resolvedShareKeys } : {}),
+                }));
+                if (keyRes.hasUpdatedLocal) {
+                  saveStoredGeminiApiKeys(keyRes.syncedKeys);
+                }
               }
             } catch (err) {
               log.warn('[Sync] Đồng bộ API Key trong 2-way sync thất bại:', err);
@@ -966,11 +997,19 @@ export default function App() {
         if (metadata && (metadata.status === 'unlinked' || metadata.lastAction === 'unlink')) {
           if (!isCurrentUserAdmin) {
             setSpreadsheetInfo(null);
+            clearStoredSharedGeminiApiKeys();
             localStorage.removeItem('library_spreadsheet_info_v2');
             localStorage.removeItem('last_drive_sync_time');
             removeKnownSpreadsheet(spreadsheetInfo.id);
             showToast('⚡ Admin đã hủy liên kết Workspace. Thiết bị này đã ngắt kết nối.', 'warning');
           }
+        } else if (userEmailClean) {
+          // Làm mới danh sách API Key chia sẻ từ các thành viên khác khi mở lại app hoặc kiểm tra định kỳ
+          try {
+            const sharedResult = await fetchAllSharedApiKeys(token, spreadsheetInfo.id, userEmailClean, true);
+            const personalSet = new Set(getStoredGeminiApiKeys());
+            saveStoredSharedGeminiApiKeys(sharedResult.keys.filter((k) => !personalSet.has(k)));
+          } catch {}
         }
       } catch (err) {
         console.warn('[Workspace] Không thể kiểm tra trạng thái liên kết:', err);

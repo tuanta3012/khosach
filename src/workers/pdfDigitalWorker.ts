@@ -142,6 +142,7 @@ const workerAdapter: PdfParserRuntimeAdapter = {
     useWorkerFetch: false,
   },
   pageYieldMs: 0,
+  isWorker: true,
 };
 
 function collectAssetTransferables(result: ParsedPdfData): Transferable[] {

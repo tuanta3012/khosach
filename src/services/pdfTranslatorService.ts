@@ -84,14 +84,15 @@ function buildPdfVisionSystemInstruction(
   return [
     `Bạn là dịch giả sách chuyên nghiệp sang tiếng Việt, chuyên thể loại: ${genre.label}.`,
     `VĂN PHONG: ${genre.stylePrompt}`,
-    `NHIỆM VỤ: Đọc ảnh trang sách PDF Digital kết hợp lớp chữ số hóa neo kèm theo để đọc đúng thứ tự cột/bảng biểu/chú thích và dịch toàn bộ sang tiếng Việt tự nhiên, chuẩn xác.`,
+    `NHIỆM VỤ: Đọc ảnh trang sách PDF Digital kết hợp lớp chữ số hóa neo kèm theo để đọc đúng thứ tự cột/bảng biểu/khung chú thích/chú giải hình và dịch toàn bộ sang tiếng Việt tự nhiên, chuẩn xác.`,
     `QUY TẮC BẮT BUỘC:`,
-    `1. Dùng ảnh để xác định đúng cấu trúc bố cục (đa cột, bảng biểu, tiêu đề, trích dẫn, khối code, vị trí hình minh họa) và đối chiếu lớp text số hóa để đảm bảo không sai tên riêng, số liệu, ký hiệu, công thức.`,
-    `2. Dịch THUẦN TIẾNG VIỆT đầy đủ, không tóm tắt, không lược bỏ nội dung hay thêm bình luận. Bỏ qua số trang hoặc tiêu đề lặp ở mép trên/dưới cùng của trang.`,
-    `3. Với bảng biểu, trả tag "table" với HTML sạch (<table><thead><tr><th>...</th></tr></thead><tbody><tr><td>...</td></tr></tbody></table>) đã dịch toàn bộ sang tiếng Việt.`,
-    `4. Với khối code, trả tag "pre" giữ nguyên mã lệnh, chỉ dịch chú thích nếu cần.`,
-    `5. BẮT BUỘC đặt đúng các mã ảnh [[PDF_IMG_...]] được cung cấp (nếu trang có ảnh) tại đúng vị trí xuất hiện trong bài với tag "figure" và html đúng bằng mã "[[PDF_IMG_...]]".`,
-    cleanNotes ? `6. GHI CHÚ RIÊNG:\n${cleanNotes}` : '',
+    `1. Dùng ảnh để xác định đúng cấu trúc bố cục (đa cột, bảng biểu, tiêu đề, trích dẫn, khối code, khung hộp chú ý, vị trí hình minh họa) và đối chiếu lớp text số hóa để đảm bảo không sai tên riêng, số liệu, ký hiệu, công thức.`,
+    `2. Dịch THUẦN TIẾNG VIỆT đầy đủ, không tóm tắt, không lược bỏ đoạn hay chú thích ảnh. Bỏ qua số trang hoặc tiêu đề lặp ở mép trên/dưới cùng của trang.`,
+    `3. Giữ lại các nhấn mạnh nội tuyến quan trọng bằng HTML đơn giản (<b>, <i>, <code>, <sup>, <sub>) bên trong các khối p, li, blockquote, th, td.`,
+    `4. Với bảng biểu, trả tag "table" với HTML sạch (<table><thead><tr><th>...</th></tr></thead><tbody><tr><td>...</td></tr></tbody></table>) đã dịch toàn bộ sang tiếng Việt.`,
+    `5. Với khối code, trả tag "pre" giữ nguyên mã lệnh, chỉ dịch chú thích nếu cần.`,
+    `6. BẮT BUỘC đặt ĐẦY ĐỦ đúng các mã ảnh [[PDF_IMG_...]] được liệt kê (nếu trang có ảnh) tại đúng vị trí xuất hiện trong bài với tag "figure" và html đúng bằng mã "[[PDF_IMG_...]]". Không tự vẽ lại hình bằng ký tự ASCII và không bỏ sót mã ảnh.`,
+    cleanNotes ? `7. GHI CHÚ RIÊNG:\n${cleanNotes}` : '',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -122,13 +123,26 @@ function sanitizeTag(raw: unknown): PdfBlockTag {
   return ALLOWED_BLOCK_TAGS.has(str) ? str : 'p';
 }
 
+function normalizeImageTokensInHtml(html: string): string {
+  if (!html) return '';
+  return html.replace(
+    /`?\[{1,2}\s*PDF_IMG_([a-zA-Z0-9_-]+)\s*\]{1,2}`?/g,
+    '[[PDF_IMG_$1]]'
+  );
+}
+
 function ensurePageAssetsIncluded(
   blocks: PdfTranslatedBlock[],
   assetIds: string[]
 ): PdfTranslatedBlock[] {
-  if (!assetIds || assetIds.length === 0) return blocks;
-  const serializedAll = blocks.map((b) => b.html).join('\n');
-  const next = [...blocks];
+  const normalizedBlocks = blocks.map((b) => ({
+    ...b,
+    html: normalizeImageTokensInHtml(b.html),
+  }));
+  if (!assetIds || assetIds.length === 0) return normalizedBlocks;
+
+  const serializedAll = normalizedBlocks.map((b) => b.html).join('\n');
+  const next = [...normalizedBlocks];
 
   for (const assetId of assetIds) {
     const token = `[[PDF_IMG_${assetId}]]`;
@@ -373,7 +387,13 @@ export async function runParallelPdfTranslation(
 
     const assetTokensDesc =
       pageData.assetIds.length > 0
-        ? `Ảnh đã cắt sẵn trên trang: ${pageData.assetIds.map((id) => `[[PDF_IMG_${id}]]`).join(', ')}`
+        ? `Ảnh minh họa đã cắt sẵn (theo thứ tự từ trên xuống dưới của trang, bắt buộc chèn đúng vị trí với tag "figure"): ${pageData.assetIds
+            .map((id, idx) => {
+              const a = parsedPdf.assets?.[id];
+              const sizeInfo = a ? `, ${a.width}×${a.height}px` : '';
+              return `[[PDF_IMG_${id}]] (hình #${idx + 1}${sizeInfo})`;
+            })
+            .join('; ')}`
         : 'Không có ảnh nhúng.';
 
     const basePromptText = [
