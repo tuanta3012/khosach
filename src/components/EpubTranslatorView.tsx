@@ -9,7 +9,6 @@ import React, {
 import {
   ArrowDown,
   ArrowUp,
-  BookOpen,
   Download,
   ExternalLink,
   Languages,
@@ -241,32 +240,21 @@ export const EpubTranslatorView: React.FC = () => {
           Đang tải...
         </div>
       ) : queue.jobs.length === 0 ? (
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={queue.isParsingFiles}
-          className="w-full min-h-[68px] bg-white hover:bg-sky-50/70 rounded-2xl border border-slate-200/90 hover:border-[#0284C7]/70 px-4 py-3.5 sm:px-5 sm:py-4 flex items-center justify-between gap-3.5 shadow-xs transition-all active:scale-[0.99] disabled:opacity-60 cursor-pointer group"
-        >
-          <div className="flex items-center gap-3.5 min-w-0">
-            <div className="w-11 h-11 rounded-xl bg-sky-50 border border-sky-200/80 text-[#0284C7] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-              <BookOpen className="w-5 h-5" />
-            </div>
-            <div className="min-w-0 text-left">
-              <p className="text-sm font-bold text-slate-900 truncate">
-                {queue.isParsingFiles
-                  ? queue.parseStatusText || 'Đang xử lý tệp...'
-                  : 'Chọn file .EPUB hoặc .PDF'}
-              </p>
-              <p className="text-xs font-medium text-slate-500 truncate mt-0.5">
-                Chọn một hoặc nhiều tệp
-              </p>
-            </div>
-          </div>
-
-          <span className="w-10 h-10 rounded-xl bg-[#0284C7] group-hover:bg-sky-700 text-white flex items-center justify-center shrink-0 shadow-xs transition-colors">
-            <Upload className="w-4 h-4" />
-          </span>
-        </button>
+        <div className="flex justify-center py-3">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={queue.isParsingFiles}
+            className="min-h-[48px] px-5 py-3 rounded-2xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-60 text-white text-sm font-bold inline-flex items-center justify-center gap-2 shadow-xs transition active:scale-[0.98] cursor-pointer"
+          >
+            <Upload className="w-4 h-4 shrink-0" />
+            <span>
+              {queue.isParsingFiles
+                ? queue.parseStatusText || 'Đang xử lý tệp...'
+                : 'Chọn file .EPUB hoặc .PDF'}
+            </span>
+          </button>
+        </div>
       ) : (
         <>
           {/* Thanh điều khiển hàng chờ gọn */}

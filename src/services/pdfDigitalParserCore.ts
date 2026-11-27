@@ -257,7 +257,11 @@ async function cropFiguresFromPage(
 ): Promise<CroppedFigureEntry[]> {
   if (boxes.length === 0) return [];
 
-  const targetScale = Math.min(2.0, Math.max(1.2, 1600 / Math.max(1, baseViewport.width)));
+  const maxBaseSide = Math.max(baseViewport.width, baseViewport.height, 1);
+  const targetScale = Math.min(
+    2.0,
+    Math.max(0.75, Math.min(1600 / Math.max(1, baseViewport.width), 1800 / maxBaseSide))
+  );
   const renderViewport = page.getViewport({ scale: targetScale });
   const pageCanvas = adapter.createCanvas(
     Math.max(1, Math.round(renderViewport.width)),
@@ -276,7 +280,8 @@ async function cropFiguresFromPage(
       canvas: pageCanvas as unknown as HTMLCanvasElement,
       canvasContext: ctx as unknown as CanvasRenderingContext2D,
       viewport: renderViewport,
-    }).promise;
+      annotationMode: 0,
+    } as any).promise;
 
     const scaleRatio = renderViewport.width / Math.max(1, baseViewport.width);
     const pad = Math.round(6 * scaleRatio);
@@ -722,7 +727,18 @@ export async function parseDigitalPdfCore(
     data: bytesCopy,
     ...(adapter.documentOptions || {}),
   } as any);
-  const pdfDoc = await loadingTask.promise;
+
+  let pdfDoc: pdfjsLib.PDFDocumentProxy;
+  try {
+    pdfDoc = await loadingTask.promise;
+  } catch (loadErr: unknown) {
+    const errName = (loadErr as { name?: string })?.name || '';
+    const errMsg = loadErr instanceof Error ? loadErr.message : String(loadErr || '');
+    if (errName === 'PasswordException' || /password/i.test(errMsg)) {
+      throw new Error('File PDF có mật khẩu bảo vệ, không thể tách nội dung.');
+    }
+    throw loadErr;
+  }
 
   try {
     const totalPages = pdfDoc.numPages;
@@ -730,20 +746,45 @@ export async function parseDigitalPdfCore(
       throw new Error('File PDF không có trang nào.');
     }
 
-    const sampleCount = Math.min(5, totalPages);
-    let sampleCharCount = 0;
-    for (let p = 1; p <= sampleCount; p++) {
-      if (stopSignal?.current) throw new Error('Đã hủy tách trang theo yêu cầu.');
-      const page = await pdfDoc.getPage(p);
-      const tc = await page.getTextContent();
-      const text = tc.items
-        .map((it: any) => (typeof it?.str === 'string' ? it.str : ''))
-        .join('')
-        .replace(/\s+/g, '');
-      sampleCharCount += text.length;
+    // Kiểm tra lớp chữ Digital trên nhiều vị trí (tránh loại nhầm sách có nhiều trang bìa/mục lục ảnh ở đầu)
+    const samplePagesSet = new Set<number>();
+    for (let p = 1; p <= Math.min(5, totalPages); p++) {
+      samplePagesSet.add(p);
+    }
+    if (totalPages > 5) {
+      for (const p of [
+        6,
+        7,
+        Math.round(totalPages * 0.15),
+        Math.round(totalPages * 0.3),
+        Math.round(totalPages * 0.5),
+        Math.round(totalPages * 0.7),
+        Math.round(totalPages * 0.85),
+      ]) {
+        if (p >= 1 && p <= totalPages) samplePagesSet.add(p);
+      }
     }
 
-    if (sampleCharCount < Math.max(60, sampleCount * 22)) {
+    let sampleCharCount = 0;
+    let maxSamplePageChars = 0;
+    for (const p of samplePagesSet) {
+      if (stopSignal?.current) throw new Error('Đã hủy tách trang theo yêu cầu.');
+      try {
+        const page = await pdfDoc.getPage(p);
+        const tc = await page.getTextContent();
+        const text = tc.items
+          .map((it: any) => (typeof it?.str === 'string' ? it.str : ''))
+          .join('')
+          .replace(/\s+/g, '');
+        sampleCharCount += text.length;
+        if (text.length > maxSamplePageChars) maxSamplePageChars = text.length;
+        if (sampleCharCount >= 80 || maxSamplePageChars >= 30) {
+          break;
+        }
+      } catch {}
+    }
+
+    if (sampleCharCount < 35 && maxSamplePageChars < 20) {
       throw new Error(
         'PDF này là bản scan ảnh, không có lớp chữ Digital để tách nội dung.'
       );
@@ -796,27 +837,30 @@ export async function parseDigitalPdfCore(
 
       const page = await pdfDoc.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
-      const tc = await page.getTextContent();
+      const tc = await page.getTextContent().catch(() => ({ items: [], styles: {} as Record<string, { fontFamily?: string }> }));
 
       const runs: PositionedTextRun[] = [];
-      for (const rawItem of tc.items) {
+      for (const rawItem of tc.items || []) {
         const item = rawItem as any;
         if (typeof item?.str !== 'string' || !item.str) continue;
         if (!item.str.trim() && item.str.length <= 1) continue;
+        if (!Array.isArray(item.transform) || item.transform.length < 6) continue;
 
         const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+        if (!Number.isFinite(tx[4]) || !Number.isFinite(tx[5])) continue;
+
         const fontSize = Math.max(
           5,
           Math.round((Math.hypot(tx[0], tx[1]) || item.height || 11) * 10) / 10
         );
-        const family = (tc.styles[item.fontName]?.fontFamily || item.fontName || '').toLowerCase();
+        const family = (tc.styles?.[item.fontName]?.fontFamily || item.fontName || '').toLowerCase();
 
         runs.push({
           str: item.str,
           x: tx[4],
           y: tx[5],
-          width: Math.max(0, item.width || 0),
-          height: Math.max(fontSize, item.height || fontSize),
+          width: Math.max(0, Number(item.width) || 0),
+          height: Math.max(fontSize, Number(item.height) || fontSize),
           fontSize,
           fontName: item.fontName || '',
           isMono: /mono|courier|consolas|menlo|code/.test(family),
@@ -836,23 +880,27 @@ export async function parseDigitalPdfCore(
       const joinedRawText = lines.map((l) => l.text).join('\n');
       const hasMathOrGarbled = detectMathOrGarbledText(joinedRawText);
 
-      const figureBoxes = await detectPageFigureBoxes(page, viewport);
-      const croppedEntries = await cropFiguresFromPage(
-        page,
-        pageNumber,
-        viewport,
-        figureBoxes,
-        adapter
-      );
       const assetIds: string[] = [];
       const figurePlacements: FigurePlacement[] = [];
       let totalFigureArea = 0;
 
-      for (const entry of croppedEntries) {
-        assets[entry.asset.assetId] = entry.asset;
-        assetIds.push(entry.asset.assetId);
-        figurePlacements.push(entry.placement);
-        totalFigureArea += entry.placement.area;
+      try {
+        const figureBoxes = await detectPageFigureBoxes(page, viewport);
+        const croppedEntries = await cropFiguresFromPage(
+          page,
+          pageNumber,
+          viewport,
+          figureBoxes,
+          adapter
+        );
+        for (const entry of croppedEntries) {
+          assets[entry.asset.assetId] = entry.asset;
+          assetIds.push(entry.asset.assetId);
+          figurePlacements.push(entry.placement);
+          totalFigureArea += entry.placement.area;
+        }
+      } catch (figErr) {
+        console.warn(`[PdfParser] Bỏ qua cắt ảnh trang ${pageNumber}:`, figErr);
       }
 
       const pageArea = Math.max(1, viewport.width * viewport.height);

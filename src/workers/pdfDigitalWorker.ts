@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { ParsedPdfData } from '../types';
 import {
   parseDigitalPdfCore,
@@ -7,8 +8,8 @@ import {
 } from '../services/pdfDigitalParserCore';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
+  pdfWorkerUrl,
+  self.location.href
 ).toString();
 
 export type PdfWorkerRequest =
@@ -39,15 +40,22 @@ export type PdfWorkerResponse =
       type: 'error';
       id: number;
       message: string;
-      isFatalWorkerBoot?: boolean;
+      canFallbackToMainThread?: boolean;
     };
+
+function normalizeCanvasDimension(val: number): number {
+  if (!Number.isFinite(val) || val <= 0) return 1;
+  return Math.min(4096, Math.max(1, Math.ceil(val)));
+}
 
 class WorkerCanvasFactory {
   create(width: number, height: number) {
-    if (width <= 0 || height <= 0) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
       throw new Error('Invalid canvas size');
     }
-    const canvas = new OffscreenCanvas(width, height);
+    const w = normalizeCanvasDimension(width);
+    const h = normalizeCanvasDimension(height);
+    const canvas = new OffscreenCanvas(w, h);
     return {
       canvas,
       context: canvas.getContext('2d', { willReadFrequently: true }),
@@ -58,11 +66,11 @@ class WorkerCanvasFactory {
     if (!canvas) {
       throw new Error('Canvas is not specified');
     }
-    if (width <= 0 || height <= 0) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
       throw new Error('Invalid canvas size');
     }
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = normalizeCanvasDimension(width);
+    canvas.height = normalizeCanvasDimension(height);
   }
 
   destroy(canvasAndContext: {
@@ -118,7 +126,10 @@ const activeStopSignals = new Map<number, { current: boolean }>();
 
 const workerAdapter: PdfParserRuntimeAdapter = {
   createCanvas: (width: number, height: number): PdfCanvasLike =>
-    new OffscreenCanvas(width, height) as unknown as PdfCanvasLike,
+    new OffscreenCanvas(
+      normalizeCanvasDimension(width),
+      normalizeCanvasDimension(height)
+    ) as unknown as PdfCanvasLike,
   canvasToJpegBytes: async (canvas: PdfCanvasLike, quality = 0.86): Promise<Uint8Array> => {
     const offscreen = canvas as unknown as OffscreenCanvas;
     const blob = await offscreen.convertToBlob({ type: 'image/jpeg', quality });
@@ -159,7 +170,6 @@ workerScope.onmessage = async (event: MessageEvent<PdfWorkerRequest>) => {
   if (payload.type === 'parse') {
     const stopSignal = { current: false };
     activeStopSignals.set(payload.id, stopSignal);
-    let progressed = false;
 
     try {
       const result = await parseDigitalPdfCore(
@@ -167,7 +177,6 @@ workerScope.onmessage = async (event: MessageEvent<PdfWorkerRequest>) => {
         payload.fileName,
         workerAdapter,
         (currentPage, totalPages) => {
-          progressed = true;
           workerScope.postMessage({
             type: 'progress',
             id: payload.id,
@@ -189,17 +198,18 @@ workerScope.onmessage = async (event: MessageEvent<PdfWorkerRequest>) => {
       );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Lỗi tách trang PDF trong Worker.';
-      const isExpectedPdfError =
+      const isExpectedContentOrCancelError =
         stopSignal.current ||
         message.includes('bản scan ảnh') ||
         message.includes('không có trang nào') ||
+        message.includes('mật khẩu') ||
         message.includes('Đã hủy');
 
       workerScope.postMessage({
         type: 'error',
         id: payload.id,
         message,
-        isFatalWorkerBoot: !progressed && !isExpectedPdfError,
+        canFallbackToMainThread: !isExpectedContentOrCancelError,
       });
     } finally {
       activeStopSignals.delete(payload.id);

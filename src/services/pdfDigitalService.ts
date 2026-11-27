@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import {
@@ -23,8 +24,8 @@ import type { PdfWorkerRequest, PdfWorkerResponse } from '../workers/pdfDigitalW
 export { evaluateHybridVisionNeeded };
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
+  pdfWorkerUrl,
+  window.location.href
 ).toString();
 
 const MAX_TEXT_CHUNK_CHARS = 3400;
@@ -90,7 +91,6 @@ async function parseDigitalPdfInWorker(
 
   return new Promise<ParsedPdfData>((resolve, reject) => {
     let settled = false;
-    let sawProgress = false;
 
     const cleanup = (stopWatch: ReturnType<typeof setInterval>) => {
       clearInterval(stopWatch);
@@ -118,7 +118,6 @@ async function parseDigitalPdfInWorker(
       if (!msg || msg.id !== jobId || settled) return;
 
       if (msg.type === 'progress') {
-        sawProgress = true;
         if (onProgress) onProgress(msg.currentPage, msg.totalPages);
         return;
       }
@@ -133,7 +132,7 @@ async function parseDigitalPdfInWorker(
       if (msg.type === 'error') {
         settled = true;
         cleanup(stopWatch);
-        if (msg.isFatalWorkerBoot && !sawProgress && !stopSignal?.current) {
+        if (msg.canFallbackToMainThread && !stopSignal?.current) {
           reject(new WorkerFallbackError(msg.message));
         } else {
           reject(new Error(msg.message));
@@ -145,7 +144,7 @@ async function parseDigitalPdfInWorker(
       if (settled) return;
       settled = true;
       cleanup(stopWatch);
-      if (!sawProgress && !stopSignal?.current) {
+      if (!stopSignal?.current) {
         reject(new WorkerFallbackError(err?.message || 'Không khởi chạy được PDF Worker.'));
       } else {
         reject(new Error(err?.message || 'Lỗi xử lý PDF trong Worker.'));

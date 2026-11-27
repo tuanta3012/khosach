@@ -376,6 +376,8 @@ export async function addFilesToQueue(
   let addedCount = 0;
   let restoredCount = 0;
   let skippedCount = 0;
+  let firstFailedName = '';
+  let firstSkipReason = '';
   let workingJobs = [...state.jobs];
 
   try {
@@ -387,6 +389,10 @@ export async function addFilesToQueue(
 
       if (!isEpub && !isPdf) {
         skippedCount += 1;
+        if (!firstSkipReason) {
+          firstFailedName = file.name;
+          firstSkipReason = 'Chỉ hỗ trợ tệp .EPUB hoặc .PDF';
+        }
         continue;
       }
 
@@ -497,6 +503,10 @@ export async function addFilesToQueue(
           const parsedData = await parseEpubFile(buffer);
           if (parsedData.segments.length === 0 || parsedData.chunks.length === 0) {
             skippedCount += 1;
+            if (!firstSkipReason) {
+              firstFailedName = file.name;
+              firstSkipReason = 'Không tìm thấy nội dung văn bản trong EPUB.';
+            }
             continue;
           }
 
@@ -529,15 +539,29 @@ export async function addFilesToQueue(
       } catch (err) {
         console.warn('[BookQueue] Lỗi đọc tệp:', file.name, err);
         skippedCount += 1;
+        if (!firstSkipReason) {
+          firstFailedName = file.name;
+          firstSkipReason = err instanceof Error ? err.message : 'Lỗi đọc tệp không xác định';
+        }
+        if (stopParsingRef.current) break;
       }
     }
 
-    const parts: string[] = [];
-    if (addedCount > 0) parts.push(`Đã thêm ${addedCount} sách`);
-    if (restoredCount > 0) parts.push(`đã có ${restoredCount} sách`);
-    if (skippedCount > 0) parts.push(`bỏ qua ${skippedCount} tệp lỗi`);
-    if (parts.length > 0) {
-      pushNotice(parts.join(' · '), addedCount > 0 ? 'success' : 'info');
+    if (addedCount === 0 && restoredCount === 0 && skippedCount > 0 && firstSkipReason) {
+      pushNotice(
+        skippedCount === 1
+          ? `${firstFailedName}: ${firstSkipReason}`
+          : `Không thêm được ${skippedCount} tệp (${firstFailedName}: ${firstSkipReason})`,
+        stopParsingRef.current ? 'info' : 'warning'
+      );
+    } else {
+      const parts: string[] = [];
+      if (addedCount > 0) parts.push(`Đã thêm ${addedCount} sách`);
+      if (restoredCount > 0) parts.push(`đã có ${restoredCount} sách`);
+      if (skippedCount > 0) parts.push(`bỏ qua ${skippedCount} tệp lỗi`);
+      if (parts.length > 0) {
+        pushNotice(parts.join(' · '), addedCount > 0 ? 'success' : 'info');
+      }
     }
   } finally {
     setState({ isParsingFiles: false, parseStatusText: '' });
