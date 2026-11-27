@@ -362,6 +362,14 @@ export interface PdfPreParsedBlock {
   assetId?: string;
 }
 
+export interface PdfFigureBox {
+  assetId: string;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
 export interface PdfParsedPage {
   pageNumber: number;
   chapterIndex: number;
@@ -374,6 +382,7 @@ export interface PdfParsedPage {
   hasMathOrGarbled?: boolean;
   figureAreaRatio?: number;
   assetIds: string[];
+  figureBoxes?: PdfFigureBox[];
   blocks: PdfPreParsedBlock[];
 }
 

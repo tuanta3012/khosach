@@ -15,10 +15,12 @@ import {
 } from '../types';
 import { appendVnSuffix } from './epubService';
 import {
+  cropFiguresFromPage,
   evaluateHybridVisionNeeded,
   parseDigitalPdfCore,
   PdfCanvasLike,
   PdfParserRuntimeAdapter,
+  yieldToEventLoopFast,
 } from './pdfDigitalParserCore';
 import type { PdfWorkerRequest, PdfWorkerResponse } from '../workers/pdfDigitalWorker';
 
@@ -34,7 +36,7 @@ const MAX_TEXT_CHUNK_BLOCKS = 32;
 const MAX_TEXT_CHUNK_PAGES = 5;
 
 function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return yieldToEventLoopFast();
 }
 
 function escapeXml(text: string): string {
@@ -57,7 +59,7 @@ async function canvasToJpegBytes(canvas: HTMLCanvasElement, quality = 0.86): Pro
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-const mainThreadAdapter: PdfParserRuntimeAdapter = {
+export const mainThreadAdapter: PdfParserRuntimeAdapter = {
   createCanvas: (width: number, height: number): PdfCanvasLike => {
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -66,7 +68,7 @@ const mainThreadAdapter: PdfParserRuntimeAdapter = {
   },
   canvasToJpegBytes: (canvas: PdfCanvasLike, quality = 0.86) =>
     canvasToJpegBytes(canvas as unknown as HTMLCanvasElement, quality),
-  pageYieldMs: 15,
+  pageYieldMs: 0,
 };
 
 let nextWorkerJobId = 1;
@@ -304,6 +306,7 @@ export async function renderPdfPageForVision(
       canvasContext: ctx,
       viewport,
       annotationMode: 0,
+      intent: 'print', // Bỏ qua window.requestAnimationFrame
     }).promise;
 
     const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
@@ -546,12 +549,80 @@ function wrapBlockXhtml(tag: PdfBlockTag, innerHtml: string): string {
   }
 }
 
+/**
+ * Đảm bảo toàn bộ ảnh minh họa cần thiết trong các trang PDF đã được trích xuất
+ * trước khi đóng gói EPUB hoặc kết xuất PDF (trích xuất cuốn chiếu không làm chậm quá trình tách trang ban đầu).
+ */
+export async function ensureAssetsExtracted(
+  pdfBuffer: ArrayBuffer | undefined,
+  parsedPdf: ParsedPdfData,
+  onProgress?: (progress: BookExportProgress) => void
+): Promise<void> {
+  if (!pdfBuffer || !parsedPdf.pages) return;
+  const missingPages = parsedPdf.pages.filter((p) => {
+    if (!p.figureBoxes || p.figureBoxes.length === 0) return false;
+    return (p.assetIds || []).some((id) => !parsedPdf.assets?.[id]);
+  });
+
+  if (missingPages.length === 0) return;
+
+  onProgress?.({
+    stage: `Đang trích xuất hình ảnh (${missingPages.length} trang có ảnh)...`,
+    current: 0,
+    total: missingPages.length,
+    percent: 2,
+  });
+
+  const bytesCopy = new Uint8Array(pdfBuffer.slice(0));
+  const loadingTask = pdfjsLib.getDocument({ data: bytesCopy });
+  try {
+    const pdfDoc = await loadingTask.promise;
+    for (let i = 0; i < missingPages.length; i++) {
+      const p = missingPages[i];
+      try {
+        const pageProxy = await pdfDoc.getPage(p.pageNumber);
+        const baseVp = pageProxy.getViewport({ scale: 1 });
+        const cropped = await cropFiguresFromPage(
+          pageProxy,
+          p.pageNumber,
+          baseVp,
+          p.figureBoxes || [],
+          mainThreadAdapter
+        );
+        if (!parsedPdf.assets) {
+          parsedPdf.assets = {};
+        }
+        for (const c of cropped) {
+          parsedPdf.assets[c.asset.assetId] = c.asset;
+        }
+      } catch (err) {
+        console.warn(`[PdfExport] Bỏ qua trích xuất ảnh trang ${p.pageNumber}:`, err);
+      }
+
+      const pct = 2 + Math.round(((i + 1) / missingPages.length) * 10);
+      onProgress?.({
+        stage: `Đang trích xuất hình ảnh (${i + 1}/${missingPages.length})...`,
+        current: i + 1,
+        total: missingPages.length,
+        percent: pct,
+      });
+      await yieldToEventLoopFast();
+    }
+  } finally {
+    await loadingTask.destroy().catch(() => {});
+  }
+}
+
 export async function reassemblePdfTranslationToEpub(
   parsedPdf: ParsedPdfData,
   translatedPages: Record<number, PdfTranslatedBlock[]>,
   originalFileName: string,
-  onProgress?: (progress: BookExportProgress) => void
+  onProgress?: (progress: BookExportProgress) => void,
+  originalPdfBuffer?: ArrayBuffer
 ): Promise<{ blob: Blob; translatedTitle: string }> {
+  if (originalPdfBuffer) {
+    await ensureAssetsExtracted(originalPdfBuffer, parsedPdf, onProgress);
+  }
   const baseName = originalFileName.replace(/\.pdf$/i, '').trim();
   const translatedTitle = appendVnSuffix(
     parsedPdf.bookTitle && parsedPdf.bookTitle !== 'Sach_PDF' ? parsedPdf.bookTitle : baseName
@@ -926,8 +997,12 @@ export async function exportTranslatedPdfFile(
   parsedPdf: ParsedPdfData,
   translatedPages: Record<number, PdfTranslatedBlock[]>,
   originalFileName: string,
-  onProgress?: (progress: BookExportProgress) => void
+  onProgress?: (progress: BookExportProgress) => void,
+  originalPdfBuffer?: ArrayBuffer
 ): Promise<{ blob: Blob; translatedTitle: string }> {
+  if (originalPdfBuffer) {
+    await ensureAssetsExtracted(originalPdfBuffer, parsedPdf, onProgress);
+  }
   const baseName = originalFileName.replace(/\.pdf$/i, '').trim();
   const translatedTitle = appendVnSuffix(
     parsedPdf.bookTitle && parsedPdf.bookTitle !== 'Sach_PDF' ? parsedPdf.bookTitle : baseName

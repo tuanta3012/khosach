@@ -4,11 +4,30 @@ import {
   PdfBlockTag,
   PdfChapterInfo,
   PdfExtractedAsset,
+  PdfFigureBox,
   PdfParsedPage,
   PdfPreParsedBlock,
 } from '../types';
 
-export const DIGITAL_PDF_PARSER_VERSION = 2;
+export const DIGITAL_PDF_PARSER_VERSION = 3;
+
+/**
+ * Cơ chế nhường luồng (cooperative multitasking) không bị giới hạn timer clamping (1000ms) trên Android WebView
+ */
+export function yieldToEventLoopFast(): Promise<void> {
+  if (typeof MessageChannel !== 'undefined') {
+    return new Promise((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close();
+        channel.port2.close();
+        resolve();
+      };
+      channel.port2.postMessage(null);
+    });
+  }
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 export interface PdfCanvasLike {
   width: number;
@@ -66,7 +85,7 @@ interface FigurePlacement {
   area: number;
 }
 
-interface CroppedFigureEntry {
+export interface CroppedFigureEntry {
   asset: PdfExtractedAsset;
   placement: FigurePlacement;
 }
@@ -438,11 +457,11 @@ async function detectPageFigureBoxes(
     .slice(0, 8);
 }
 
-async function cropFiguresFromPage(
+export async function cropFiguresFromPage(
   page: pdfjsLib.PDFPageProxy,
   pageNumber: number,
   baseViewport: pdfjsLib.PageViewport,
-  boxes: RectBox[],
+  boxes: Array<{ minX: number; minY: number; maxX: number; maxY: number; assetId?: string }>,
   adapter: PdfParserRuntimeAdapter
 ): Promise<CroppedFigureEntry[]> {
   if (boxes.length === 0) return [];
@@ -471,6 +490,7 @@ async function cropFiguresFromPage(
       canvasContext: ctx as unknown as CanvasRenderingContext2D,
       viewport: renderViewport,
       annotationMode: 0,
+      intent: 'print', // Bắt buộc intent: 'print' để tắt useRequestAnimationFrame, tránh bị treo trên Android WebView khi không chạm màn hình
     } as any).promise;
 
     const scaleRatio = renderViewport.width / Math.max(1, baseViewport.width);
@@ -493,7 +513,7 @@ async function cropFiguresFromPage(
         cropCtx.fillRect(0, 0, cw, ch);
         cropCtx.drawImage(pageCanvas as unknown as CanvasImageSource, sx, sy, cw, ch, 0, 0, cw, ch);
         const bytes = await adapter.canvasToJpegBytes(cropCanvas, 0.86);
-        const assetId = `p${pageNumber}_fig${i + 1}`;
+        const assetId = b.assetId || `p${pageNumber}_fig${i + 1}`;
         extracted.push({
           asset: {
             assetId,
@@ -1029,6 +1049,7 @@ export async function parseDigitalPdfCore(
       height: number;
       lines: PositionedLine[];
       assetIds: string[];
+      figureBoxes: PdfFigureBox[];
       figurePlacements: FigurePlacement[];
       figureAreaRatio: number;
       hasFigures: boolean;
@@ -1040,15 +1061,11 @@ export async function parseDigitalPdfCore(
     const rawPages: RawPageExtract[] = [];
     const assets: Record<string, PdfExtractedAsset> = {};
     const fontSizeFreq = new Map<number, number>();
-    const yieldDelay = adapter.pageYieldMs ?? 15;
-    let workerCroppedPages = 0;
-    let workerRenderFailures = 0;
 
     for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
       if (stopSignal?.current) {
         throw new Error('Đã hủy tách trang theo yêu cầu.');
       }
-      if (onProgress) onProgress(pageNumber, totalPages);
 
       const page = await pdfDoc.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
@@ -1096,37 +1113,34 @@ export async function parseDigitalPdfCore(
       const hasMathOrGarbled = detectMathOrGarbledText(joinedRawText);
 
       const assetIds: string[] = [];
+      const figureBoxes: PdfFigureBox[] = [];
       const figurePlacements: FigurePlacement[] = [];
       let totalFigureArea = 0;
 
       try {
-        const figureBoxes = await detectPageFigureBoxes(page, viewport, hasTables);
-        if (figureBoxes.length > 0) {
-          const croppedEntries = await cropFiguresFromPage(
-            page,
-            pageNumber,
-            viewport,
-            figureBoxes,
-            adapter
-          );
-          if (croppedEntries.length > 0) {
-            workerCroppedPages += 1;
-          }
-          for (const entry of croppedEntries) {
-            assets[entry.asset.assetId] = entry.asset;
-            assetIds.push(entry.asset.assetId);
-            figurePlacements.push(entry.placement);
-            totalFigureArea += entry.placement.area;
-          }
+        const detectedBoxes = await detectPageFigureBoxes(page, viewport, hasTables);
+        for (let fIdx = 0; fIdx < detectedBoxes.length; fIdx++) {
+          const b = detectedBoxes[fIdx];
+          const assetId = `p${pageNumber}_fig${fIdx + 1}`;
+          const area = Math.max(0, b.maxX - b.minX) * Math.max(0, b.maxY - b.minY);
+          assetIds.push(assetId);
+          figureBoxes.push({
+            assetId,
+            minX: Math.round(b.minX),
+            minY: Math.round(b.minY),
+            maxX: Math.round(b.maxX),
+            maxY: Math.round(b.maxY),
+          });
+          figurePlacements.push({
+            assetId,
+            minY: b.minY,
+            maxY: b.maxY,
+            area,
+          });
+          totalFigureArea += area;
         }
       } catch (figErr) {
-        workerRenderFailures += 1;
-        console.warn(`[PdfParser] Bỏ qua cắt ảnh trang ${pageNumber}:`, figErr);
-        if (adapter.isWorker && workerCroppedPages === 0 && workerRenderFailures >= 2) {
-          throw new Error(
-            `WORKER_IMAGE_RENDER_FAILED: ${figErr instanceof Error ? figErr.message : String(figErr)}`
-          );
-        }
+        console.warn(`[PdfParser] Bỏ qua dò khung hình trang ${pageNumber}:`, figErr);
       }
 
       const pageArea = Math.max(1, viewport.width * viewport.height);
@@ -1138,6 +1152,7 @@ export async function parseDigitalPdfCore(
         height: viewport.height,
         lines,
         assetIds,
+        figureBoxes,
         figurePlacements,
         figureAreaRatio,
         hasFigures: assetIds.length > 0,
@@ -1146,8 +1161,11 @@ export async function parseDigitalPdfCore(
         hasMathOrGarbled,
       });
 
-      if (yieldDelay > 0 || pageNumber % 4 === 0) {
-        await new Promise((r) => setTimeout(r, yieldDelay));
+      if (pageNumber % 3 === 0 || pageNumber === totalPages) {
+        if (onProgress) {
+          onProgress(pageNumber, totalPages);
+        }
+        await yieldToEventLoopFast();
       }
     }
 
@@ -1276,6 +1294,7 @@ export async function parseDigitalPdfCore(
         hasMathOrGarbled: rp.hasMathOrGarbled,
         figureAreaRatio: rp.figureAreaRatio,
         assetIds: rp.assetIds,
+        figureBoxes: rp.figureBoxes,
         blocks,
       };
       const requiresVision = evaluateHybridVisionNeeded(parsedPageDraft, assets);

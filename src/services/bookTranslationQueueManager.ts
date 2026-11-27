@@ -646,7 +646,8 @@ export async function exportBookJobToDevice(
           targetJob.parsedPdfData,
           finalPdfPages,
           targetJob.fileName,
-          (p) => updateExportProgress(p)
+          (p) => updateExportProgress(p),
+          targetJob.epubBuffer
         );
         blob = exported.blob;
         nextTitle = exported.translatedTitle;
@@ -655,7 +656,8 @@ export async function exportBookJobToDevice(
           targetJob.parsedPdfData,
           finalPdfPages,
           targetJob.fileName,
-          (p) => updateExportProgress(p)
+          (p) => updateExportProgress(p),
+          targetJob.epubBuffer
         );
         blob = exported.blob;
         nextTitle = exported.translatedTitle;
