@@ -1,12 +1,13 @@
 import * as XLSX from 'xlsx';
 import { BookRecord, DriveBackupPayload } from '../types';
+import { CURRENT_APP_VERSION } from '../version';
 
 /**
  * Xuất danh mục kho sách thành chuỗi JSON chuẩn
  */
 export function exportBooksToJson(books: BookRecord[]): string {
   const payload: DriveBackupPayload = {
-    version: '1.0.0',
+    version: CURRENT_APP_VERSION,
     exportedAt: new Date().toISOString(),
     totalBooks: books.length,
     books,

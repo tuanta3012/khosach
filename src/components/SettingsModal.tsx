@@ -39,6 +39,7 @@ import { CURRENT_APP_VERSION } from '../version';
 import { batchNormalize } from '../utils/geminiService';
 import {
   getStoredGeminiApiKeys,
+  getStoredSharedGeminiApiKeys,
   getEffectiveGeminiKeys,
   saveStoredGeminiApiKeys,
   testGeminiApiKey,
@@ -286,9 +287,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [apiKeys, setApiKeys] = useState<string[]>(() => {
     return getCleanKeys();
   });
+  const [sharedGroupKeysCount, setSharedGroupKeysCount] = useState<number>(() => getStoredSharedGeminiApiKeys().length);
 
   useEffect(() => {
     if (!isOpen) return;
+    setSharedGroupKeysCount(getStoredSharedGeminiApiKeys().length);
     const latest = getCleanKeys();
     if (latest.length > 0 && apiKeys.length === 0) {
       setApiKeys(latest);
@@ -1391,13 +1394,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <span className="text-xs font-black text-slate-800 leading-tight">
                       Gemini API Key
                     </span>
-                    {apiKeys.length > 0 ? (
+                    {apiKeys.length > 0 || sharedGroupKeysCount > 0 ? (
                       <span className="text-[10px] font-bold px-2 py-0.5 bg-purple-50 text-[#653f96] border border-purple-200/70 rounded-full">
                         Đã kích hoạt
                       </span>
                     ) : (
                       <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200/70 rounded-full">
                         Chưa cấu hình
+                      </span>
+                    )}
+                    {sharedGroupKeysCount > 0 && (
+                      <span className="text-[10px] font-semibold text-slate-500">
+                        +{sharedGroupKeysCount} nhóm
                       </span>
                     )}
                   </div>

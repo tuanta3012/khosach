@@ -1,8 +1,94 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Mặc định từ chối toàn bộ các collection không được phép
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidAssignedShare(data) {
+      return data.keys().hasAll(['assignedFileId', 'adminEmail', 'memberEmail', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'assignedFileId',
+          'assignedFileName',
+          'adminEmail',
+          'memberEmail',
+          'role',
+          'status',
+          'createdAt',
+          'updatedAt',
+          'lastCheckedAt'
+        ])
+        && data.assignedFileId is string
+        && data.assignedFileId.size() > 0
+        && data.assignedFileId.size() <= 200
+        && (!('assignedFileName' in data) || (data.assignedFileName is string && data.assignedFileName.size() <= 200))
+        && data.adminEmail is string
+        && data.adminEmail.size() > 0
+        && data.adminEmail.size() <= 200
+        && data.memberEmail is string
+        && data.memberEmail.size() > 0
+        && data.memberEmail.size() <= 200
+        && data.role in ['Owner', 'Editor', 'Viewer']
+        && (!('status' in data) || data.status in ['active', 'unlinked'])
+        && data.createdAt is number
+        && data.updatedAt is number
+        && (!('lastCheckedAt' in data) || data.lastCheckedAt is number);
+    }
+
+    function isValidConsensusRegistry(data) {
+      return data.keys().hasAll(['rules', 'totalRules', 'updatedAt'])
+        && data.keys().hasOnly(['rules', 'totalRules', 'updatedAt', 'version'])
+        && data.rules is list
+        && data.rules.size() <= 500
+        && data.totalRules is number
+        && data.totalRules >= 0
+        && data.totalRules <= 500
+        && data.updatedAt is number
+        && (!('version' in data) || (data.version is string && data.version.size() <= 32));
+    }
+
+    // Chỉ cho phép Admin (người chia sẻ) và Thành viên nhận file đọc/xóa đúng bản ghi email của mình; chặn list toàn bảng
+    match /assigned_shares/{shareId} {
+      allow list: if false;
+      allow get: if isSignedIn() && isValidId(shareId) && (
+        resource == null ||
+        request.auth.token.email.lower() == resource.data.memberEmail.lower() ||
+        request.auth.token.email.lower() == resource.data.adminEmail.lower()
+      );
+      allow create: if isSignedIn()
+        && isValidId(shareId)
+        && isValidAssignedShare(request.resource.data)
+        && request.resource.data.adminEmail.lower() == request.auth.token.email.lower();
+      allow update: if isSignedIn()
+        && isValidId(shareId)
+        && isValidAssignedShare(request.resource.data)
+        && resource.data.adminEmail.lower() == request.auth.token.email.lower()
+        && request.resource.data.memberEmail == resource.data.memberEmail
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isSignedIn() && isValidId(shareId) && (
+        resource == null ||
+        resource.data.adminEmail.lower() == request.auth.token.email.lower() ||
+        resource.data.memberEmail.lower() == request.auth.token.email.lower()
+      );
+    }
+
+    // Bảng quy tắc đồng thuận cộng đồng (không chứa dữ liệu cá nhân): đọc công khai doc chuẩn, chỉ user đã đăng nhập mới được đóng góp
+    match /community_knowledge/{docId} {
+      allow list: if false;
+      allow get: if docId == 'consensus_rules_v1';
+      allow create, update: if isSignedIn()
+        && docId == 'consensus_rules_v1'
+        && isValidConsensusRegistry(request.resource.data);
+      allow delete: if false;
     }
   }
 }

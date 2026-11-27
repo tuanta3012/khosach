@@ -350,6 +350,16 @@ function updateJobInMemory(jobId: string, updater: (job: EpubTranslationJob) => 
   });
 }
 
+const stopParsingRef = { current: false };
+
+export function cancelFileParsing(): void {
+  stopParsingRef.current = true;
+  setState({
+    isParsingFiles: false,
+    parseStatusText: '',
+  });
+}
+
 export async function addFilesToQueue(
   files: File[],
   defaultGenre: EpubGenreId = 'van-hoc',
@@ -360,6 +370,7 @@ export async function addFilesToQueue(
     return { addedCount: 0, restoredCount: 0, skippedCount: 0 };
   }
 
+  stopParsingRef.current = false;
   setState({ isParsingFiles: true, parseStatusText: `Đang kiểm tra ${files.length} tệp...` });
 
   let addedCount = 0;
@@ -413,7 +424,7 @@ export async function addFilesToQueue(
             setState({
               parseStatusText: `${prefix}Tách PDF: ${cur}/${total} trang`,
             });
-          });
+          }, stopParsingRef);
 
           const initialMode: PdfProcessingMode = 'hybrid-digital';
           const initialUnits = buildPdfTranslationUnits(parsedPdf, initialMode);
@@ -757,7 +768,10 @@ export function pauseBookQueue(): void {
   pushNotice('Đang tạm dừng hàng chờ...', 'info');
 }
 
-export async function startOrResumeBookQueue(startFromJobId?: string): Promise<void> {
+export async function startOrResumeBookQueue(
+  startFromJobId?: string,
+  options?: { singleJobOnly?: boolean }
+): Promise<void> {
   await initBookQueueManager();
   if (state.isRunning) return;
 
@@ -783,13 +797,21 @@ export async function startOrResumeBookQueue(startFromJobId?: string): Promise<v
     return;
   }
 
-  // Nếu người dùng bấm Tiếp tục/Dịch ở 1 cuốn cụ thể, ưu tiên chạy nó trước nếu chưa xong
-  const queueOrderToRun = [...pendingJobs];
+  let queueOrderToRun = [...pendingJobs];
   if (startFromJobId) {
-    const pickedIdx = queueOrderToRun.findIndex((j) => j.jobId === startFromJobId);
-    if (pickedIdx > 0) {
-      const [picked] = queueOrderToRun.splice(pickedIdx, 1);
-      queueOrderToRun.unshift(picked);
+    if (options?.singleJobOnly) {
+      const targetJob = pendingJobs.find((j) => j.jobId === startFromJobId);
+      if (!targetJob) {
+        pushNotice('Sách này đã dịch xong.', 'info');
+        return;
+      }
+      queueOrderToRun = [targetJob];
+    } else {
+      const pickedIdx = queueOrderToRun.findIndex((j) => j.jobId === startFromJobId);
+      if (pickedIdx > 0) {
+        const [picked] = queueOrderToRun.splice(pickedIdx, 1);
+        queueOrderToRun.unshift(picked);
+      }
     }
   }
 

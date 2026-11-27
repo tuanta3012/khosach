@@ -290,6 +290,9 @@ export const initAuth = (
           const parsed = JSON.parse(storedUserStr);
           if (parsed?.email) {
             console.log('[GoogleAuth] Duy trì phiên Google hợp lệ từ cache (Web/Native):', parsed.email);
+            if (!auth.currentUser && token) {
+              void signInWithCredential(auth, GoogleAuthProvider.credential(null, token)).catch(() => {});
+            }
             if (onAuthSuccess) {
               onAuthSuccess(
                 {
@@ -403,6 +406,13 @@ export async function signInWithGoogleGIS(): Promise<{
             localStorage.setItem('library_user_v2', JSON.stringify(authUser));
             localStorage.setItem('app_mode_v2', 'online');
           } catch {}
+
+          // Đồng bộ phiên sang Firebase Auth để Firestore Security Rules xác thực request.auth hợp lệ trên Web GIS
+          try {
+            await signInWithCredential(auth, GoogleAuthProvider.credential(null, accessToken));
+          } catch (fbErr) {
+            console.warn('[GoogleGIS] Không thể liên kết Firebase Auth từ access token:', fbErr);
+          }
 
           resolve({
             user: {

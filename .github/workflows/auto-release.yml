@@ -175,9 +175,11 @@ jobs:
             if ! grep -q "REQUEST_INSTALL_PACKAGES" android/app/src/main/AndroidManifest.xml; then
               sed -i '/<application/i \    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" \/>' android/app/src/main/AndroidManifest.xml
             fi
-            # Cấu hình chống Android Cloud Backup & Restore đa tầng
+            # Cấu hình chống Android Cloud Backup & Restore đa tầng (idempotent)
             sed -i 's/android:allowBackup="true"/android:allowBackup="false"/g' android/app/src/main/AndroidManifest.xml
-            sed -i 's/android:allowBackup="false"/android:allowBackup="false" android:fullBackupOnly="false" android:dataExtractionRules="@xml\/data_extraction_rules" android:fullBackupContent="@xml\/backup_rules"/g' android/app/src/main/AndroidManifest.xml
+            if ! grep -q 'dataExtractionRules' android/app/src/main/AndroidManifest.xml; then
+              sed -i 's/android:allowBackup="false"/android:allowBackup="false" android:fullBackupOnly="false" android:dataExtractionRules="@xml\/data_extraction_rules" android:fullBackupContent="@xml\/backup_rules"/g' android/app/src/main/AndroidManifest.xml
+            fi
           fi
 
       # 7. Copy google-services.json & Tạo icon
@@ -215,32 +217,73 @@ jobs:
           cp keystore/debug.keystore ~/.android/debug.keystore
           cp keystore/debug.keystore android/app/debug.keystore
           
-          if [ -f "android/app/build.gradle" ]; then
-            node -e '
-              const fs = require("fs");
-              let content = fs.readFileSync("android/app/build.gradle", "utf8");
-              if (!content.includes("signingConfigs")) {
-                content = content.replace("buildTypes {", `signingConfigs {
-                    release {
-                        storeFile file("debug.keystore")
-                        storePassword "android"
-                        keyAlias "androiddebugkey"
-                        keyPassword "android"
-                    }
-                    debug {
-                        storeFile file("debug.keystore")
-                        storePassword "android"
-                        keyAlias "androiddebugkey"
-                        keyPassword "android"
-                    }
+          if [ "${{ steps.auto_version.outputs.BUILD_AAB }}" == "true" ] && [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "Khôi phục Release Keystore từ GitHub Secrets cho bản Play Store AAB..."
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+            if [ -f "android/app/build.gradle" ]; then
+              RELEASE_STORE_PASS="${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+              RELEASE_KEY_ALIAS="${{ secrets.ANDROID_KEY_ALIAS }}" \
+              RELEASE_KEY_PASS="${{ secrets.ANDROID_KEY_PASSWORD }}" \
+              node -e '
+                const fs = require("fs");
+                let content = fs.readFileSync("android/app/build.gradle", "utf8");
+                const storePass = JSON.stringify(process.env.RELEASE_STORE_PASS || "");
+                const keyAlias = JSON.stringify(process.env.RELEASE_KEY_ALIAS || "");
+                const keyPass = JSON.stringify(process.env.RELEASE_KEY_PASS || "");
+                if (!content.includes("signingConfigs")) {
+                  content = content.replace("buildTypes {", `signingConfigs {
+                      release {
+                          storeFile file("release.keystore")
+                          storePassword ${storePass}
+                          keyAlias ${keyAlias}
+                          keyPassword ${keyPass}
+                      }
+                      debug {
+                          storeFile file("debug.keystore")
+                          storePassword "android"
+                          keyAlias "androiddebugkey"
+                          keyPassword "android"
+                      }
+                  }
+                  buildTypes {`);
                 }
-                buildTypes {`);
-              }
-              if (!content.includes("signingConfig signingConfigs.release")) {
-                content = content.replace(/buildTypes\s*\{([\s\S]*?)release\s*\{/, "buildTypes {$1release {\n            signingConfig signingConfigs.release");
-              }
-              fs.writeFileSync("android/app/build.gradle", content, "utf8");
-            '
+                if (!content.includes("signingConfig signingConfigs.release")) {
+                  content = content.replace(/buildTypes\s*\{([\s\S]*?)release\s*\{/, "buildTypes {$1release {\n            signingConfig signingConfigs.release");
+                }
+                fs.writeFileSync("android/app/build.gradle", content, "utf8");
+              '
+            fi
+          else
+            if [ "${{ steps.auto_version.outputs.BUILD_AAB }}" == "true" ]; then
+              echo "::warning::Chưa cấu hình GitHub Secret ANDROID_KEYSTORE_BASE64; tạm dùng debug.keystore (Google Play Store sẽ yêu cầu release keystore riêng)."
+            fi
+            if [ -f "android/app/build.gradle" ]; then
+              node -e '
+                const fs = require("fs");
+                let content = fs.readFileSync("android/app/build.gradle", "utf8");
+                if (!content.includes("signingConfigs")) {
+                  content = content.replace("buildTypes {", `signingConfigs {
+                      release {
+                          storeFile file("debug.keystore")
+                          storePassword "android"
+                          keyAlias "androiddebugkey"
+                          keyPassword "android"
+                      }
+                      debug {
+                          storeFile file("debug.keystore")
+                          storePassword "android"
+                          keyAlias "androiddebugkey"
+                          keyPassword "android"
+                      }
+                  }
+                  buildTypes {`);
+                }
+                if (!content.includes("signingConfig signingConfigs.release")) {
+                  content = content.replace(/buildTypes\s*\{([\s\S]*?)release\s*\{/, "buildTypes {$1release {\n            signingConfig signingConfigs.release");
+                }
+                fs.writeFileSync("android/app/build.gradle", content, "utf8");
+              '
+            fi
           fi
           
           SHA1_VAL=$(keytool -list -v -keystore keystore/debug.keystore -alias androiddebugkey -storepass android | grep "SHA1:" | head -1 | awk '{print $2}')

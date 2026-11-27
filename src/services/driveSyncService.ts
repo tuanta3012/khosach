@@ -8,7 +8,8 @@ import { getAccessToken } from './googleAuthService';
 // 2. Bypass CORS và tối ưu kết nối HTTP trên Android qua CapacitorHttp
 const fetch = smartDriveFetch;
 
-import { saveStoredGeminiApiKeys } from './geminiService';
+import { saveStoredGeminiApiKeys, saveStoredSharedGeminiApiKeys } from './geminiService';
+import { CURRENT_APP_VERSION } from '../version';
 import {
   getPendingBookMutations,
   removePendingBookMutationsByIds,
@@ -900,11 +901,14 @@ export async function saveMasterSyncStateToGoogleSheet(
     if (resolvedAdminEmail && resolvedAdminEmail.includes('@')) {
       const existingAdmin = memberMap.get(resolvedAdminEmail);
       memberMap.set(resolvedAdminEmail, {
+        ...existingAdmin,
         email: resolvedAdminEmail,
         role: 'Owner',
         addedAt: existingAdmin?.addedAt || nowIso,
         apiKeys: existingAdmin?.apiKeys,
         apiKey: existingAdmin?.apiKey,
+        ...(existingAdmin?.shareKeys !== undefined ? { shareKeys: existingAdmin.shareKeys } : {}),
+        ...(existingAdmin?.apiKeyUpdatedAt ? { apiKeyUpdatedAt: existingAdmin.apiKeyUpdatedAt } : {}),
       });
     }
 
@@ -912,6 +916,8 @@ export async function saveMasterSyncStateToGoogleSheet(
       email: m.email,
       role: m.role,
       addedAt: m.addedAt,
+      ...(m.shareKeys !== undefined ? { shareKeys: m.shareKeys } : {}),
+      ...(m.apiKeyUpdatedAt ? { apiKeyUpdatedAt: m.apiKeyUpdatedAt } : {}),
     }));
 
     const resolvedLinkedEmail = state.linkedAccountEmail || resolvedAdminEmail || '';
@@ -923,8 +929,14 @@ export async function saveMasterSyncStateToGoogleSheet(
 
     for (const m of (finalMembers || [])) {
       const email = (m.email || '').trim().toLowerCase();
-      if (m.apiKeys && Array.isArray(m.apiKeys) && m.apiKeys.length > 0) {
-        userApiKeys[email] = m.apiKeys;
+      if (!email) continue;
+      if (Array.isArray(m.apiKeys)) {
+        const cleanMemberKeys = m.apiKeys.map((k) => String(k || '').trim()).filter(Boolean);
+        if (cleanMemberKeys.length > 0) {
+          userApiKeys[email] = cleanMemberKeys;
+        } else {
+          delete userApiKeys[email];
+        }
       } else if (m.apiKey && typeof m.apiKey === 'string' && m.apiKey.trim()) {
         userApiKeys[email] = [m.apiKey.trim()];
       }
@@ -1036,7 +1048,7 @@ export async function saveMasterSyncStateToGoogleSheet(
             updatedAt: nowIso,
             updatedAtVi: nowVi,
             appName: 'Kho Sách',
-            appVersion: '1.0.0',
+            appVersion: CURRENT_APP_VERSION,
             ignoredDuplicatePairs: state.ignoredDuplicatePairs || [],
             userApiKeys,
             customSettings: cleanCustomSettings,
@@ -1216,7 +1228,7 @@ export async function readMasterSyncStateFromGoogleSheet(
           updatedAt: metadataParsed.updatedAt || kvMap.get('updated at') || '',
           updatedAtVi: metadataParsed.updatedAtVi || kvMap.get('updated at') || '',
           appName: 'Kho Sách',
-          appVersion: '1.0.0',
+          appVersion: CURRENT_APP_VERSION,
           ignoredDuplicatePairs,
           userApiKeys: userApiKeysMap,
           customSettings: parsedCustomSettings,
@@ -2145,23 +2157,32 @@ export async function removeFamilyMember(
  */
 export async function fetchAllSharedApiKeys(
   accessToken: string,
-  spreadsheetId: string
+  spreadsheetId: string,
+  excludeEmail?: string
 ): Promise<{ keys: string[]; sharedEmails: string[] }> {
   try {
     if (!accessToken || !spreadsheetId) return { keys: [], sharedEmails: [] };
     const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
     if (!state) return { keys: [], sharedEmails: [] };
 
+    const cleanExclude = (excludeEmail || '').trim().toLowerCase();
     const sharedKeysSet = new Set<string>();
-    const sharedEmails: string[] = [];
+    const sharedEmailsSet = new Set<string>();
+    const disabledShareEmails = new Set<string>();
 
-    // Kiểm tra danh sách members xem ai bật chia sẻ key (mặc định chia sẻ nếu có apiKeys và shareKeys !== false)
+    // Xác định danh sách thành viên tắt chia sẻ (shareKeys === false)
     if (Array.isArray(state.members)) {
       for (const m of state.members) {
-        if (m.shareKeys === false) continue; // Bỏ qua nếu user tắt chia sẻ
+        const em = (m.email || '').trim().toLowerCase();
+        if (!em) continue;
+        if (m.shareKeys === false) {
+          disabledShareEmails.add(em);
+          continue;
+        }
+        if (cleanExclude && em === cleanExclude) continue;
         const mKeys = m.apiKeys || (m.apiKey ? [m.apiKey] : []);
         if (mKeys.length > 0) {
-          sharedEmails.push(m.email);
+          sharedEmailsSet.add(em);
           mKeys.forEach((k) => {
             const clean = String(k || '').trim();
             if (clean) sharedKeysSet.add(clean);
@@ -2170,19 +2191,26 @@ export async function fetchAllSharedApiKeys(
       }
     }
 
-    // Kiểm tra thêm userApiKeys map
+    // Kiểm tra thêm userApiKeys map, tuyệt đối bỏ qua các thành viên có shareKeys === false hoặc email cần loại trừ
     if (state.metadata.userApiKeys && typeof state.metadata.userApiKeys === 'object') {
-      for (const [email, keys] of Object.entries(state.metadata.userApiKeys)) {
-        if (Array.isArray(keys)) {
+      for (const [rawEmail, keys] of Object.entries(state.metadata.userApiKeys)) {
+        const em = (rawEmail || '').trim().toLowerCase();
+        if (!em || disabledShareEmails.has(em) || (cleanExclude && em === cleanExclude)) continue;
+        if (Array.isArray(keys) && keys.length > 0) {
+          let addedAny = false;
           keys.forEach((k) => {
             const clean = String(k || '').trim();
-            if (clean) sharedKeysSet.add(clean);
+            if (clean) {
+              sharedKeysSet.add(clean);
+              addedAny = true;
+            }
           });
+          if (addedAny) sharedEmailsSet.add(em);
         }
       }
     }
 
-    return { keys: Array.from(sharedKeysSet), sharedEmails };
+    return { keys: Array.from(sharedKeysSet), sharedEmails: Array.from(sharedEmailsSet) };
   } catch (err) {
     console.warn('[DriveSync] fetchAllSharedApiKeys error:', err);
     return { keys: [], sharedEmails: [] };
@@ -2205,13 +2233,13 @@ export async function saveUserApiKeyToSheetConfig(
   if (!accessToken || !spreadsheetId || !cleanEmail) return false;
 
   try {
-    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId);
+    const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId, true);
     if (!state) {
       console.warn('[DriveSync] Không đọc được trạng thái Master Sync để lưu API Key');
       return false;
     }
 
-    const cleanKeys = (apiKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
+    const cleanKeys = Array.from(new Set((apiKeys || []).map((k) => String(k || '').trim()).filter(Boolean)));
     const existingMembers = state.members ? state.members.map((m) => ({ ...m })) : [];
     let matchedMember = existingMembers.find((m) => m.email.trim().toLowerCase() === cleanEmail);
 
@@ -2240,8 +2268,12 @@ export async function saveUserApiKeyToSheetConfig(
     const userApiKeys: Record<string, string[]> = {
       ...(state.metadata.userApiKeys || {}),
       ...(state.metadata.customSettings?.userApiKeys || {}),
-      [cleanEmail]: cleanKeys,
     };
+    if (cleanKeys.length > 0) {
+      userApiKeys[cleanEmail] = cleanKeys;
+    } else {
+      delete userApiKeys[cleanEmail];
+    }
 
     const cleanCustomSettings = { ...(state.metadata.customSettings || {}) };
     delete cleanCustomSettings.userApiKeys;
@@ -2299,7 +2331,9 @@ export async function fetchUserApiKeysFromSheetConfig(
 }
 
 /**
- * 7d. Tự động đồng bộ 2 chiều API Key giữa LocalStorage và Google Sheet Config (bao gồm cả kho key chung nếu chia sẻ)
+ * 7d. Tự động đồng bộ 2 chiều API Key (tách biệt rõ Key cá nhân và Kho key chung của nhóm)
+ * - Đọc trạng thái từ Sheet trước để không bao giờ ghi đè rỗng [] lên key đã lưu khi đăng nhập thiết bị mới.
+ * - Lưu kho key chung của các thành viên khác vào storage riêng (gemini_shared_keys_v1) thay vì trộn vào key cá nhân.
  */
 export async function syncUserApiKeyWithSheetConfig(
   accessToken: string,
@@ -2310,36 +2344,66 @@ export async function syncUserApiKeyWithSheetConfig(
   shareKeys = true
 ): Promise<{
   syncedKeys: string[];
+  sharedKeys: string[];
   hasUpdatedLocal: boolean;
   hasUpdatedRemote: boolean;
 }> {
   const cleanEmail = (userEmail || '').trim().toLowerCase();
+  const cleanLocal = Array.from(new Set((localKeys || []).map((k) => String(k || '').trim()).filter(Boolean)));
   if (!accessToken || !spreadsheetId || !cleanEmail) {
-    return { syncedKeys: localKeys, hasUpdatedLocal: false, hasUpdatedRemote: false };
+    return { syncedKeys: cleanLocal, sharedKeys: [], hasUpdatedLocal: false, hasUpdatedRemote: false };
   }
 
-  const cleanLocal = (localKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
+  const state = await readMasterSyncStateFromGoogleSheet(accessToken, spreadsheetId, true);
+  if (!state) {
+    return { syncedKeys: cleanLocal, sharedKeys: [], hasUpdatedLocal: false, hasUpdatedRemote: false };
+  }
 
-  // 1. Lưu key cá nhân và trạng thái chia sẻ lên Sheet Config
-  await saveUserApiKeyToSheetConfig(accessToken, spreadsheetId, cleanEmail, cleanLocal, shareKeys, userRole);
+  const matchedMember = state.members.find((m) => (m.email || '').trim().toLowerCase() === cleanEmail);
+  const remoteRaw =
+    state.metadata.userApiKeys?.[cleanEmail] ||
+    matchedMember?.apiKeys ||
+    (matchedMember?.apiKey ? [matchedMember.apiKey] : []);
+  const cleanRemote = Array.from(new Set((remoteRaw || []).map((k) => String(k || '').trim()).filter(Boolean)));
 
-  // 2. Lấy toàn bộ kho key chung từ tất cả thành viên có bật chia sẻ
-  const sharedResult = await fetchAllSharedApiKeys(accessToken, spreadsheetId);
-  const sharedKeys = sharedResult.keys;
-
-  // 3. Hợp nhất key cá nhân của user với kho key chung
-  const mergedSet = new Set<string>();
-  cleanLocal.forEach((k) => mergedSet.add(k));
-  sharedKeys.forEach((k) => mergedSet.add(k));
-  const mergedList = Array.from(mergedSet);
-
+  let effectivePersonalKeys = cleanLocal;
   let hasUpdatedLocal = false;
-  if (mergedList.length > cleanLocal.length) {
-    saveStoredGeminiApiKeys(mergedList);
+  let hasUpdatedRemote = false;
+
+  // Thiết bị mới chưa có key cá nhân -> kéo từ Sheet về thay vì ghi đè rỗng lên Sheet
+  if (cleanLocal.length === 0 && cleanRemote.length > 0) {
+    effectivePersonalKeys = cleanRemote;
+    saveStoredGeminiApiKeys(effectivePersonalKeys);
     hasUpdatedLocal = true;
+  } else {
+    const keysDiffer =
+      cleanLocal.length !== cleanRemote.length ||
+      cleanLocal.some((k, idx) => k !== cleanRemote[idx]);
+    const shareFlagDiffers = matchedMember?.shareKeys !== shareKeys;
+
+    if ((cleanLocal.length > 0 && (keysDiffer || shareFlagDiffers)) || (matchedMember && shareFlagDiffers)) {
+      hasUpdatedRemote = await saveUserApiKeyToSheetConfig(
+        accessToken,
+        spreadsheetId,
+        cleanEmail,
+        effectivePersonalKeys,
+        shareKeys,
+        userRole
+      );
+    }
   }
 
-  return { syncedKeys: mergedList, hasUpdatedLocal, hasUpdatedRemote: true };
+  // Nạp kho key chia sẻ từ các thành viên khác (đã lọc bỏ thành viên tắt chia sẻ và chính user hiện tại)
+  const sharedResult = await fetchAllSharedApiKeys(accessToken, spreadsheetId, cleanEmail);
+  const otherSharedKeys = sharedResult.keys.filter((k) => !effectivePersonalKeys.includes(k));
+  saveStoredSharedGeminiApiKeys(otherSharedKeys);
+
+  return {
+    syncedKeys: effectivePersonalKeys,
+    sharedKeys: otherSharedKeys,
+    hasUpdatedLocal,
+    hasUpdatedRemote,
+  };
 }
 
 /**
@@ -2922,7 +2986,7 @@ export async function updateSheetConfigStatus(
     updatedAt: nowIso,
     updatedAtVi: timeVi,
     appName: existing?.appName || 'Kho Sách Gia Đình',
-    appVersion: existing?.appVersion || '1.0.0',
+    appVersion: existing?.appVersion || CURRENT_APP_VERSION,
     members,
     ignoredDuplicatePairs: existing?.ignoredDuplicatePairs || [],
   });

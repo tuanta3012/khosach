@@ -46,10 +46,12 @@
         "adminEmail": { "type": "string" },
         "memberEmail": { "type": "string" },
         "role": { "type": "string" },
+        "status": { "type": "string" },
         "createdAt": { "type": "number" },
-        "updatedAt": { "type": "number" }
+        "updatedAt": { "type": "number" },
+        "lastCheckedAt": { "type": "number" }
       },
-      "required": ["assignedFileId", "memberEmail"]
+      "required": ["assignedFileId", "adminEmail", "memberEmail", "role", "createdAt", "updatedAt"]
     }
   },
   "firestore": {

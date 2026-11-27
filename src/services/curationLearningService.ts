@@ -3,6 +3,7 @@ import { getSharedFirestore, isDeviceOffline } from './firebaseDb';
 import { BookRecord, ConsensusRule, RuleType } from '../types';
 import { canonicalizeVolume, removeVietnameseTones } from '../utils/fuzzyMatcher';
 import { saveMasterSyncStateToGoogleSheet, readMasterSyncStateFromGoogleSheet } from './driveSyncService';
+import { CURRENT_APP_VERSION } from '../version';
 
 export const LEARNED_RULES_STORAGE_KEY = 'library_learned_rules_v1';
 export const CLOUD_COMMUNITY_DOC_PATH = 'community_knowledge/consensus_rules_v1';
@@ -520,7 +521,7 @@ export async function flushSessionContributionsToCloud(): Promise<boolean> {
       rules: Array.from(cloudRulesMap.values()),
       totalRules: cloudRulesMap.size,
       updatedAt: Date.now(),
-      version: '1.0.0',
+      version: CURRENT_APP_VERSION,
     };
 
     await setDoc(docRef, payload, { merge: true });

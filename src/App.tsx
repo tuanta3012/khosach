@@ -128,7 +128,7 @@ import {
   saveCategoriesListToSheetConfig,
   syncCategoriesListWithSheetConfig,
 } from './services/driveSyncService';
-import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys } from './utils/geminiService';
+import { batchNormalize, getStoredGeminiApiKeys, saveStoredGeminiApiKeys, clearStoredSharedGeminiApiKeys } from './utils/geminiService';
 import { batchFindBookCovers, PrecomputedCoverHint } from './services/bookCoverService';
 import { isMeaningfulChange } from './utils/fuzzyMatcher';
 import {
@@ -1213,6 +1213,7 @@ export default function App() {
   // Đăng xuất Google & Chuyển về Offline
   const handleGoogleLogout = async () => {
     await googleLogout();
+    clearStoredSharedGeminiApiKeys();
     setCurrentUser(null);
     setSpreadsheetInfo(null);
     setAppMode('offline');
@@ -1891,6 +1892,7 @@ export default function App() {
         onSelectSpreadsheet={async (sheet) => {
           if (!sheet) {
             setSpreadsheetInfo(null);
+            clearStoredSharedGeminiApiKeys();
             localStorage.removeItem('library_spreadsheet_info_v2');
             localStorage.setItem('unlinked_spreadsheet_explicitly', 'true');
             return;
@@ -1950,6 +1952,7 @@ export default function App() {
           saveAllLocalBooks([]);
           setBooks([]);
           setSpreadsheetInfo(null);
+          clearStoredSharedGeminiApiKeys();
           localStorage.removeItem('library_spreadsheet_info_v2');
           localStorage.removeItem('last_drive_sync_time');
           removeKnownSpreadsheet(spreadsheetInfo.id);

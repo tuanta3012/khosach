@@ -6,7 +6,9 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-export const FIRESTORE_DATABASE_ID = 'ai-studio-khosach-0ef0f956-9e92-4b96-aab6-0adefe2a1acc';
+export const FIRESTORE_DATABASE_ID =
+  (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
+  'ai-studio-khosach-0ef0f956-9e92-4b96-aab6-0adefe2a1acc';
 
 let cachedDb: Firestore | null = null;
 

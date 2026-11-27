@@ -10,13 +10,8 @@ import {
   ArrowDown,
   ArrowUp,
   BookOpen,
-  CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  Clock,
   Download,
   ExternalLink,
-  FolderCheck,
   Languages,
   Pause,
   Play,
@@ -24,7 +19,6 @@ import {
   RotateCcw,
   Share2,
   SlidersHorizontal,
-  Sparkles,
   Trash2,
 } from 'lucide-react';
 import {
@@ -33,7 +27,6 @@ import {
   PdfOutputFormat,
 } from '../types';
 import {
-  EPUB_TRANSLATION_MODEL,
   getEpubKeyDiagnostics,
   refreshServerGeminiStatus,
 } from '../services/geminiService';
@@ -41,6 +34,7 @@ import { appendVnSuffix } from '../services/epubService';
 import { EPUB_GENRES } from '../services/epubTranslatorService';
 import {
   addFilesToQueue,
+  cancelFileParsing,
   clearCompletedFromQueue,
   exportBookJobToDevice,
   formatElapsedTime,
@@ -76,45 +70,11 @@ function getJobStats(job: EpubTranslationJob) {
     ? job.pdfUnits?.length || 0
     : job.parsedData?.chunks?.length || 0;
   const completedChunks = job.completedChunkIds?.length || 0;
-  const failedChunks = job.failedChunkIds?.length || 0;
-  const totalUnitsCount = isPdf
-    ? job.parsedPdfData?.totalPages || 0
-    : job.parsedData?.segments?.length || 0;
-
-  let completedUnitsCount = 0;
-  if (isPdf) {
-    completedUnitsCount = Math.min(
-      totalUnitsCount,
-      Object.keys(job.translatedPdfPages || {}).length
-    );
-  } else {
-    for (const idx of job.completedChunkIds || []) {
-      const ch = job.parsedData?.chunks?.[idx];
-      if (ch) completedUnitsCount += ch.segmentIds.length;
-    }
-  }
-
-  let pdfTextPagesCount = 0;
-  let pdfVisionPagesCount = 0;
-  if (isPdf && job.pdfUnits) {
-    for (const u of job.pdfUnits) {
-      if (u.kind === 'vision-page') {
-        pdfVisionPagesCount += u.pageNumbers.length;
-      } else {
-        pdfTextPagesCount += u.pageNumbers.length;
-      }
-    }
-  }
 
   return {
     isPdf,
     totalChunks,
     completedChunks,
-    failedChunks,
-    totalUnitsCount,
-    completedUnitsCount,
-    pdfTextPagesCount,
-    pdfVisionPagesCount,
   };
 }
 
@@ -160,7 +120,6 @@ export const EpubTranslatorView: React.FC = () => {
     };
   }, [refreshKeyDiagnostics]);
 
-  // Chuyển các thông báo mới từ Queue Singleton ra Toast UI
   useEffect(() => {
     const notice = queue.lastNotice;
     if (notice && notice.id > lastSeenNoticeIdRef.current) {
@@ -170,7 +129,6 @@ export const EpubTranslatorView: React.FC = () => {
     }
   }, [queue.lastNotice, showToast, refreshKeyDiagnostics]);
 
-  // Bộ đếm nhịp 1 giây cập nhật đồng hồ khi có sách đang dịch
   useEffect(() => {
     if (!queue.isRunning) return;
     setTickNow(Date.now());
@@ -211,7 +169,7 @@ export const EpubTranslatorView: React.FC = () => {
   );
 
   return (
-    <div className="space-y-4 pb-8">
+    <div className="space-y-3 pb-8">
       <input
         ref={fileInputRef}
         type="file"
@@ -221,54 +179,56 @@ export const EpubTranslatorView: React.FC = () => {
         className="hidden"
       />
 
-      {/* Header + Chọn nhiều sách */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-4 sm:p-5">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div className="flex items-start gap-3 min-w-0">
-            <div className="w-11 h-11 rounded-xl bg-sky-50 border border-sky-200 text-[#0284C7] flex items-center justify-center shrink-0">
-              <Languages className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-base sm:text-lg font-extrabold text-slate-900 tracking-tight">
-                Dịch Sách EPUB / PDF
-              </h2>
-              <div className="flex items-center gap-1.5 mt-1 text-xs font-medium text-slate-600 tabular-nums">
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${
-                    keyDiag.readyKeys > 0
-                      ? 'bg-[#10B981]'
-                      : keyDiag.totalKeys > 0
-                      ? 'bg-amber-500'
-                      : 'bg-rose-500'
-                  }`}
-                />
-                <span className="truncate">
-                  {keyDiag.totalKeys === 0
-                    ? `Chưa có API Key (Cài đặt ⚙️)`
-                    : `${keyDiag.readyKeys}/${keyDiag.totalKeys} Key · ${EPUB_TRANSLATION_MODEL}`}
-                </span>
-              </div>
-            </div>
+      {/* Thanh tiêu đề & thao tác chính */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs px-4 py-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-xl bg-sky-50 border border-sky-200/80 text-[#0284C7] flex items-center justify-center shrink-0">
+            <Languages className="w-5 h-5" />
           </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              disabled={queue.isParsingFiles}
-              onClick={() => fileInputRef.current?.click()}
-              className="min-h-[44px] w-full sm:w-auto px-4 py-2 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap"
+          <div className="min-w-0">
+            <h2 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">
+              Dịch Sách EPUB / PDF
+            </h2>
+            <p
+              className={`text-xs font-medium tabular-nums truncate ${
+                keyDiag.totalKeys === 0
+                  ? 'text-rose-600'
+                  : keyDiag.readyKeys > 0
+                  ? 'text-slate-500'
+                  : 'text-amber-600'
+              }`}
             >
-              <Plus className="w-4 h-4" />
-              <span>{queue.jobs.length > 0 ? 'Thêm sách' : 'Chọn EPUB / PDF'}</span>
-            </button>
+              {keyDiag.totalKeys === 0
+                ? 'Chưa có API Key'
+                : `${keyDiag.readyKeys}/${keyDiag.totalKeys} Key sẵn sàng`}
+            </p>
           </div>
         </div>
+
+        <button
+          type="button"
+          disabled={queue.isParsingFiles}
+          onClick={() => fileInputRef.current?.click()}
+          className="min-h-[44px] px-4 py-2 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap shrink-0"
+        >
+          <Plus className="w-4 h-4" />
+          <span>{queue.jobs.length > 0 ? 'Thêm sách' : 'Chọn file'}</span>
+        </button>
       </div>
 
-      {/* Trạng thái đang đọc tệp vừa chọn */}
+      {/* Tiến trình tách trang PDF */}
       {queue.isParsingFiles && (
-        <div className="bg-sky-50 border border-sky-200 rounded-2xl px-4 py-3 text-xs sm:text-sm font-bold text-[#0284C7]">
-          {queue.parseStatusText || 'Đang xử lý tệp...'}
+        <div className="bg-sky-50 border border-sky-200 rounded-2xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs sm:text-sm font-bold text-[#0284C7]">
+          <span className="truncate tabular-nums">
+            {queue.parseStatusText || 'Đang xử lý tệp...'}
+          </span>
+          <button
+            type="button"
+            onClick={cancelFileParsing}
+            className="min-h-[38px] px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            Hủy / Dừng
+          </button>
         </div>
       )}
 
@@ -284,43 +244,37 @@ export const EpubTranslatorView: React.FC = () => {
           disabled={queue.isParsingFiles}
           className="w-full bg-white hover:bg-sky-50/40 rounded-2xl border-2 border-dashed border-slate-300 hover:border-[#0284C7] p-8 sm:p-10 text-center transition group"
         >
-          <div className="w-14 h-14 mx-auto rounded-2xl bg-sky-50 border border-sky-200 text-[#0284C7] flex items-center justify-center group-hover:scale-105 transition">
-            <BookOpen className="w-7 h-7" />
+          <div className="w-12 h-12 mx-auto rounded-2xl bg-sky-50 border border-sky-200 text-[#0284C7] flex items-center justify-center group-hover:scale-105 transition">
+            <BookOpen className="w-6 h-6" />
           </div>
-          <p className="mt-3 text-sm sm:text-base font-bold text-slate-800">
+          <p className="mt-3 text-sm font-bold text-slate-800">
             {queue.isParsingFiles
               ? queue.parseStatusText || 'Đang xử lý tệp...'
-              : 'Chọn 1 hoặc nhiều sách .EPUB / .PDF'}
+              : 'Chọn file .EPUB hoặc .PDF'}
           </p>
         </button>
       ) : (
         <>
-          {/* Thanh điều khiển hàng chờ */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
-            <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-slate-800 tabular-nums">
-              <span
-                className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                  queue.isRunning
-                    ? 'bg-[#0284C7] animate-pulse'
-                    : pendingCount === 0
-                    ? 'bg-[#10B981]'
-                    : 'bg-amber-500'
-                }`}
-              />
-              <span>
-                Hàng chờ: {completedCount}/{queue.jobs.length} xong
-              </span>
-            </div>
+          {/* Thanh điều khiển hàng chờ gọn */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs px-3.5 py-2.5 flex items-center justify-between gap-2">
+            <span className="text-xs sm:text-sm font-bold text-slate-700 tabular-nums truncate">
+              {completedCount}/{queue.jobs.length} hoàn tất
+              {queue.isRunning ? ' · Đang dịch' : ''}
+            </span>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               {pendingCount > 0 && !queue.isRunning && (
                 <button
                   type="button"
                   onClick={() => void startOrResumeBookQueue()}
-                  className="min-h-[40px] px-4 py-2 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95"
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap"
                 >
-                  <Play className="w-4 h-4 fill-current" />
-                  <span>{hasPausedOrStartedPending ? 'Tiếp tục toàn bộ' : 'Dịch toàn bộ'}</span>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>
+                    {hasPausedOrStartedPending
+                      ? `Tiếp tục (${pendingCount})`
+                      : `Dịch toàn bộ (${pendingCount})`}
+                  </span>
                 </button>
               )}
 
@@ -329,9 +283,9 @@ export const EpubTranslatorView: React.FC = () => {
                   type="button"
                   disabled={queue.isStopping}
                   onClick={pauseBookQueue}
-                  className="min-h-[40px] px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95"
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap"
                 >
-                  <Pause className="w-4 h-4 fill-current" />
+                  <Pause className="w-3.5 h-3.5 fill-current" />
                   <span>{queue.isStopping ? 'Đang dừng...' : 'Tạm dừng'}</span>
                 </button>
               )}
@@ -340,17 +294,17 @@ export const EpubTranslatorView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => void clearCompletedFromQueue()}
-                  className="min-h-[40px] px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95"
+                  className="min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95 whitespace-nowrap"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span>Xóa đã xong</span>
+                  <span>Xóa xong</span>
                 </button>
               )}
             </div>
           </div>
 
-          {/* Danh sách từng cuốn trong hàng chờ */}
-          <div className="space-y-3">
+          {/* Danh sách file gọn */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs divide-y divide-slate-100 overflow-hidden">
             {queue.jobs.map((job, idx) => {
               const isActive = queue.isRunning && queue.activeJobId === job.jobId;
               const stats = getJobStats(job);
@@ -382,288 +336,243 @@ export const EpubTranslatorView: React.FC = () => {
                 job.parsedData?.bookTitle ||
                 job.fileName.replace(/\.(epub|pdf)$/i, '');
               const displayTitle = done ? appendVnSuffix(rawTitle) : rawTitle;
-              const configOpen =
-                expandedConfigIds[job.jobId] ??
-                (queue.jobs.length === 1 && !done);
-
-              const lockedConfig = isActive;
+              const configOpen = Boolean(expandedConfigIds[job.jobId]);
               const outFmt: PdfOutputFormat = job.pdfOutputFormat || 'epub';
+              const showProgressBar =
+                isActive || done || stats.completedChunks > 0 || job.status === 'error';
 
               return (
                 <div
                   key={job.jobId}
-                  className={`bg-white rounded-2xl border shadow-xs p-4 space-y-3 transition ${
+                  className={`px-3.5 py-3 space-y-2 transition-colors ${
                     isActive
-                      ? 'border-[#0284C7] ring-2 ring-sky-100'
+                      ? 'bg-sky-50/50'
                       : done
-                      ? 'border-emerald-200 bg-emerald-50/20'
-                      : 'border-slate-200/80'
+                      ? 'bg-emerald-50/25'
+                      : 'bg-white'
                   }`}
                 >
-                  {/* Hàng 1: STT + Tên sách + Badge trạng thái + Đồng hồ + Xóa/Di chuyển */}
-                  <div className="flex items-start justify-between gap-2.5">
+                  {/* Hàng chính: STT + Tên + Metadata rút gọn | Nút thao tác */}
+                  <div className="flex items-center justify-between gap-2.5">
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                        <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[11px] font-extrabold tabular-nums">
-                          #{idx + 1}
+                      <h3 className="text-sm font-bold text-slate-900 truncate">
+                        <span className="text-slate-400 font-semibold mr-1.5 tabular-nums">
+                          {idx + 1}.
                         </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-md text-[11px] font-bold ${
-                            isActive
-                              ? 'bg-sky-100 text-[#0284C7]'
-                              : done
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : job.status === 'paused'
-                              ? 'bg-amber-100 text-amber-800'
-                              : job.status === 'error'
-                              ? 'bg-rose-100 text-rose-700'
-                              : 'bg-slate-100 text-slate-600'
-                          }`}
-                        >
-                          {isActive
-                            ? 'Đang dịch'
-                            : done
-                            ? 'Xong'
-                            : job.status === 'paused'
-                            ? 'Tạm dừng'
-                            : job.status === 'error'
-                            ? 'Lỗi'
-                            : 'Chờ dịch'}
-                        </span>
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[11px] font-bold tabular-nums">
-                          <Clock className="w-3 h-3 text-slate-500" />
-                          {elapsedLabel}
-                        </span>
-                      </div>
-
-                      <h3 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">
                         {displayTitle}
                       </h3>
-                      <p className="text-xs text-slate-500 mt-0.5 tabular-nums truncate">
-                        {stats.isPdf && job.parsedPdfData
-                          ? `PDF · ${job.parsedPdfData.totalPages} trang · ${formatFileSize(job.fileSize)}`
-                          : `EPUB · ${allChunks} phần · ${formatFileSize(job.fileSize)}`}
-                      </p>
+                      <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-500 tabular-nums truncate">
+                        <span>
+                          {stats.isPdf && job.parsedPdfData
+                            ? `PDF · ${job.parsedPdfData.totalPages} tr`
+                            : `EPUB · ${allChunks} phần`}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span>{formatFileSize(job.fileSize)}</span>
+                        {isActive ? (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-semibold text-[#0284C7]">
+                              {percent}% · {elapsedLabel}
+                            </span>
+                          </>
+                        ) : done ? (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-semibold text-emerald-700">
+                              Xong · {elapsedLabel}
+                            </span>
+                          </>
+                        ) : job.status === 'error' ? (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-semibold text-rose-600">Lỗi</span>
+                          </>
+                        ) : stats.completedChunks > 0 || job.status === 'paused' ? (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-semibold text-amber-700">
+                              {percent}% · {elapsedLabel}
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
                     </div>
 
-                    {!isActive && (
-                      <div className="flex items-center gap-1 shrink-0">
-                        {!done && queue.jobs.length > 1 && (
-                          <>
-                            <button
-                              type="button"
-                              disabled={idx === 0}
-                              onClick={() => void moveQueuedJob(job.jobId, 'up')}
-                              title="Lên"
-                              className="min-w-[38px] min-h-[38px] p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 flex items-center justify-center"
-                            >
-                              <ArrowUp className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={idx === queue.jobs.length - 1}
-                              onClick={() => void moveQueuedJob(job.jobId, 'down')}
-                              title="Xuống"
-                              className="min-w-[38px] min-h-[38px] p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 flex items-center justify-center"
-                            >
-                              <ArrowDown className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isActive && (
                         <button
                           type="button"
-                          onClick={() => void removeQueuedJob(job.jobId)}
-                          title="Xóa"
-                          className="min-w-[38px] min-h-[38px] p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center"
+                          disabled={queue.isStopping}
+                          onClick={pauseBookQueue}
+                          className="min-h-[44px] px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap active:scale-95 transition"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Pause className="w-3.5 h-3.5 fill-current" />
+                          <span>Dừng</span>
                         </button>
-                      </div>
-                    )}
-                  </div>
+                      )}
 
-                  {/* Hàng 2: Thanh tiến độ */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs tabular-nums">
-                      <span className="text-slate-600 font-medium truncate pr-2">
-                        {isActive && activeProg?.statusMessage
-                          ? activeProg.statusMessage
-                          : done
-                          ? `Hoàn tất ${allChunks}/${allChunks} phần`
-                          : stats.completedChunks > 0
-                          ? `Đã lưu ${stats.completedChunks}/${allChunks} phần (${stats.completedUnitsCount}/${stats.totalUnitsCount} ${
-                              stats.isPdf ? 'trang' : 'đoạn'
-                            })`
-                          : `Chưa dịch (${allChunks} phần)`}
-                      </span>
-                      <span className="font-black text-[#0284C7] shrink-0">
-                        {percent}%
-                      </span>
-                    </div>
+                      {!done && !queue.isRunning && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void startOrResumeBookQueue(job.jobId, { singleJobOnly: true })
+                          }
+                          className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap active:scale-95 transition"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          <span>{stats.completedChunks > 0 ? 'Tiếp tục' : 'Dịch'}</span>
+                        </button>
+                      )}
 
-                    <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/60">
-                      <div
-                        className={`h-full transition-all duration-300 rounded-full ${
-                          done
-                            ? 'bg-[#10B981]'
-                            : job.status === 'error'
-                            ? 'bg-rose-500'
-                            : isActive
-                            ? 'bg-[#0284C7]'
-                            : 'bg-amber-500'
-                        }`}
-                        style={{ width: `${percent}%` }}
-                      />
-                    </div>
-                  </div>
+                      {done && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isPackaging}
+                            onClick={() =>
+                              void exportBookJobToDevice(job.jobId, {
+                                outputFormat: outFmt,
+                              })
+                            }
+                            className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap active:scale-95 transition"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>{isPackaging ? 'Đang xuất' : 'Lưu'}</span>
+                          </button>
 
-                  {job.lastError && !isActive && !done && (
-                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 font-medium">
-                      {job.lastError}
-                    </div>
-                  )}
-
-                  {/* Hàng 3: Tùy chọn cấu hình thu gọn / mở rộng */}
-                  {!done && (
-                    <div className="pt-1 border-t border-slate-100">
-                      <button
-                        type="button"
-                        onClick={() => toggleConfig(job.jobId)}
-                        className="w-full py-1.5 flex items-center justify-between text-xs font-bold text-slate-600 hover:text-slate-900"
-                      >
-                        <span className="inline-flex items-center gap-1.5">
-                          <SlidersHorizontal className="w-3.5 h-3.5" />
-                          <span>
-                            {EPUB_GENRES.find((g) => g.id === job.genre)?.label || 'Thể loại'}
-                            {stats.isPdf ? ` · Xuất ${outFmt.toUpperCase()}` : ''}
-                          </span>
-                        </span>
-                        {configOpen ? (
-                          <ChevronUp className="w-4 h-4" />
-                        ) : (
-                          <ChevronDown className="w-4 h-4" />
-                        )}
-                      </button>
-
-                      {configOpen && (
-                        <div className="mt-2.5 space-y-3 pt-2 border-t border-slate-100">
-                          {stats.isPdf && (
-                            <div>
-                              <div className="flex items-center justify-between gap-2 mb-1">
-                                <span className="text-[11px] font-bold text-slate-700 shrink-0">
-                                  Đầu ra
-                                </span>
-                                <span className="text-[11px] font-semibold text-slate-500 tabular-nums truncate">
-                                  Tự động: {stats.pdfTextPagesCount} tr chữ · {stats.pdfVisionPagesCount} tr Vision
-                                </span>
-                              </div>
-                              <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl">
-                                {(['epub', 'pdf'] as PdfOutputFormat[]).map((fmt) => (
-                                  <button
-                                    key={fmt}
-                                    type="button"
-                                    disabled={lockedConfig || isPackaging}
-                                    onClick={() =>
-                                      void updateQueuedJobConfig(job.jobId, {
-                                        pdfOutputFormat: fmt,
-                                      })
-                                    }
-                                    className={`min-h-[38px] rounded-lg text-xs font-bold uppercase transition ${
-                                      outFmt === fmt
-                                        ? 'bg-white text-[#0284C7] shadow-xs'
-                                        : 'text-slate-600'
-                                    } disabled:opacity-60`}
-                                  >
-                                    {fmt}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                            <div>
-                              <span className="block text-[11px] font-bold text-slate-700 mb-1">
-                                Thể loại
-                              </span>
-                              <select
-                                value={job.genre}
-                                disabled={lockedConfig}
-                                onChange={(e) => {
-                                  const val = e.target.value as EpubGenreId;
-                                  setDefaultGenre(val);
-                                  void updateQueuedJobConfig(job.jobId, { genre: val });
-                                }}
-                                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs sm:text-sm font-semibold text-slate-800 disabled:bg-slate-50"
-                              >
-                                {EPUB_GENRES.map((g) => (
-                                  <option key={g.id} value={g.id}>
-                                    {g.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-
-                            <div>
-                              <span className="block text-[11px] font-bold text-slate-700 mb-1">
-                                Ghi chú dịch
-                              </span>
-                              <input
-                                type="text"
-                                disabled={lockedConfig}
-                                value={job.customNotes}
-                                onChange={(e) =>
-                                  void updateQueuedJobConfig(job.jobId, {
-                                    customNotes: e.target.value,
-                                  })
+                          {job.lastSavedFileUri && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openSavedEpubFile(
+                                    job.lastSavedFileUri,
+                                    job.lastSavedFileName
+                                  )
                                 }
-                                placeholder="Xưng hô, tên riêng, thuật ngữ..."
-                                className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 disabled:bg-slate-50"
-                              />
-                            </div>
-                          </div>
-                        </div>
+                                title="Mở sách"
+                                aria-label="Mở sách"
+                                className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-center active:scale-95 transition"
+                              >
+                                <ExternalLink className="w-4 h-4 text-[#0284C7]" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  shareSavedEpubFile(
+                                    job.lastSavedFileUri,
+                                    displayTitle || job.lastSavedFileName
+                                  )
+                                }
+                                title="Chia sẻ"
+                                aria-label="Chia sẻ"
+                                className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-center active:scale-95 transition"
+                              >
+                                <Share2 className="w-4 h-4 text-[#0284C7]" />
+                              </button>
+                            </>
+                          )}
+                        </>
+                      )}
+
+                      {!isActive && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => toggleConfig(job.jobId)}
+                            title="Tùy chọn"
+                            aria-label="Tùy chọn"
+                            className={`min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center transition ${
+                              configOpen
+                                ? 'bg-slate-100 text-slate-900'
+                                : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <SlidersHorizontal className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void removeQueuedJob(job.jobId)}
+                            title="Xóa"
+                            aria-label="Xóa"
+                            className="min-w-[44px] min-h-[44px] rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Thanh tiến độ gọn (chỉ hiện khi đang dịch, tạm dừng, lỗi hoặc hoàn tất) */}
+                  {showProgressBar && (
+                    <div className="space-y-1">
+                      <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 rounded-full ${
+                            done
+                              ? 'bg-[#10B981]'
+                              : job.status === 'error'
+                              ? 'bg-rose-500'
+                              : isActive
+                              ? 'bg-[#0284C7]'
+                              : 'bg-amber-500'
+                          }`}
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
+                      {isActive && activeProg?.statusMessage && (
+                        <p className="text-[11px] font-medium text-[#0284C7] truncate tabular-nums">
+                          {activeProg.statusMessage}
+                        </p>
                       )}
                     </div>
                   )}
 
-                  {/* Hàng 4: Nút thao tác theo từng cuốn */}
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    {!done && !queue.isRunning && (
-                      <button
-                        type="button"
-                        onClick={() => void startOrResumeBookQueue(job.jobId)}
-                        className="min-h-[42px] px-4 py-2 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-current" />
-                        <span>
-                          {stats.completedChunks > 0 ? 'Tiếp tục cuốn này' : 'Dịch từ cuốn này'}
-                        </span>
-                      </button>
-                    )}
+                  {job.lastError && !isActive && !done && (
+                    <p className="text-xs text-rose-600 font-medium truncate">
+                      {job.lastError}
+                    </p>
+                  )}
 
-                    {!done && stats.completedChunks > 0 && !isActive && (
-                      <button
-                        type="button"
-                        onClick={() => void resetQueuedJob(job.jobId)}
-                        className="min-h-[42px] px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>Dịch lại</span>
-                      </button>
-                    )}
+                  {/* Bảng tùy chọn thu gọn theo từng file */}
+                  {configOpen && !isActive && (
+                    <div className="pt-2.5 border-t border-slate-100 space-y-2.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <select
+                          aria-label="Thể loại"
+                          value={job.genre}
+                          onChange={(e) => {
+                            const val = e.target.value as EpubGenreId;
+                            setDefaultGenre(val);
+                            void updateQueuedJobConfig(job.jobId, { genre: val });
+                          }}
+                          className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800"
+                        >
+                          {EPUB_GENRES.map((g) => (
+                            <option key={g.id} value={g.id}>
+                              {g.label}
+                            </option>
+                          ))}
+                        </select>
 
-                    {done && (
-                      <>
-                        {job.lastSavedLocation && (
-                          <p className="w-full text-xs text-emerald-800 flex items-center gap-1.5 break-all">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
-                            <FolderCheck className="w-3.5 h-3.5 shrink-0" />
-                            <span>{job.lastSavedLocation}</span>
-                          </p>
-                        )}
+                        <input
+                          type="text"
+                          aria-label="Ghi chú dịch"
+                          value={job.customNotes}
+                          onChange={(e) =>
+                            void updateQueuedJobConfig(job.jobId, {
+                              customNotes: e.target.value,
+                            })
+                          }
+                          placeholder="Ghi chú: xưng hô, tên riêng..."
+                          className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs text-slate-800 placeholder:text-slate-400"
+                        />
+                      </div>
 
-                        {stats.isPdf && (
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        {stats.isPdf ? (
                           <div className="inline-flex p-0.5 bg-slate-100 rounded-xl">
                             {(['epub', 'pdf'] as PdfOutputFormat[]).map((fmt) => (
                               <button
@@ -675,7 +584,7 @@ export const EpubTranslatorView: React.FC = () => {
                                     pdfOutputFormat: fmt,
                                   })
                                 }
-                                className={`min-h-[38px] px-3 rounded-lg text-xs font-bold uppercase ${
+                                className={`min-h-[38px] px-3 rounded-lg text-xs font-bold uppercase transition ${
                                   outFmt === fmt
                                     ? 'bg-white text-[#0284C7] shadow-xs'
                                     : 'text-slate-600'
@@ -685,72 +594,50 @@ export const EpubTranslatorView: React.FC = () => {
                               </button>
                             ))}
                           </div>
+                        ) : (
+                          <span />
                         )}
 
-                        <button
-                          type="button"
-                          disabled={isPackaging}
-                          onClick={() =>
-                            void exportBookJobToDevice(job.jobId, {
-                              outputFormat: outFmt,
-                            })
-                          }
-                          className="min-h-[42px] px-4 py-2 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>
-                            {isPackaging
-                              ? 'Đang xuất...'
-                              : job.lastSavedLocation
-                              ? 'Xuất lại'
-                              : 'Lưu vào Download'}
-                          </span>
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          {!done && queue.jobs.length > 1 && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                onClick={() => void moveQueuedJob(job.jobId, 'up')}
+                                title="Lên"
+                                aria-label="Chuyển lên"
+                                className="min-w-[40px] min-h-[40px] rounded-xl border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-600 flex items-center justify-center"
+                              >
+                                <ArrowUp className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idx === queue.jobs.length - 1}
+                                onClick={() => void moveQueuedJob(job.jobId, 'down')}
+                                title="Xuống"
+                                aria-label="Chuyển xuống"
+                                className="min-w-[40px] min-h-[40px] rounded-xl border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-600 flex items-center justify-center"
+                              >
+                                <ArrowDown className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
 
-                        {job.lastSavedFileUri && (
-                          <>
+                          {(done || stats.completedChunks > 0) && !queue.isRunning && (
                             <button
                               type="button"
-                              onClick={() =>
-                                openSavedEpubFile(
-                                  job.lastSavedFileUri,
-                                  job.lastSavedFileName
-                                )
-                              }
-                              className="min-h-[42px] px-3.5 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95"
+                              onClick={() => void resetQueuedJob(job.jobId)}
+                              className="min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap"
                             >
-                              <ExternalLink className="w-3.5 h-3.5 text-[#0284C7]" />
-                              <span>Mở sách</span>
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>Dịch lại</span>
                             </button>
-
-                            <button
-                              type="button"
-                              onClick={() =>
-                                shareSavedEpubFile(
-                                  job.lastSavedFileUri,
-                                  displayTitle || job.lastSavedFileName
-                                )
-                              }
-                              className="min-h-[42px] px-3.5 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95"
-                            >
-                              <Share2 className="w-3.5 h-3.5 text-[#0284C7]" />
-                              <span>Chia sẻ</span>
-                            </button>
-                          </>
-                        )}
-
-                        <button
-                          type="button"
-                          disabled={queue.isRunning}
-                          onClick={() => void resetQueuedJob(job.jobId)}
-                          className="min-h-[42px] px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>Dịch lại</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

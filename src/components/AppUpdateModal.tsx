@@ -1,10 +1,27 @@
 import React, { useState } from 'react';
 import { ArrowUpCircle, X, Download, CheckCircle2, Loader2 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
+import { Browser } from '@capacitor/browser';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { FileOpener } from '@capacitor-community/file-opener';
 import { Share } from '@capacitor/share';
 import { IS_BUILD_AAB } from '../config/buildConfig';
+
+async function openExternalUrl(url: string): Promise<void> {
+  if (!url) return;
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await Browser.open({ url });
+      return;
+    } catch (err) {
+      console.warn('Browser.open failed, fallback to location:', err);
+    }
+  }
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!opened) {
+    window.location.href = url;
+  }
+}
 
 export interface UpdateInfo {
   version: string;
@@ -159,7 +176,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
             });
           } catch (shareErr) {
             console.warn('Share intent error, open in browser:', shareErr);
-            window.open(targetLink, '_system') || (window.location.href = targetLink);
+            await openExternalUrl(targetLink);
           }
         }
 
@@ -167,7 +184,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
         onClose();
       } else {
         setDownloadProgress(100);
-        window.open(targetLink, '_blank') || (window.location.href = targetLink);
+        await openExternalUrl(targetLink);
         setIsDownloading(false);
         onClose();
       }
@@ -175,9 +192,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
       console.error('Update download error:', err);
       setStatusMessage('Chuyển sang trình duyệt...');
       setTimeout(() => {
-        try {
-          window.open(targetLink, '_system') || (window.location.href = targetLink);
-        } catch {}
+        void openExternalUrl(targetLink).catch(() => {});
         setIsDownloading(false);
       }, 800);
     }
@@ -238,7 +253,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
                 type="button"
                 onClick={() => {
                   const targetLink = updateInfo.apkUrl || updateInfo.downloadUrl;
-                  if (targetLink) window.open(targetLink, '_system') || (window.location.href = targetLink);
+                  if (targetLink) void openExternalUrl(targetLink);
                 }}
                 className="text-xs text-[#0284C7] hover:underline font-semibold cursor-pointer"
               >

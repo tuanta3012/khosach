@@ -698,7 +698,8 @@ async function resolveOutlineChapters(
 export async function parseDigitalPdfFile(
   arrayBuffer: ArrayBuffer,
   fileName: string,
-  onProgress?: (currentPage: number, totalPages: number) => void
+  onProgress?: (currentPage: number, totalPages: number) => void,
+  stopSignal?: { current: boolean }
 ): Promise<ParsedPdfData> {
   const bytesCopy = new Uint8Array(arrayBuffer.slice(0));
   const loadingTask = pdfjsLib.getDocument({ data: bytesCopy });
@@ -714,6 +715,7 @@ export async function parseDigitalPdfFile(
     const sampleCount = Math.min(5, totalPages);
     let sampleCharCount = 0;
     for (let p = 1; p <= sampleCount; p++) {
+      if (stopSignal?.current) throw new Error('Đã hủy tách trang theo yêu cầu.');
       const page = await pdfDoc.getPage(p);
       const tc = await page.getTextContent();
       const text = tc.items
@@ -768,6 +770,9 @@ export async function parseDigitalPdfFile(
     const fontSizeFreq = new Map<number, number>();
 
     for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+      if (stopSignal?.current) {
+        throw new Error('Đã hủy tách trang theo yêu cầu.');
+      }
       if (onProgress) onProgress(pageNumber, totalPages);
 
       const page = await pdfDoc.getPage(pageNumber);
@@ -843,9 +848,7 @@ export async function parseDigitalPdfFile(
         hasMathOrGarbled,
       });
 
-      if (pageNumber % 4 === 0) {
-        await yieldToEventLoop();
-      }
+      await new Promise((r) => setTimeout(r, 15));
     }
 
     // Tính fontSize thân bài chủ đạo

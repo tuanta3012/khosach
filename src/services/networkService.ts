@@ -1,5 +1,5 @@
 import { Network, ConnectionStatus } from '@capacitor/network';
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
 export interface DetailedNetworkStatus {
   hasPhysicalConnection: boolean;
@@ -47,7 +47,6 @@ export async function checkRealInternetAccess(timeoutMs = 4000): Promise<boolean
   // Trên thiết bị Native Android/iOS, sử dụng CapacitorHttp để bypass CORS và đo chính xác HTTP status
   if (Capacitor.isNativePlatform()) {
     try {
-      const { CapacitorHttp } = await import('@capacitor/core');
       const res = await CapacitorHttp.request({
         url: pingUrl,
         method: 'GET',

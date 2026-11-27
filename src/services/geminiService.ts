@@ -37,6 +37,7 @@ import {
 } from './curationLearningService';
 
 const KEYS_STORAGE_KEY = 'gemini_api_keys_v1';
+const SHARED_KEYS_STORAGE_KEY = 'gemini_shared_keys_v1';
 const MODEL_STORAGE_KEY = 'gemini_selected_model_v1';
 
 export const AVAILABLE_GEMINI_MODELS: GeminiModelInfo[] = [
@@ -345,12 +346,14 @@ export function getServerVirtualKeys(): string[] {
 
 export function getEffectiveGeminiKeys(): string[] {
   const personal = getStoredGeminiApiKeys();
-  if (personal.length > 0) return personal;
+  const shared = getStoredSharedGeminiApiKeys();
+  const combined = Array.from(new Set([...personal, ...shared]));
+  if (combined.length > 0) return combined;
   return getServerVirtualKeys();
 }
 
 export async function ensureGeminiAccessAvailable(): Promise<boolean> {
-  if (getStoredGeminiApiKeys().length > 0) return true;
+  if (getStoredGeminiApiKeys().length > 0 || getStoredSharedGeminiApiKeys().length > 0) return true;
   if (!serverStatusCache.checked) {
     await refreshServerGeminiStatus();
   }
@@ -401,6 +404,39 @@ export function saveStoredGeminiApiKeys(keys: string[]): void {
   } catch (err) {
     console.error('[GeminiService] Lỗi lưu API Key:', err);
   }
+}
+
+export function getStoredSharedGeminiApiKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(SHARED_KEYS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return Array.from(new Set(parsed.map((k: string) => String(k || '').trim()).filter(Boolean)));
+      }
+    }
+  } catch {}
+  return [];
+}
+
+export function saveStoredSharedGeminiApiKeys(keys: string[]): void {
+  try {
+    const cleanKeys = Array.from(new Set((keys || []).map((k) => String(k || '').trim()).filter(Boolean)));
+    if (cleanKeys.length > 0) {
+      localStorage.setItem(SHARED_KEYS_STORAGE_KEY, JSON.stringify(cleanKeys));
+    } else {
+      localStorage.removeItem(SHARED_KEYS_STORAGE_KEY);
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('gemini-keys-updated'));
+    }
+  } catch (err) {
+    console.warn('[GeminiService] Lỗi lưu Shared API Key:', err);
+  }
+}
+
+export function clearStoredSharedGeminiApiKeys(): void {
+  saveStoredSharedGeminiApiKeys([]);
 }
 
 export function getStoredSelectedModel(): string {
@@ -936,7 +972,7 @@ export async function executeWithFailover(
     throw new Error('CLIENT_ABORTED');
   }
 
-  if (!options.keys && getStoredGeminiApiKeys().length === 0 && !serverStatusCache.checked) {
+  if (!options.keys && getStoredGeminiApiKeys().length === 0 && getStoredSharedGeminiApiKeys().length === 0 && !serverStatusCache.checked) {
     await refreshServerGeminiStatus();
   }
   const keys = (options.keys || getEffectiveGeminiKeys()).map((key) => key.trim()).filter(Boolean);
