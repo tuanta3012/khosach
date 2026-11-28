@@ -1,13 +1,14 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { PDFDocument } from 'pdf-lib';
 import JSZip from 'jszip';
 import {
   BookExportProgress,
   ParsedPdfData,
   PdfBlockTag,
   PdfChapterInfo,
+  PdfExportRenderMode,
   PdfExtractedAsset,
+  PdfFigureBox,
   PdfParsedPage,
   PdfProcessingMode,
   PdfTranslatedBlock,
@@ -22,7 +23,18 @@ import {
   PdfParserRuntimeAdapter,
   yieldToEventLoopFast,
 } from './pdfDigitalParserCore';
+import {
+  exportTranslatedDigitalPdfCore,
+  exportTranslatedPdfCore,
+  PdfExportCanvasLike,
+  PdfExportDrawable,
+  PdfExportRuntimeAdapter,
+} from './pdfExportCore';
 import type { PdfWorkerRequest, PdfWorkerResponse } from '../workers/pdfDigitalWorker';
+import type {
+  PdfExportWorkerRequest,
+  PdfExportWorkerResponse,
+} from '../workers/pdfExportWorker';
 import {
   acquireBackgroundKeepAlive,
   releaseBackgroundKeepAlive,
@@ -40,7 +52,7 @@ const MAX_TEXT_CHUNK_BLOCKS = 32;
 const MAX_TEXT_CHUNK_PAGES = 5;
 
 function yieldToEventLoop(): Promise<void> {
-  return yieldToEventLoopFast();
+  return yieldToEventLoopFast(true);
 }
 
 function escapeXml(text: string): string {
@@ -558,9 +570,93 @@ function wrapBlockXhtml(tag: PdfBlockTag, innerHtml: string): string {
   }
 }
 
+async function extractAssetsInWorker(
+  pdfBuffer: ArrayBuffer,
+  pages: Array<{ pageNumber: number; figureBoxes: PdfFigureBox[] }>,
+  onProgress?: (progress: BookExportProgress) => void
+): Promise<Record<string, PdfExtractedAsset>> {
+  const worker = new Worker(
+    new URL('../workers/pdfDigitalWorker.ts', import.meta.url),
+    { type: 'module' }
+  );
+  const jobId = nextWorkerJobId++;
+
+  return new Promise<Record<string, PdfExtractedAsset>>((resolve, reject) => {
+    let settled = false;
+    let lastActivityAt = Date.now();
+
+    const cleanup = (watchdog: ReturnType<typeof setInterval>) => {
+      clearInterval(watchdog);
+      worker.onmessage = null;
+      worker.onerror = null;
+      try {
+        worker.terminate();
+      } catch {}
+    };
+
+    const watchdog = setInterval(() => {
+      if (!settled && Date.now() - lastActivityAt > 45_000) {
+        settled = true;
+        cleanup(watchdog);
+        reject(new WorkerFallbackError('Worker trích xuất ảnh bị quá thời gian chờ.'));
+      }
+    }, 2000);
+
+    worker.onmessage = (event: MessageEvent<PdfWorkerResponse>) => {
+      const msg = event.data;
+      if (!msg || msg.id !== jobId || settled) return;
+      lastActivityAt = Date.now();
+
+      if (msg.type === 'progress') {
+        const pct = 2 + Math.round((msg.currentPage / Math.max(1, msg.totalPages)) * 10);
+        onProgress?.({
+          stage: `Đang trích xuất hình ảnh (${msg.currentPage}/${msg.totalPages})...`,
+          current: msg.currentPage,
+          total: msg.totalPages,
+          percent: pct,
+        });
+        return;
+      }
+
+      if (msg.type === 'assets-done') {
+        settled = true;
+        cleanup(watchdog);
+        resolve(msg.assets);
+        return;
+      }
+
+      if (msg.type === 'error') {
+        settled = true;
+        cleanup(watchdog);
+        if (msg.canFallbackToMainThread) {
+          reject(new WorkerFallbackError(msg.message));
+        } else {
+          reject(new Error(msg.message));
+        }
+      }
+    };
+
+    worker.onerror = (err: ErrorEvent) => {
+      if (settled) return;
+      settled = true;
+      cleanup(watchdog);
+      reject(new WorkerFallbackError(err?.message || 'Lỗi Worker trích xuất ảnh PDF.'));
+    };
+
+    const transferableBuffer = pdfBuffer.slice(0);
+    const req: PdfWorkerRequest = {
+      type: 'extract-assets',
+      id: jobId,
+      buffer: transferableBuffer,
+      pages,
+    };
+    worker.postMessage(req, [transferableBuffer]);
+  });
+}
+
 /**
  * Đảm bảo toàn bộ ảnh minh họa cần thiết trong các trang PDF đã được trích xuất
- * trước khi đóng gói EPUB hoặc kết xuất PDF (trích xuất cuốn chiếu không làm chậm quá trình tách trang ban đầu).
+ * trước khi đóng gói EPUB hoặc kết xuất PDF (ưu tiên OffscreenCanvas Worker, tránh nghẽn main thread).
  */
 export async function ensureAssetsExtracted(
   pdfBuffer: ArrayBuffer | undefined,
@@ -581,6 +677,36 @@ export async function ensureAssetsExtracted(
     total: missingPages.length,
     percent: 2,
   });
+
+  const canUseOffscreenWorker =
+    typeof Worker !== 'undefined' &&
+    typeof OffscreenCanvas !== 'undefined' &&
+    typeof OffscreenCanvas.prototype.convertToBlob === 'function';
+
+  if (canUseOffscreenWorker) {
+    try {
+      const workerAssets = await extractAssetsInWorker(
+        pdfBuffer,
+        missingPages.map((p) => ({
+          pageNumber: p.pageNumber,
+          figureBoxes: p.figureBoxes || [],
+        })),
+        onProgress
+      );
+      if (!parsedPdf.assets) {
+        parsedPdf.assets = {};
+      }
+      for (const [id, asset] of Object.entries(workerAssets)) {
+        parsedPdf.assets[id] = asset;
+      }
+      return;
+    } catch (err) {
+      if (!(err instanceof WorkerFallbackError)) {
+        throw err;
+      }
+      console.warn('[PdfExport] Worker trích xuất ảnh fallback về main thread:', err.message);
+    }
+  }
 
   const bytesCopy = new Uint8Array(pdfBuffer.slice(0));
   const loadingTask = pdfjsLib.getDocument({ data: bytesCopy });
@@ -615,7 +741,7 @@ export async function ensureAssetsExtracted(
         total: missingPages.length,
         percent: pct,
       });
-      await yieldToEventLoopFast();
+      await yieldToEventLoopFast(true);
     }
   } finally {
     await loadingTask.destroy().catch(() => {});
@@ -890,78 +1016,9 @@ ${spineRefs}
   }
 }
 
-function wrapTextToLines(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number
-): string[] {
-  const clean = text.replace(/\r/g, '').trim();
-  if (!clean) return [];
-
-  const paragraphs = clean.split('\n');
-  const out: string[] = [];
-
-  for (const para of paragraphs) {
-    const words = para.split(/\s+/).filter(Boolean);
-    if (words.length === 0) {
-      out.push('');
-      continue;
-    }
-
-    let line = '';
-    for (const word of words) {
-      const candidate = line ? `${line} ${word}` : word;
-      if (ctx.measureText(candidate).width <= maxWidth) {
-        line = candidate;
-      } else {
-        if (line) out.push(line);
-        if (ctx.measureText(word).width > maxWidth) {
-          let chunk = '';
-          for (const ch of word) {
-            if (ctx.measureText(chunk + ch).width > maxWidth && chunk) {
-              out.push(chunk);
-              chunk = ch;
-            } else {
-              chunk += ch;
-            }
-          }
-          line = chunk;
-        } else {
-          line = word;
-        }
-      }
-    }
-    if (line) out.push(line);
-  }
-  return out;
-}
-
-function parseTableRowsFromHtml(html: string): Array<Array<{ text: string; isHeader: boolean }>> {
-  if (typeof DOMParser === 'undefined') return [];
-  const wrapped = /<table/i.test(html) ? html : `<table>${html}</table>`;
-  const doc = new DOMParser().parseFromString(wrapped, 'text/html');
-  const rows: Array<Array<{ text: string; isHeader: boolean }>> = [];
-  const trs = Array.from(doc.querySelectorAll('tr'));
-  for (const tr of trs) {
-    const cells = Array.from(tr.querySelectorAll('th, td')).map((cell) => ({
-      text: (cell.textContent || '').replace(/\s+/g, ' ').trim(),
-      isHeader: cell.tagName.toLowerCase() === 'th',
-    }));
-    if (cells.length > 0) rows.push(cells);
-  }
-  return rows;
-}
-
-type DecodedDrawableAsset = {
-  source: CanvasImageSource;
-  width: number;
-  height: number;
-  dispose: () => void;
-};
-
-async function decodeAssetToDrawable(
+async function decodeAssetOnMainThread(
   asset: PdfExtractedAsset
-): Promise<DecodedDrawableAsset | null> {
+): Promise<PdfExportDrawable | null> {
   try {
     const safeBytes = new Uint8Array(asset.data);
     const blob = new Blob([safeBytes], { type: asset.mimeType || 'image/jpeg' });
@@ -1003,327 +1060,269 @@ async function decodeAssetToDrawable(
   }
 }
 
+const mainThreadExportAdapter: PdfExportRuntimeAdapter = {
+  createCanvas: (width: number, height: number): PdfExportCanvasLike => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    return canvas as unknown as PdfExportCanvasLike;
+  },
+  canvasToJpegBlob: (canvas: PdfExportCanvasLike, quality: number): Promise<Blob> => {
+    const htmlCanvas = canvas as unknown as HTMLCanvasElement;
+    return new Promise<Blob>((resolve, reject) => {
+      htmlCanvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error('Không xuất được ảnh từ canvas.'))),
+        'image/jpeg',
+        quality
+      );
+    });
+  },
+  decodeAssetToDrawable: decodeAssetOnMainThread,
+  yieldPage: () => yieldToEventLoopFast(true),
+  isWorker: false,
+};
+
+let cachedPdfFontsPromise: Promise<{ regular: Uint8Array; bold: Uint8Array } | null> | null =
+  null;
+
+async function loadPdfUnicodeFonts(): Promise<{ regular: Uint8Array; bold: Uint8Array } | null> {
+  if (!cachedPdfFontsPromise) {
+    cachedPdfFontsPromise = (async () => {
+      try {
+        const base =
+          (typeof document !== 'undefined' && document.baseURI) ||
+          (typeof window !== 'undefined' && window.location.href) ||
+          'http://localhost/';
+        const regUrl = new URL('fonts/DejaVuSerif.ttf', base).toString();
+        const boldUrl = new URL('fonts/DejaVuSerif-Bold.ttf', base).toString();
+
+        const [regRes, boldRes] = await Promise.all([fetch(regUrl), fetch(boldUrl)]);
+        if (!regRes.ok || !boldRes.ok) {
+          return null;
+        }
+        const [regBuf, boldBuf] = await Promise.all([
+          regRes.arrayBuffer(),
+          boldRes.arrayBuffer(),
+        ]);
+        if (regBuf.byteLength === 0 || boldBuf.byteLength === 0) {
+          return null;
+        }
+        return {
+          regular: new Uint8Array(regBuf),
+          bold: new Uint8Array(boldBuf),
+        };
+      } catch (err) {
+        console.warn('[PdfExport] Không nạp được font Unicode cục bộ:', err);
+        return null;
+      }
+    })();
+  }
+  const result = await cachedPdfFontsPromise;
+  if (!result) {
+    cachedPdfFontsPromise = null;
+  }
+  return result;
+}
+
+async function exportTranslatedPdfInWorker(
+  parsedPdf: ParsedPdfData,
+  translatedPages: Record<number, PdfTranslatedBlock[]>,
+  translatedTitle: string,
+  renderMode: PdfExportRenderMode,
+  fonts: { regular: Uint8Array; bold: Uint8Array } | null,
+  onProgress?: (progress: BookExportProgress) => void,
+  stopSignal?: { current: boolean }
+): Promise<{ blob: Blob; translatedTitle: string }> {
+  const worker = new Worker(
+    new URL('../workers/pdfExportWorker.ts', import.meta.url),
+    { type: 'module' }
+  );
+  const jobId = nextWorkerJobId++;
+
+  return new Promise<{ blob: Blob; translatedTitle: string }>((resolve, reject) => {
+    let settled = false;
+    let lastActivityAt = Date.now();
+
+    const cleanup = (watchdog: ReturnType<typeof setInterval>) => {
+      clearInterval(watchdog);
+      worker.onmessage = null;
+      worker.onerror = null;
+      try {
+        worker.terminate();
+      } catch {}
+    };
+
+    const watchdog = setInterval(() => {
+      if (settled) return;
+
+      if (stopSignal?.current) {
+        settled = true;
+        try {
+          const cancelMsg: PdfExportWorkerRequest = { type: 'cancel', id: jobId };
+          worker.postMessage(cancelMsg);
+        } catch {}
+        cleanup(watchdog);
+        reject(new Error('Đã hủy xuất file PDF.'));
+        return;
+      }
+
+      if (Date.now() - lastActivityAt > 45_000) {
+        settled = true;
+        cleanup(watchdog);
+        reject(new WorkerFallbackError('Worker kết xuất PDF không phản hồi quá 45s.'));
+      }
+    }, 500);
+
+    worker.onmessage = (event: MessageEvent<PdfExportWorkerResponse>) => {
+      const msg = event.data;
+      if (!msg || msg.id !== jobId || settled) return;
+      lastActivityAt = Date.now();
+
+      if (msg.type === 'heartbeat') {
+        return;
+      }
+
+      if (msg.type === 'progress') {
+        onProgress?.(msg.progress);
+        return;
+      }
+
+      if (msg.type === 'done') {
+        settled = true;
+        cleanup(watchdog);
+        resolve({ blob: msg.blob, translatedTitle: msg.translatedTitle });
+        return;
+      }
+
+      if (msg.type === 'error') {
+        settled = true;
+        cleanup(watchdog);
+        if (msg.canFallbackToMainThread && !stopSignal?.current) {
+          reject(new WorkerFallbackError(msg.message));
+        } else {
+          reject(new Error(msg.message));
+        }
+      }
+    };
+
+    worker.onerror = (err: ErrorEvent) => {
+      if (settled) return;
+      settled = true;
+      cleanup(watchdog);
+      if (!stopSignal?.current) {
+        reject(new WorkerFallbackError(err?.message || 'Không khởi chạy được PDF Export Worker.'));
+      } else {
+        reject(new Error(err?.message || 'Lỗi kết xuất PDF trong Worker.'));
+      }
+    };
+
+    if (stopSignal?.current) {
+      settled = true;
+      cleanup(watchdog);
+      reject(new Error('Đã hủy xuất file PDF.'));
+      return;
+    }
+
+    // Không đưa asset ArrayBuffer vào transferables để không làm rỗng dữ liệu ảnh của job trên main thread
+    const req: PdfExportWorkerRequest = {
+      type: 'export',
+      id: jobId,
+      parsedPdf,
+      translatedPages,
+      translatedTitle,
+      renderMode,
+      ...(fonts
+        ? {
+            fontRegularBytes: fonts.regular,
+            fontBoldBytes: fonts.bold,
+          }
+        : {}),
+    };
+    worker.postMessage(req);
+  });
+}
+
 /**
- * Kết xuất bản dịch sang file PDF Unicode tiếng Việt chuẩn A4 sạch đẹp
- * (dựng qua Canvas 2D hỗ trợ đầy đủ dấu tiếng Việt, bảng biểu, code và hình minh họa nhúng -> pdf-lib).
+ * Kết xuất bản dịch sang file PDF Unicode tiếng Việt chuẩn A4:
+ * - Mặc định ('digital'): văn bản vector chọn/bôi đen được kèm ảnh sắc nét (dung lượng nhẹ, chạy nhanh).
+ * - Tùy chọn ('image'): kết xuất từng trang thành ảnh JPEG toàn trang qua Canvas 2D.
+ * Ưu tiên chạy trong Web Worker để không chặn main thread / WebView.
  */
 export async function exportTranslatedPdfFile(
   parsedPdf: ParsedPdfData,
   translatedPages: Record<number, PdfTranslatedBlock[]>,
   originalFileName: string,
   onProgress?: (progress: BookExportProgress) => void,
-  originalPdfBuffer?: ArrayBuffer
+  originalPdfBuffer?: ArrayBuffer,
+  stopSignal?: { current: boolean },
+  renderMode: PdfExportRenderMode = 'digital'
 ): Promise<{ blob: Blob; translatedTitle: string }> {
   await acquireBackgroundKeepAlive();
   try {
     if (originalPdfBuffer) {
       await ensureAssetsExtracted(originalPdfBuffer, parsedPdf, onProgress);
     }
-  const baseName = originalFileName.replace(/\.pdf$/i, '').trim();
-  const translatedTitle = appendVnSuffix(
-    parsedPdf.bookTitle && parsedPdf.bookTitle !== 'Sach_PDF' ? parsedPdf.bookTitle : baseName
-  );
 
-  // Tự động điều chỉnh DPI & nén JPEG theo độ dày sách để tránh tràn RAM / văng WebView Android trên sách >500 trang
-  const estimatedSourcePages = Math.max(
-    parsedPdf.totalPages || 0,
-    Object.keys(translatedPages || {}).length
-  );
-  const PAGE_W =
-    estimatedSourcePages > 450 ? 840 : estimatedSourcePages > 200 ? 960 : 1240;
-  const S = PAGE_W / 1240;
-  const PAGE_H = Math.round(1754 * S);
-  const JPEG_QUALITY =
-    estimatedSourcePages > 450 ? 0.70 : estimatedSourcePages > 200 ? 0.75 : 0.84;
+    const baseName = originalFileName.replace(/\.(pdf|epub)$/i, '').trim();
+    const translatedTitle = appendVnSuffix(
+      parsedPdf.bookTitle && parsedPdf.bookTitle !== 'Sach_PDF' ? parsedPdf.bookTitle : baseName
+    );
 
-  const px = (v: number) => Math.max(1, Math.round(v * S));
-  const MARGIN_X = px(96);
-  const MARGIN_TOP = px(96);
-  const MARGIN_BOTTOM = px(104);
-  const CONTENT_W = PAGE_W - MARGIN_X * 2;
-  const totalChapters = Math.max(1, parsedPdf.chapters.length);
-
-  onProgress?.({
-    stage: 'Đang khởi tạo bộ kết xuất PDF...',
-    current: 0,
-    total: Math.max(1, estimatedSourcePages),
-    percent: 2,
-  });
-
-  const buildPdfBytes = async (): Promise<Uint8Array> => {
-    const pdfDoc = await PDFDocument.create();
-    pdfDoc.setTitle(translatedTitle);
-    pdfDoc.setAuthor(parsedPdf.bookAuthor || 'Khuyết danh');
-
-    const canvas = document.createElement('canvas');
-    canvas.width = PAGE_W;
-    canvas.height = PAGE_H;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    if (!ctx) {
-      throw new Error('Không khởi tạo được bộ kết xuất PDF.');
+    let effectiveMode: PdfExportRenderMode = renderMode;
+    let fonts: { regular: Uint8Array; bold: Uint8Array } | null = null;
+    if (effectiveMode === 'digital') {
+      fonts = await loadPdfUnicodeFonts();
+      if (!fonts) {
+        effectiveMode = 'image';
+      }
     }
 
-    let pageNumber = 0;
-    let cursorY = MARGIN_TOP;
-    let activeChapterIdx = 0;
+    const canUseOffscreenWorker =
+      typeof Worker !== 'undefined' &&
+      (effectiveMode === 'digital' ||
+        (typeof OffscreenCanvas !== 'undefined' &&
+          typeof OffscreenCanvas.prototype.convertToBlob === 'function'));
 
-    const initBlankPage = (drawPageNumber = true) => {
-      pageNumber += 1;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, PAGE_W, PAGE_H);
-      cursorY = MARGIN_TOP;
-      if (drawPageNumber && pageNumber > 1) {
-        ctx.save();
-        ctx.font = `400 ${px(20)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
-        ctx.fillStyle = '#64748b';
-        ctx.textAlign = 'center';
-        ctx.fillText(String(pageNumber - 1), PAGE_W / 2, PAGE_H - px(46));
-        ctx.restore();
-      }
-    };
-
-    const commitCurrentPageToPdf = async () => {
-      const jpegBytes = await canvasToJpegBytes(canvas, JPEG_QUALITY);
-      const embedded = await pdfDoc.embedJpg(jpegBytes);
-      const pdfPage = pdfDoc.addPage([595.28, 841.89]); // A4 pt
-      pdfPage.drawImage(embedded, {
-        x: 0,
-        y: 0,
-        width: 595.28,
-        height: 841.89,
-      });
-
-      const chRatio = (activeChapterIdx + 0.5) / totalChapters;
-      const pct = Math.min(80, Math.max(3, 3 + Math.round(chRatio * 77)));
-      onProgress?.({
-        stage: `Đang kết xuất PDF: trang ${pageNumber} (chương ${Math.min(
-          totalChapters,
-          activeChapterIdx + 1
-        )}/${totalChapters})...`,
-        current: pageNumber,
-        total: Math.max(pageNumber, estimatedSourcePages),
-        percent: pct,
-      });
-
-      // Nhường event loop sau mỗi trang để UI mượt và giải phóng bộ nhớ tạm từng trang
-      await yieldToEventLoop();
-    };
-
-    const ensureSpace = async (neededHeight: number) => {
-      if (cursorY + neededHeight > PAGE_H - MARGIN_BOTTOM) {
-        await commitCurrentPageToPdf();
-        initBlankPage(true);
-      }
-    };
-
-    try {
-      // 1. Trang bìa đơn giản
-      initBlankPage(false);
-      ctx.fillStyle = '#0f172a';
-      ctx.font = `700 ${px(54)}px "Noto Serif", Georgia, serif`;
-      const titleLines = wrapTextToLines(ctx, translatedTitle, CONTENT_W);
-      cursorY = Math.max(px(420), Math.round(PAGE_H * 0.36));
-      for (const line of titleLines) {
-        ctx.fillText(line, MARGIN_X, cursorY);
-        cursorY += px(72);
-      }
-
-      if (parsedPdf.bookAuthor) {
-        cursorY += px(24);
-        ctx.fillStyle = '#475569';
-        ctx.font = `500 ${px(30)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
-        ctx.fillText(parsedPdf.bookAuthor, MARGIN_X, cursorY);
-      }
-
-      await commitCurrentPageToPdf();
-      initBlankPage(true);
-
-      // 2. Kết xuất nội dung các chương
-      for (let chIdx = 0; chIdx < parsedPdf.chapters.length; chIdx++) {
-        activeChapterIdx = chIdx;
-        const ch = parsedPdf.chapters[chIdx];
-        if (chIdx > 0 && cursorY > MARGIN_TOP + px(80)) {
-          await commitCurrentPageToPdf();
-          initBlankPage(true);
+    if (canUseOffscreenWorker) {
+      try {
+        return await exportTranslatedPdfInWorker(
+          parsedPdf,
+          translatedPages,
+          translatedTitle,
+          effectiveMode,
+          fonts,
+          onProgress,
+          stopSignal
+        );
+      } catch (err) {
+        if (stopSignal?.current || !(err instanceof WorkerFallbackError)) {
+          throw err;
         }
-
-        const chBlocks = mergeChapterBlocksAcrossPages(parsedPdf, translatedPages, ch);
-        const hasFirstHeading = chBlocks.some((b) => b.tag === 'h1' || b.tag === 'h2');
-        const blocksToDraw: PdfTranslatedBlock[] =
-          !hasFirstHeading && ch.title
-            ? [{ tag: 'h1', html: ch.title }, ...chBlocks]
-            : chBlocks;
-
-        for (const block of blocksToDraw) {
-          const imgRegex = /`?\[{1,2}\s*PDF_IMG_([a-zA-Z0-9_-]+)\s*\]{1,2}`?/g;
-          const imgTokens = Array.from(block.html.matchAll(imgRegex));
-          const textWithoutTokens = block.html.replace(imgRegex, '').trim();
-
-          if (textWithoutTokens && block.tag !== 'figure') {
-            if (block.tag === 'table') {
-              const rows = parseTableRowsFromHtml(textWithoutTokens);
-              if (rows.length > 0) {
-                const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 1);
-                const colW = CONTENT_W / maxCols;
-                ctx.font = `400 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
-
-                for (const row of rows) {
-                  const cellLineGroups = row.map((cell) => {
-                    ctx.font = cell.isHeader
-                      ? `700 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`
-                      : `400 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
-                    return wrapTextToLines(ctx, cell.text, colW - px(20));
-                  });
-                  const maxLines = cellLineGroups.reduce((m, g) => Math.max(m, g.length), 1);
-                  const rowH = maxLines * px(30) + px(20);
-                  await ensureSpace(rowH + px(6));
-
-                  for (let c = 0; c < maxCols; c++) {
-                    const cell = row[c] || { text: '', isHeader: false };
-                    const cx = MARGIN_X + c * colW;
-                    if (cell.isHeader) {
-                      ctx.fillStyle = '#f1f5f9';
-                      ctx.fillRect(cx, cursorY, colW, rowH);
-                    }
-                    ctx.strokeStyle = '#cbd5e1';
-                    ctx.lineWidth = Math.max(1, 1.5 * S);
-                    ctx.strokeRect(cx, cursorY, colW, rowH);
-
-                    ctx.fillStyle = '#0f172a';
-                    ctx.font = cell.isHeader
-                      ? `700 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`
-                      : `400 ${px(22)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
-                    const lines = cellLineGroups[c] || [];
-                    for (let li = 0; li < lines.length; li++) {
-                      ctx.fillText(lines[li], cx + px(10), cursorY + px(28) + li * px(30));
-                    }
-                  }
-                  cursorY += rowH;
-                }
-                cursorY += px(18);
-              }
-            } else {
-              let fontSpec = `400 ${px(27)}px "Noto Serif", Georgia, serif`;
-              let lineHeight = px(42);
-              let fill = '#1e293b';
-              let indentLeft = 0;
-              let spaceBefore = 0;
-              let spaceAfter = px(18);
-
-              if (block.tag === 'h1') {
-                fontSpec = `700 ${px(40)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
-                lineHeight = px(52);
-                fill = '#0f172a';
-                spaceBefore = px(20);
-                spaceAfter = px(22);
-              } else if (block.tag === 'h2') {
-                fontSpec = `700 ${px(33)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
-                lineHeight = px(44);
-                fill = '#0f172a';
-                spaceBefore = px(16);
-                spaceAfter = px(16);
-              } else if (block.tag === 'h3') {
-                fontSpec = `700 ${px(29)}px "Noto Sans", "Segoe UI", Roboto, sans-serif`;
-                lineHeight = px(40);
-                fill = '#1e293b';
-                spaceBefore = px(12);
-                spaceAfter = px(12);
-              } else if (block.tag === 'blockquote') {
-                fontSpec = `italic ${px(26)}px "Noto Serif", Georgia, serif`;
-                lineHeight = px(40);
-                fill = '#334155';
-                indentLeft = px(28);
-              } else if (block.tag === 'pre') {
-                fontSpec = `400 ${px(22)}px "Courier New", monospace`;
-                lineHeight = px(32);
-                fill = '#0f172a';
-                indentLeft = px(18);
-              } else if (block.tag === 'ul' || block.tag === 'ol') {
-                indentLeft = px(24);
-                spaceAfter = px(12);
-              }
-
-              let plain = stripTagsToPlainText(textWithoutTokens);
-              if (block.tag === 'ul' && !/^[•●▪\-–*]/.test(plain)) {
-                plain = `• ${plain}`;
-              }
-
-              ctx.font = fontSpec;
-              const lines = wrapTextToLines(ctx, plain, CONTENT_W - indentLeft - px(12));
-              if (lines.length > 0) {
-                cursorY += spaceBefore;
-                if (block.tag === 'h1' || block.tag === 'h2' || block.tag === 'h3') {
-                  await ensureSpace(lines.length * lineHeight + px(60));
-                }
-
-                for (let li = 0; li < lines.length; li++) {
-                  await ensureSpace(lineHeight + px(8));
-                  if (block.tag === 'blockquote') {
-                    ctx.fillStyle = '#0284c7';
-                    ctx.fillRect(MARGIN_X + px(6), cursorY - px(24), px(5), lineHeight);
-                  } else if (block.tag === 'pre') {
-                    ctx.fillStyle = '#f1f5f9';
-                    ctx.fillRect(MARGIN_X, cursorY - px(24), CONTENT_W, lineHeight);
-                  }
-                  ctx.fillStyle = fill;
-                  ctx.font = fontSpec;
-                  ctx.fillText(lines[li], MARGIN_X + indentLeft, cursorY);
-                  cursorY += lineHeight;
-                }
-                cursorY += spaceAfter;
-              }
-            }
-          }
-
-          // Vẽ ảnh nhúng nếu có và giải phóng bitmap ngay sau khi vẽ
-          for (const match of imgTokens) {
-            const asset = parsedPdf.assets[match[1]];
-            if (!asset) continue;
-            const drawable = await decodeAssetToDrawable(asset);
-            if (!drawable) continue;
-
-            try {
-              const maxImgW = CONTENT_W;
-              const maxImgH = Math.round((PAGE_H - MARGIN_TOP - MARGIN_BOTTOM) * 0.72);
-              const scale = Math.min(
-                1.45 * S,
-                maxImgW / Math.max(1, drawable.width),
-                maxImgH / Math.max(1, drawable.height)
-              );
-              const drawW = Math.max(1, Math.round(drawable.width * scale));
-              const drawH = Math.max(1, Math.round(drawable.height * scale));
-
-              await ensureSpace(drawH + px(28));
-              const drawX = MARGIN_X + Math.round((CONTENT_W - drawW) / 2);
-              ctx.drawImage(drawable.source, drawX, cursorY, drawW, drawH);
-              cursorY += drawH + px(22);
-            } finally {
-              drawable.dispose();
-            }
-          }
-        }
+        console.warn('[PdfExport] Worker kết xuất PDF fallback về main thread:', err.message);
       }
-
-      await commitCurrentPageToPdf();
-
-      onProgress?.({
-        stage: `Đang đóng gói tệp PDF (${pageNumber} trang)...`,
-        current: pageNumber,
-        total: pageNumber,
-        percent: 84,
-      });
-      await yieldToEventLoop();
-
-      return await pdfDoc.save({ useObjectStreams: false });
-    } finally {
-      canvas.width = 0;
-      canvas.height = 0;
     }
-  };
 
-  const pdfBytes = await buildPdfBytes();
-  const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
-  return { blob, translatedTitle };
+    if (effectiveMode === 'digital' && fonts) {
+      return await exportTranslatedDigitalPdfCore({
+        parsedPdf,
+        translatedPages,
+        translatedTitle,
+        fontRegularBytes: fonts.regular,
+        fontBoldBytes: fonts.bold,
+        adapter: mainThreadExportAdapter,
+        onProgress,
+        stopSignal,
+      });
+    }
+
+    return await exportTranslatedPdfCore({
+      parsedPdf,
+      translatedPages,
+      translatedTitle,
+      adapter: mainThreadExportAdapter,
+      onProgress,
+      stopSignal,
+    });
   } finally {
     await releaseBackgroundKeepAlive();
   }

@@ -12,21 +12,25 @@ import {
 export const DIGITAL_PDF_PARSER_VERSION = 3;
 
 /**
- * Cơ chế nhường luồng (cooperative multitasking) không bị giới hạn timer clamping (1000ms) trên Android WebView
+ * Cơ chế nhường luồng thực sự (dùng scheduler.yield() hoặc setTimeout(0/16))
+ * Tránh MessageChannel làm nghẽn BeginMainFrame/Choreographer trên Android WebView.
  */
-export function yieldToEventLoopFast(): Promise<void> {
-  if (typeof MessageChannel !== 'undefined') {
-    return new Promise((resolve) => {
-      const channel = new MessageChannel();
-      channel.port1.onmessage = () => {
-        channel.port1.close();
-        channel.port2.close();
-        resolve();
-      };
-      channel.port2.postMessage(null);
-    });
+export async function yieldToEventLoopFast(preferFrameYield = false): Promise<void> {
+  const isMainThread = typeof window !== 'undefined' && typeof document !== 'undefined';
+  if (preferFrameYield && isMainThread) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 16));
+    return;
   }
-  return new Promise((resolve) => setTimeout(resolve, 0));
+
+  const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (typeof sched?.yield === 'function') {
+    try {
+      await sched.yield();
+      return;
+    } catch {}
+  }
+
+  await new Promise<void>((resolve) => setTimeout(resolve, isMainThread && preferFrameYield ? 16 : 0));
 }
 
 export interface PdfCanvasLike {
@@ -1164,7 +1168,9 @@ export async function parseDigitalPdfCore(
       if (onProgress) {
         onProgress(pageNumber, totalPages);
       }
-      await yieldToEventLoopFast();
+      if (!adapter.isWorker || pageNumber % 3 === 0 || pageNumber === totalPages) {
+        await yieldToEventLoopFast(!adapter.isWorker && pageNumber % 2 === 0);
+      }
     }
 
     let bodyFontSize = 11;

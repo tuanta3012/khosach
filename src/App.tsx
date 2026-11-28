@@ -1828,7 +1828,7 @@ export default function App() {
     : DEFAULT_CATEGORIES;
 
   return (
-    <div className="min-h-screen bg-[#f1f5f9] text-slate-900 flex flex-col font-sans pb-11 xl:pb-0">
+    <div className="min-h-screen bg-[#f1f5f9] text-slate-900 flex flex-col font-sans pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] xl:pb-0">
       {/* Navbar Header & Bottom Dock */}
       <Navbar
         currentTab={currentTab}
@@ -1852,7 +1852,7 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-5 overflow-x-hidden">
         {currentTab === 'table' && (
           <BookTableView
             books={books}

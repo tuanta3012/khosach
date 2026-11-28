@@ -7,8 +7,6 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import {
-  ArrowDown,
-  ArrowUp,
   Download,
   ExternalLink,
   Languages,
@@ -20,11 +18,13 @@ import {
   SlidersHorizontal,
   Trash2,
   Upload,
+  X,
 } from 'lucide-react';
 import {
+  BookOutputFormat,
   EpubGenreId,
   EpubTranslationJob,
-  PdfOutputFormat,
+  PdfExportRenderMode,
 } from '../types';
 import {
   getEpubKeyDiagnostics,
@@ -42,19 +42,29 @@ import {
   getJobElapsedMs,
   initBookQueueManager,
   isJobCompleted,
-  moveQueuedJob,
   pauseBookQueue,
   removeQueuedJob,
   resetQueuedJob,
   startOrResumeBookQueue,
   subscribeBookQueue,
-  updateQueuedJobConfig,
+  updateGlobalQueueSettings,
 } from '../services/bookTranslationQueueManager';
 import {
   openSavedEpubFile,
   shareSavedEpubFile,
 } from '../utils/epubFileSaver';
 import { useToast } from '../context/ToastContext';
+
+const OUTPUT_FORMAT_OPTIONS: Array<{ id: BookOutputFormat; label: string }> = [
+  { id: 'original', label: 'Giữ nguyên' },
+  { id: 'epub', label: 'EPUB' },
+  { id: 'pdf', label: 'PDF' },
+];
+
+const PDF_RENDER_MODE_OPTIONS: Array<{ id: PdfExportRenderMode; label: string }> = [
+  { id: 'digital', label: 'Chữ chọn được' },
+  { id: 'image', label: 'Ảnh toàn trang' },
+];
 
 function formatFileSize(bytes: number): string {
   if (!bytes || bytes <= 0) return '0 KB';
@@ -86,8 +96,15 @@ export const EpubTranslatorView: React.FC = () => {
     getBookQueueSnapshot
   );
 
-  const [defaultGenre, setDefaultGenre] = useState<EpubGenreId>('van-hoc');
-  const [expandedConfigIds, setExpandedConfigIds] = useState<Record<string, boolean>>({});
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [draftGenre, setDraftGenre] = useState<EpubGenreId>(queue.globalSettings.genre);
+  const [draftOutputFormat, setDraftOutputFormat] = useState<BookOutputFormat>(
+    queue.globalSettings.outputFormat
+  );
+  const [draftPdfRenderMode, setDraftPdfRenderMode] = useState<PdfExportRenderMode>(
+    queue.globalSettings.pdfRenderMode || 'digital'
+  );
+
   const [tickNow, setTickNow] = useState<number>(() => Date.now());
   const [keyDiag, setKeyDiag] = useState(() => getEpubKeyDiagnostics());
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -130,28 +147,53 @@ export const EpubTranslatorView: React.FC = () => {
   }, [queue.lastNotice, showToast, refreshKeyDiagnostics]);
 
   useEffect(() => {
-    if (!queue.isRunning) return;
+    if (!queue.isRunning && !queue.packagingJobId) return;
     setTickNow(Date.now());
     const timer = setInterval(() => {
       setTickNow(Date.now());
     }, 1000);
     return () => clearInterval(timer);
-  }, [queue.isRunning, queue.activeJobId]);
+  }, [queue.isRunning, queue.activeJobId, queue.packagingJobId]);
 
   const handleSelectFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = '';
     if (picked.length === 0) return;
 
-    await addFilesToQueue(picked, defaultGenre, '');
+    await addFilesToQueue(picked);
   };
 
-  const toggleConfig = (jobId: string) => {
-    setExpandedConfigIds((prev) => ({
-      ...prev,
-      [jobId]: !prev[jobId],
-    }));
+  const openGlobalSettings = () => {
+    setDraftGenre(queue.globalSettings.genre);
+    setDraftOutputFormat(queue.globalSettings.outputFormat);
+    setDraftPdfRenderMode(queue.globalSettings.pdfRenderMode || 'digital');
+    setIsSettingsOpen(true);
   };
+
+  const handleSaveGlobalSettings = async () => {
+    await updateGlobalQueueSettings({
+      genre: draftGenre,
+      outputFormat: draftOutputFormat,
+      pdfRenderMode: draftPdfRenderMode,
+      customNotes: '',
+    });
+    setIsSettingsOpen(false);
+    showToast('Đã áp dụng cài đặt cho danh sách chờ', 'success');
+  };
+
+  const currentGenreLabel = useMemo(
+    () =>
+      EPUB_GENRES.find((g) => g.id === queue.globalSettings.genre)?.label ||
+      'Văn học / Tiểu thuyết',
+    [queue.globalSettings.genre]
+  );
+
+  const currentOutputLabel = useMemo(
+    () =>
+      OUTPUT_FORMAT_OPTIONS.find((o) => o.id === queue.globalSettings.outputFormat)?.label ||
+      'Giữ nguyên',
+    [queue.globalSettings.outputFormat]
+  );
 
   const completedCount = useMemo(
     () => queue.jobs.filter((j) => j.status === 'completed' || isJobCompleted(j)).length,
@@ -169,7 +211,7 @@ export const EpubTranslatorView: React.FC = () => {
   );
 
   return (
-    <div className="space-y-3 pb-8">
+    <div className="space-y-3 pb-4 w-full max-w-full">
       <input
         ref={fileInputRef}
         type="file"
@@ -179,55 +221,59 @@ export const EpubTranslatorView: React.FC = () => {
         className="hidden"
       />
 
-      {/* Thanh tiêu đề & thao tác chính */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs px-4 py-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
+      {/* Thanh tiêu đề & biểu tượng cài đặt chung bên lề phải */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs px-3.5 py-3 sm:px-4 flex items-center justify-between gap-2.5">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           <div className="w-10 h-10 rounded-xl bg-sky-50 border border-sky-200/80 text-[#0284C7] flex items-center justify-center shrink-0">
             <Languages className="w-5 h-5" />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h2 className="text-sm sm:text-base font-extrabold text-slate-900 truncate">
               Dịch Sách EPUB / PDF
             </h2>
-            <p
-              className={`text-xs font-medium tabular-nums truncate ${
-                keyDiag.totalKeys === 0
-                  ? 'text-rose-600'
-                  : keyDiag.readyKeys > 0
-                  ? 'text-slate-500'
-                  : 'text-amber-600'
-              }`}
-            >
-              {keyDiag.totalKeys === 0
-                ? 'Chưa có API Key'
-                : `${keyDiag.readyKeys}/${keyDiag.totalKeys} Key sẵn sàng`}
+            <p className="text-xs font-medium tabular-nums text-slate-500 leading-snug break-words">
+              <span
+                className={
+                  keyDiag.totalKeys === 0
+                    ? 'text-rose-600 font-semibold'
+                    : keyDiag.readyKeys > 0
+                    ? 'text-slate-600'
+                    : 'text-amber-600 font-semibold'
+                }
+              >
+                {keyDiag.totalKeys === 0
+                  ? 'Chưa có API Key'
+                  : `${keyDiag.readyKeys}/${keyDiag.totalKeys} Key`}
+              </span>
+              <span aria-hidden="true"> · </span>
+              <span>{currentGenreLabel}</span>
+              <span aria-hidden="true"> · </span>
+              <span className="text-[#0284C7] font-semibold">{currentOutputLabel}</span>
             </p>
           </div>
         </div>
 
-        {queue.jobs.length > 0 && (
-          <button
-            type="button"
-            disabled={queue.isParsingFiles}
-            onClick={() => fileInputRef.current?.click()}
-            className="min-h-[44px] px-4 py-2 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Thêm sách</span>
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={openGlobalSettings}
+          title="Cài đặt chung"
+          aria-label="Cài đặt chung"
+          className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-[#0284C7] inline-flex items-center justify-center shrink-0 transition active:scale-95 cursor-pointer"
+        >
+          <SlidersHorizontal className="w-5 h-5" />
+        </button>
       </div>
 
       {/* Tiến trình tách trang PDF */}
       {queue.isParsingFiles && (
-        <div className="bg-sky-50 border border-sky-200 rounded-2xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs sm:text-sm font-bold text-[#0284C7]">
-          <span className="truncate tabular-nums">
+        <div className="bg-sky-50 border border-sky-200 rounded-2xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs sm:text-sm font-bold text-[#0284C7]">
+          <span className="min-w-0 flex-1 break-words tabular-nums">
             {queue.parseStatusText || 'Đang xử lý tệp...'}
           </span>
           <button
             type="button"
             onClick={cancelFileParsing}
-            className="min-h-[38px] px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
+            className="min-h-[40px] px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
           >
             Hủy / Dừng
           </button>
@@ -245,7 +291,7 @@ export const EpubTranslatorView: React.FC = () => {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={queue.isParsingFiles}
-            className="min-h-[48px] px-5 py-3 rounded-2xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-60 text-white text-sm font-bold inline-flex items-center justify-center gap-2 shadow-xs transition active:scale-[0.98] cursor-pointer"
+            className="w-full sm:w-auto min-h-[48px] px-5 py-3 rounded-2xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-60 text-white text-sm font-bold inline-flex items-center justify-center gap-2 shadow-xs transition active:scale-[0.98] cursor-pointer"
           >
             <Upload className="w-4 h-4 shrink-0" />
             <span>
@@ -257,9 +303,9 @@ export const EpubTranslatorView: React.FC = () => {
         </div>
       ) : (
         <>
-          {/* Thanh điều khiển hàng chờ gọn */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs px-3.5 py-2.5 flex items-center justify-between gap-2">
-            <span className="text-xs sm:text-sm font-bold text-slate-700 tabular-nums truncate">
+          {/* Thanh điều khiển hàng chờ - tự xuống dòng gọn trên màn hình hẹp */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3 sm:px-4 sm:py-2.5 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-xs sm:text-sm font-bold text-slate-700 tabular-nums">
               {completedCount}/{queue.jobs.length} hoàn tất
               {queue.packagingJobId
                 ? ' · Đang xuất file'
@@ -268,14 +314,14 @@ export const EpubTranslatorView: React.FC = () => {
                 : ''}
             </span>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2">
               {pendingCount > 0 && !queue.isRunning && (
                 <button
                   type="button"
                   onClick={() => void startOrResumeBookQueue()}
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap"
+                  className="flex-1 sm:flex-initial min-h-[44px] px-4 py-2 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap"
                 >
-                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <Play className="w-3.5 h-3.5 fill-current shrink-0" />
                   <span>
                     {hasPausedOrStartedPending
                       ? `Tiếp tục (${pendingCount})`
@@ -289,27 +335,37 @@ export const EpubTranslatorView: React.FC = () => {
                   type="button"
                   disabled={queue.isStopping}
                   onClick={pauseBookQueue}
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap"
+                  className="flex-1 sm:flex-initial min-h-[44px] px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap"
                 >
-                  <Pause className="w-3.5 h-3.5 fill-current" />
+                  <Pause className="w-3.5 h-3.5 fill-current shrink-0" />
                   <span>{queue.isStopping ? 'Đang dừng...' : 'Tạm dừng'}</span>
                 </button>
               )}
+
+              <button
+                type="button"
+                disabled={queue.isParsingFiles}
+                onClick={() => fileInputRef.current?.click()}
+                className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-1.5 shadow-xs transition active:scale-95 whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4 shrink-0" />
+                <span>Thêm sách</span>
+              </button>
 
               {completedCount > 0 && (
                 <button
                   type="button"
                   onClick={() => void clearCompletedFromQueue()}
-                  className="min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold inline-flex items-center gap-1.5 transition active:scale-95 whitespace-nowrap"
+                  className="min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition active:scale-95 whitespace-nowrap"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Trash2 className="w-3.5 h-3.5 shrink-0" />
                   <span>Xóa xong</span>
                 </button>
               )}
             </div>
           </div>
 
-          {/* Danh sách file gọn */}
+          {/* Danh sách file - chia 2 tầng rõ ràng trên điện thoại để tên sách & nút không chèn ép nhau */}
           <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs divide-y divide-slate-100 overflow-hidden">
             {queue.jobs.map((job, idx) => {
               const isActive = queue.isRunning && queue.activeJobId === job.jobId;
@@ -347,8 +403,6 @@ export const EpubTranslatorView: React.FC = () => {
                 job.parsedData?.bookTitle ||
                 job.fileName.replace(/\.(epub|pdf)$/i, '');
               const displayTitle = done ? appendVnSuffix(rawTitle) : rawTitle;
-              const configOpen = Boolean(expandedConfigIds[job.jobId]);
-              const outFmt: PdfOutputFormat = job.pdfOutputFormat || 'epub';
               const showProgressBar =
                 isTranslatingActive ||
                 isPackaging ||
@@ -359,7 +413,7 @@ export const EpubTranslatorView: React.FC = () => {
               return (
                 <div
                   key={job.jobId}
-                  className={`px-3.5 py-3 space-y-2 transition-colors ${
+                  className={`p-3.5 sm:px-4 sm:py-3 space-y-2.5 transition-colors ${
                     isTranslatingActive || isPackaging
                       ? 'bg-sky-50/50'
                       : done
@@ -367,16 +421,16 @@ export const EpubTranslatorView: React.FC = () => {
                       : 'bg-white'
                   }`}
                 >
-                  {/* Hàng chính: STT + Tên + Metadata rút gọn | Nút thao tác */}
-                  <div className="flex items-center justify-between gap-2.5">
+                  <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+                    {/* Thông tin sách (100% chiều rộng trên điện thoại, không bị ép bởi nút) */}
                     <div className="min-w-0 flex-1">
-                      <h3 className="text-sm font-bold text-slate-900 truncate">
+                      <h3 className="text-sm font-bold text-slate-900 leading-snug line-clamp-2 break-words">
                         <span className="text-slate-400 font-semibold mr-1.5 tabular-nums">
                           {idx + 1}.
                         </span>
                         {displayTitle}
                       </h3>
-                      <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-500 tabular-nums truncate">
+                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-1 text-xs text-slate-500 tabular-nums">
                         <span>
                           {stats.isPdf && job.parsedPdfData
                             ? `PDF · ${job.parsedPdfData.totalPages} tr`
@@ -421,13 +475,14 @@ export const EpubTranslatorView: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1 shrink-0">
+                    {/* Cụm nút thao tác gọn, không tràn viền */}
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
                       {isTranslatingActive && (
                         <button
                           type="button"
                           disabled={queue.isStopping}
                           onClick={pauseBookQueue}
-                          className="min-h-[44px] px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap active:scale-95 transition"
+                          className="min-h-[44px] px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap active:scale-95 transition"
                         >
                           <Pause className="w-3.5 h-3.5 fill-current" />
                           <span>Dừng</span>
@@ -440,7 +495,7 @@ export const EpubTranslatorView: React.FC = () => {
                           onClick={() =>
                             void startOrResumeBookQueue(job.jobId, { singleJobOnly: true })
                           }
-                          className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap active:scale-95 transition"
+                          className="min-h-[44px] px-3.5 py-1.5 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap active:scale-95 transition"
                         >
                           <Play className="w-3.5 h-3.5 fill-current" />
                           <span>{stats.completedChunks > 0 ? 'Tiếp tục' : 'Dịch'}</span>
@@ -452,14 +507,10 @@ export const EpubTranslatorView: React.FC = () => {
                           <button
                             type="button"
                             disabled={isPackaging}
-                            onClick={() =>
-                              void exportBookJobToDevice(job.jobId, {
-                                outputFormat: outFmt,
-                              })
-                            }
-                            className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-75 text-white text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap active:scale-95 transition tabular-nums"
+                            onClick={() => void exportBookJobToDevice(job.jobId)}
+                            className="min-h-[44px] px-3.5 py-1.5 rounded-xl bg-[#0284C7] hover:bg-sky-700 disabled:opacity-75 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap active:scale-95 transition tabular-nums"
                           >
-                            <Download className="w-3.5 h-3.5" />
+                            <Download className="w-3.5 h-3.5 shrink-0" />
                             <span>
                               {isPackaging
                                 ? pkgProg
@@ -506,25 +557,24 @@ export const EpubTranslatorView: React.FC = () => {
 
                       {!isTranslatingActive && !isPackaging && (
                         <>
-                          <button
-                            type="button"
-                            onClick={() => toggleConfig(job.jobId)}
-                            title="Tùy chọn"
-                            aria-label="Tùy chọn"
-                            className={`min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center transition ${
-                              configOpen
-                                ? 'bg-slate-100 text-slate-900'
-                                : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
-                            }`}
-                          >
-                            <SlidersHorizontal className="w-4 h-4" />
-                          </button>
+                          {(done || stats.completedChunks > 0 || job.status === 'error') &&
+                            !queue.isRunning && (
+                              <button
+                                type="button"
+                                onClick={() => void resetQueuedJob(job.jobId)}
+                                title="Dịch lại"
+                                aria-label="Dịch lại"
+                                className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 sm:border-transparent bg-white sm:bg-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition"
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                              </button>
+                            )}
                           <button
                             type="button"
                             onClick={() => void removeQueuedJob(job.jobId)}
                             title="Xóa"
                             aria-label="Xóa"
-                            className="min-w-[44px] min-h-[44px] rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition"
+                            className="min-w-[44px] min-h-[44px] rounded-xl border border-slate-200 sm:border-transparent bg-white sm:bg-transparent text-slate-500 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -563,7 +613,7 @@ export const EpubTranslatorView: React.FC = () => {
                       )}
 
                       {!isPackaging && isTranslatingActive && activeProg?.statusMessage && (
-                        <p className="text-[11px] font-medium text-[#0284C7] truncate tabular-nums">
+                        <p className="text-[11px] font-medium text-[#0284C7] break-words tabular-nums">
                           {activeProg.statusMessage}
                         </p>
                       )}
@@ -575,114 +625,120 @@ export const EpubTranslatorView: React.FC = () => {
                       {job.lastError}
                     </p>
                   )}
-
-                  {/* Bảng tùy chọn thu gọn theo từng file */}
-                  {configOpen && !isTranslatingActive && !isPackaging && (
-                    <div className="pt-2.5 border-t border-slate-100 space-y-2.5">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <select
-                          aria-label="Thể loại"
-                          value={job.genre}
-                          onChange={(e) => {
-                            const val = e.target.value as EpubGenreId;
-                            setDefaultGenre(val);
-                            void updateQueuedJobConfig(job.jobId, { genre: val });
-                          }}
-                          className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800"
-                        >
-                          {EPUB_GENRES.map((g) => (
-                            <option key={g.id} value={g.id}>
-                              {g.label}
-                            </option>
-                          ))}
-                        </select>
-
-                        <input
-                          type="text"
-                          aria-label="Ghi chú dịch"
-                          value={job.customNotes}
-                          onChange={(e) =>
-                            void updateQueuedJobConfig(job.jobId, {
-                              customNotes: e.target.value,
-                            })
-                          }
-                          placeholder="Ghi chú: xưng hô, tên riêng..."
-                          className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs text-slate-800 placeholder:text-slate-400"
-                        />
-                      </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        {stats.isPdf ? (
-                          <div className="inline-flex p-0.5 bg-slate-100 rounded-xl">
-                            {(['epub', 'pdf'] as PdfOutputFormat[]).map((fmt) => (
-                              <button
-                                key={fmt}
-                                type="button"
-                                disabled={isPackaging}
-                                onClick={() =>
-                                  void updateQueuedJobConfig(job.jobId, {
-                                    pdfOutputFormat: fmt,
-                                  })
-                                }
-                                className={`min-h-[38px] px-3 rounded-lg text-xs font-bold uppercase transition ${
-                                  outFmt === fmt
-                                    ? 'bg-white text-[#0284C7] shadow-xs'
-                                    : 'text-slate-600'
-                                }`}
-                              >
-                                {fmt}
-                              </button>
-                            ))}
-                          </div>
-                        ) : (
-                          <span />
-                        )}
-
-                        <div className="flex items-center gap-1.5">
-                          {!done && queue.jobs.length > 1 && (
-                            <>
-                              <button
-                                type="button"
-                                disabled={idx === 0}
-                                onClick={() => void moveQueuedJob(job.jobId, 'up')}
-                                title="Lên"
-                                aria-label="Chuyển lên"
-                                className="min-w-[40px] min-h-[40px] rounded-xl border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-600 flex items-center justify-center"
-                              >
-                                <ArrowUp className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={idx === queue.jobs.length - 1}
-                                onClick={() => void moveQueuedJob(job.jobId, 'down')}
-                                title="Xuống"
-                                aria-label="Chuyển xuống"
-                                className="min-w-[40px] min-h-[40px] rounded-xl border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-35 text-slate-600 flex items-center justify-center"
-                              >
-                                <ArrowDown className="w-4 h-4" />
-                              </button>
-                            </>
-                          )}
-
-                          {(done || stats.completedChunks > 0) && !queue.isRunning && (
-                            <button
-                              type="button"
-                              onClick={() => void resetQueuedJob(job.jobId)}
-                              className="min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold inline-flex items-center gap-1 whitespace-nowrap"
-                            >
-                              <RotateCcw className="w-3.5 h-3.5" />
-                              <span>Dịch lại</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
                 </div>
               );
             })}
           </div>
         </>
+      )}
+
+      {/* Modal cài đặt chung gọn nhẹ áp dụng toàn bộ danh sách chờ */}
+      {isSettingsOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-[1px] flex items-center justify-center p-4"
+          onClick={() => setIsSettingsOpen(false)}
+        >
+          <div
+            className="w-full max-w-[336px] sm:max-w-sm bg-white rounded-2xl shadow-xl border border-slate-200 max-h-[85dvh] overflow-y-auto p-4 space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                Cài đặt chung
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(false)}
+                aria-label="Đóng"
+                className="min-w-[44px] min-h-[44px] -mr-2 rounded-xl text-slate-500 hover:bg-slate-100 flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5">
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700">
+                  Thể loại văn phong dịch
+                </label>
+                <select
+                  value={draftGenre}
+                  onChange={(e) => setDraftGenre(e.target.value as EpubGenreId)}
+                  className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs sm:text-sm font-semibold text-slate-800"
+                >
+                  {EPUB_GENRES.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-700">
+                  Định dạng đầu ra
+                </label>
+                <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl">
+                  {OUTPUT_FORMAT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setDraftOutputFormat(opt.id)}
+                      className={`min-h-[40px] px-2 rounded-lg text-xs font-bold transition ${
+                        draftOutputFormat === opt.id
+                          ? 'bg-white text-[#0284C7] shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {draftOutputFormat !== 'epub' && (
+                <div className="space-y-1">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Kiểu xuất PDF
+                  </label>
+                  <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-xl">
+                    {PDF_RENDER_MODE_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setDraftPdfRenderMode(opt.id)}
+                        className={`min-h-[40px] px-2 rounded-lg text-xs font-bold transition ${
+                          draftPdfRenderMode === opt.id
+                            ? 'bg-white text-[#0284C7] shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(false)}
+                className="flex-1 min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs sm:text-sm font-bold transition"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSaveGlobalSettings()}
+                className="flex-1 min-h-[44px] px-3 py-2 rounded-xl bg-[#0284C7] hover:bg-sky-700 text-white text-xs sm:text-sm font-bold shadow-xs transition active:scale-95"
+              >
+                Áp dụng
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

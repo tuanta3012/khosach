@@ -325,7 +325,16 @@ export interface ParsedEpubData {
 }
 
 export type PdfOutputFormat = 'epub' | 'pdf';
+export type BookOutputFormat = 'original' | 'epub' | 'pdf';
+export type PdfExportRenderMode = 'digital' | 'image';
 export type PdfProcessingMode = 'auto' | 'hybrid-digital' | 'full-vision';
+
+export interface BookQueueGlobalSettings {
+  genre: EpubGenreId;
+  outputFormat: BookOutputFormat;
+  pdfRenderMode: PdfExportRenderMode;
+  customNotes: string;
+}
 
 export type PdfBlockTag =
   | 'h1'

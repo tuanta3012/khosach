@@ -2,10 +2,13 @@ import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import {
   BookExportProgress,
+  BookOutputFormat,
+  BookQueueGlobalSettings,
   EpubGenreId,
   EpubTranslationJob,
   EpubTranslationProgress,
   ParsedEpubData,
+  PdfExportRenderMode,
   PdfOutputFormat,
   PdfProcessingMode,
 } from '../types';
@@ -22,7 +25,11 @@ import {
   sortJobsByQueueOrder,
   updateEpubJobMetadata,
 } from './epubCheckpointDb';
-import { parseEpubFile, reassembleAndPackageEpub } from './epubService';
+import {
+  buildPdfExportInputFromTranslatedEpub,
+  parseEpubFile,
+  reassembleAndPackageEpub,
+} from './epubService';
 import { runParallelEpubTranslation } from './epubTranslatorService';
 import {
   buildPdfTranslationUnits,
@@ -43,6 +50,7 @@ import {
 } from '../utils/epubFileSaver';
 import {
   acquireBackgroundKeepAlive,
+  refreshBackgroundKeepAlive,
   releaseBackgroundKeepAlive,
 } from '../utils/wakeLockService';
 
@@ -56,10 +64,51 @@ export interface BookPackagingProgress extends BookExportProgress {
   jobId: string;
 }
 
+const GLOBAL_SETTINGS_STORAGE_KEY = 'kho_sach_book_translator_global_settings_v1';
+
+const DEFAULT_GLOBAL_SETTINGS: BookQueueGlobalSettings = {
+  genre: 'van-hoc',
+  outputFormat: 'original',
+  pdfRenderMode: 'digital',
+  customNotes: '',
+};
+
+function loadGlobalSettings(): BookQueueGlobalSettings {
+  try {
+    if (typeof localStorage === 'undefined') return { ...DEFAULT_GLOBAL_SETTINGS };
+    const raw = localStorage.getItem(GLOBAL_SETTINGS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_GLOBAL_SETTINGS };
+    const parsed = JSON.parse(raw) as Partial<BookQueueGlobalSettings>;
+    const validFmt: BookOutputFormat =
+      parsed.outputFormat === 'epub' || parsed.outputFormat === 'pdf' || parsed.outputFormat === 'original'
+        ? parsed.outputFormat
+        : 'original';
+    const validRenderMode: PdfExportRenderMode =
+      parsed.pdfRenderMode === 'image' ? 'image' : 'digital';
+    return {
+      genre: parsed.genre || 'van-hoc',
+      outputFormat: validFmt,
+      pdfRenderMode: validRenderMode,
+      customNotes: typeof parsed.customNotes === 'string' ? parsed.customNotes : '',
+    };
+  } catch {
+    return { ...DEFAULT_GLOBAL_SETTINGS };
+  }
+}
+
+function saveGlobalSettings(settings: BookQueueGlobalSettings): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    }
+  } catch {}
+}
+
 export interface BookQueueSnapshot {
   initialized: boolean;
   isLoading: boolean;
   jobs: EpubTranslationJob[];
+  globalSettings: BookQueueGlobalSettings;
   isRunning: boolean;
   isStopping: boolean;
   activeJobId: string | null;
@@ -80,6 +129,7 @@ let state: BookQueueSnapshot = {
   initialized: false,
   isLoading: true,
   jobs: [],
+  globalSettings: loadGlobalSettings(),
   isRunning: false,
   isStopping: false,
   activeJobId: null,
@@ -96,9 +146,6 @@ let state: BookQueueSnapshot = {
 let initPromise: Promise<void> | null = null;
 let stopSignal: { current: boolean } = { current: false };
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-let wakeLockSentinel: WakeLockSentinel | null = null;
-let keepAliveAudioCtx: AudioContext | null = null;
-let keepAliveOscillator: OscillatorNode | null = null;
 let unloadHandlersBound = false;
 
 function emit() {
@@ -215,11 +262,14 @@ function bindUnloadRecoveryHandlers() {
   window.addEventListener('pagehide', handlePageUnload);
   window.addEventListener('beforeunload', handlePageUnload);
 
-  // Tự động xin lại WakeLock nếu người dùng mở lại app trong khi hàng chờ vẫn đang dịch ngầm
+  // Tự động xin lại WakeLock nếu người dùng mở lại app trong khi đang dịch, tách hoặc xuất file
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && state.isRunning) {
-        void acquireBackgroundKeepAlive();
+      if (
+        document.visibilityState === 'visible' &&
+        (state.isRunning || Boolean(state.packagingJobId) || state.isParsingFiles)
+      ) {
+        void refreshBackgroundKeepAlive();
       }
     });
   }
@@ -317,13 +367,15 @@ export function cancelFileParsing(): void {
 
 export async function addFilesToQueue(
   files: File[],
-  defaultGenre: EpubGenreId = 'van-hoc',
-  defaultNotes = ''
+  defaultGenre?: EpubGenreId,
+  defaultNotes?: string
 ): Promise<{ addedCount: number; restoredCount: number; skippedCount: number }> {
   await initBookQueueManager();
   if (!files || files.length === 0) {
     return { addedCount: 0, restoredCount: 0, skippedCount: 0 };
   }
+  const effectiveGenre = defaultGenre ?? state.globalSettings.genre;
+  const effectiveNotes = defaultNotes ?? state.globalSettings.customNotes;
 
   await acquireBackgroundKeepAlive();
   stopParsingRef.current = false;
@@ -374,8 +426,15 @@ export async function addFilesToQueue(
             (existingDb.parsedPdfData.parserVersion || 1) < DIGITAL_PDF_PARSER_VERSION;
 
           if (existingDb && existingDb.parsedPdfData && !needsReparse) {
+            const isDone =
+              existingDb.status === 'completed' || isJobCompleted(existingDb);
+            const resolvedPdfOut: PdfOutputFormat =
+              state.globalSettings.outputFormat === 'epub' ? 'epub' : 'pdf';
             const restored: EpubTranslationJob = {
               ...existingDb,
+              genre: isDone ? existingDb.genre : effectiveGenre,
+              customNotes: isDone ? existingDb.customNotes : effectiveNotes,
+              pdfOutputFormat: resolvedPdfOut,
               queueOrder: existingDb.queueOrder ?? getNextQueueOrder(workingJobs),
               createdAt: existingDb.createdAt ?? existingDb.updatedAt,
               elapsedMs: existingDb.elapsedMs ?? 0,
@@ -409,18 +468,20 @@ export async function addFilesToQueue(
           };
 
           const now = Date.now();
+          const resolvedPdfOut: PdfOutputFormat =
+            state.globalSettings.outputFormat === 'epub' ? 'epub' : 'pdf';
           const newJob: EpubTranslationJob = {
             jobId,
             sourceType: 'pdf',
             fileName: file.name,
             fileSize: file.size,
             lastModified: file.lastModified,
-            genre: existingDb?.genre || defaultGenre,
-            customNotes: existingDb?.customNotes ?? defaultNotes,
+            genre: effectiveGenre,
+            customNotes: effectiveNotes,
             epubBuffer: buffer,
             parsedData: placeholderParsedData,
             translatedSegments: {},
-            pdfOutputFormat: existingDb?.pdfOutputFormat || 'epub',
+            pdfOutputFormat: resolvedPdfOut,
             pdfProcessingMode: initialMode,
             parsedPdfData: parsedPdf,
             pdfUnits: initialUnits,
@@ -448,8 +509,12 @@ export async function addFilesToQueue(
 
           const existingDb = await getEpubJobById(jobId);
           if (existingDb) {
+            const isDone =
+              existingDb.status === 'completed' || isJobCompleted(existingDb);
             const restored: EpubTranslationJob = {
               ...existingDb,
+              genre: isDone ? existingDb.genre : effectiveGenre,
+              customNotes: isDone ? existingDb.customNotes : effectiveNotes,
               queueOrder: existingDb.queueOrder ?? getNextQueueOrder(workingJobs),
               createdAt: existingDb.createdAt ?? existingDb.updatedAt,
               elapsedMs: existingDb.elapsedMs ?? 0,
@@ -479,8 +544,8 @@ export async function addFilesToQueue(
             fileName: file.name,
             fileSize: file.size,
             lastModified: file.lastModified,
-            genre: defaultGenre,
-            customNotes: defaultNotes,
+            genre: effectiveGenre,
+            customNotes: effectiveNotes,
             epubBuffer: buffer,
             parsedData,
             translatedSegments: {},
@@ -533,16 +598,30 @@ export async function addFilesToQueue(
   return { addedCount, restoredCount, skippedCount };
 }
 
+export function resolveEffectiveOutputFormat(
+  job: EpubTranslationJob,
+  requested?: BookOutputFormat
+): 'epub' | 'pdf' {
+  const fmt = requested || state.globalSettings.outputFormat || 'original';
+  if (fmt === 'original') {
+    return job.sourceType === 'pdf' ? 'pdf' : 'epub';
+  }
+  return fmt;
+}
+
 export async function exportBookJobToDevice(
   jobId: string,
-  options?: { outputFormat?: PdfOutputFormat; silentToast?: boolean }
+  options?: { outputFormat?: BookOutputFormat; silentToast?: boolean }
 ): Promise<SavedEpubResult | null> {
+  if (state.packagingJobId === jobId) return null;
   const targetJob = state.jobs.find((j) => j.jobId === jobId) || (await getEpubJobById(jobId));
   if (!targetJob) return null;
 
-  let lastProgressEmitAt = 0;
-  let lastProgressStage = '';
-  let lastProgressPct = -1;
+  const exportStartedAt = Date.now();
+  const exportStopSignal = { current: false };
+  let lastProgressEmitAt = Date.now();
+  let lastProgressStage = 'Đang chuẩn bị xuất tệp...';
+  let lastProgressPct = 1;
 
   const updateExportProgress = (prog: BookExportProgress, force = false) => {
     const now = Date.now();
@@ -573,7 +652,7 @@ export async function exportBookJobToDevice(
     packagingJobId: jobId,
     packagingProgress: {
       jobId,
-      stage: 'Đang chuẩn bị xuất tệp...',
+      stage: lastProgressStage,
       current: 0,
       total: 100,
       percent: 1,
@@ -581,23 +660,49 @@ export async function exportBookJobToDevice(
   });
 
   await acquireBackgroundKeepAlive();
+
+  // Watchdog & heartbeat định kỳ (không phụ thuộc touch event) giữ UI cập nhật và phát hiện treo
+  const packagingWatchdogTimer = setInterval(() => {
+    if (state.packagingJobId !== jobId) return;
+    const now = Date.now();
+    const idleMs = now - lastProgressEmitAt;
+    if (idleMs > 120_000) {
+      exportStopSignal.current = true;
+      return;
+    }
+    if (idleMs >= 1500) {
+      const elapsedSec = Math.max(1, Math.round((now - exportStartedAt) / 1000));
+      const cleanBaseStage = lastProgressStage.replace(/\s*\(\d+s\)$/, '');
+      setState({
+        packagingProgress: {
+          jobId,
+          stage: `${cleanBaseStage} (${elapsedSec}s)`,
+          current: state.packagingProgress?.current ?? 0,
+          total: state.packagingProgress?.total ?? 100,
+          percent: lastProgressPct,
+        },
+      });
+    }
+  }, 1000);
+
   try {
     const isPdfJob = targetJob.sourceType === 'pdf' && Boolean(targetJob.parsedPdfData);
+    const ext = resolveEffectiveOutputFormat(targetJob, options?.outputFormat);
+    const pdfRenderMode: PdfExportRenderMode = state.globalSettings.pdfRenderMode || 'digital';
     let blob: Blob;
     let nextTitle: string;
-    let ext: 'epub' | 'pdf' = 'epub';
 
     if (isPdfJob && targetJob.parsedPdfData) {
-      const outFmt = options?.outputFormat || targetJob.pdfOutputFormat || 'epub';
-      ext = outFmt;
       const finalPdfPages = targetJob.translatedPdfPages || {};
-      if (outFmt === 'pdf') {
+      if (ext === 'pdf') {
         const exported = await exportTranslatedPdfFile(
           targetJob.parsedPdfData,
           finalPdfPages,
           targetJob.fileName,
           (p) => updateExportProgress(p),
-          targetJob.epubBuffer
+          targetJob.epubBuffer,
+          exportStopSignal,
+          pdfRenderMode
         );
         blob = exported.blob;
         nextTitle = exported.translatedTitle;
@@ -612,6 +717,29 @@ export async function exportBookJobToDevice(
         blob = exported.blob;
         nextTitle = exported.translatedTitle;
       }
+    } else if (ext === 'pdf') {
+      updateExportProgress({
+        stage: 'Đang chuyển nội dung & ảnh EPUB sang PDF...',
+        current: 1,
+        total: 100,
+        percent: 2,
+      }, true);
+      const converted = await buildPdfExportInputFromTranslatedEpub(
+        targetJob.parsedData,
+        targetJob.translatedSegments,
+        targetJob.epubBuffer
+      );
+      const exported = await exportTranslatedPdfFile(
+        converted.parsedPdf,
+        converted.translatedPages,
+        targetJob.fileName,
+        (p) => updateExportProgress(p),
+        undefined,
+        exportStopSignal,
+        pdfRenderMode
+      );
+      blob = exported.blob;
+      nextTitle = exported.translatedTitle;
     } else {
       const exported = await reassembleAndPackageEpub(
         targetJob.parsedData,
@@ -660,6 +788,7 @@ export async function exportBookJobToDevice(
     pushNotice(msg, 'error');
     return null;
   } finally {
+    clearInterval(packagingWatchdogTimer);
     if (state.packagingJobId === jobId) {
       setState({ packagingJobId: null, packagingProgress: null });
     }
@@ -667,46 +796,63 @@ export async function exportBookJobToDevice(
   }
 }
 
-export async function updateQueuedJobConfig(
-  jobId: string,
-  updates: Partial<{
-    genre: EpubGenreId;
-    customNotes: string;
-    pdfOutputFormat: PdfOutputFormat;
-    pdfProcessingMode: PdfProcessingMode;
-  }>
+export async function updateGlobalQueueSettings(
+  updates: Partial<BookQueueGlobalSettings>
 ): Promise<void> {
-  if (state.isRunning && state.activeJobId === jobId) return;
-  const target = state.jobs.find((j) => j.jobId === jobId);
-  if (!target) return;
+  const nextSettings: BookQueueGlobalSettings = {
+    genre: updates.genre ?? state.globalSettings.genre,
+    outputFormat: updates.outputFormat ?? state.globalSettings.outputFormat,
+    pdfRenderMode: updates.pdfRenderMode ?? state.globalSettings.pdfRenderMode ?? 'digital',
+    customNotes:
+      typeof updates.customNotes === 'string'
+        ? updates.customNotes
+        : state.globalSettings.customNotes,
+  };
+  saveGlobalSettings(nextSettings);
 
-  let rebuiltUnits = target.pdfUnits;
-  const nextUpdates: Partial<EpubTranslationJob> = { ...updates };
+  const resolvedPdfFmt: PdfOutputFormat =
+    nextSettings.outputFormat === 'epub' ? 'epub' : 'pdf';
+  const now = Date.now();
+  const metadataUpdates: Array<Promise<void>> = [];
 
-  if (
-    updates.pdfProcessingMode &&
-    target.sourceType === 'pdf' &&
-    target.parsedPdfData &&
-    target.completedChunkIds.length === 0
-  ) {
-    rebuiltUnits = buildPdfTranslationUnits(target.parsedPdfData, updates.pdfProcessingMode);
-    nextUpdates.pdfUnits = rebuiltUnits;
-  }
+  const updatedJobs = state.jobs.map((job) => {
+    const isActiveTranslating = state.isRunning && state.activeJobId === job.jobId;
+    const isDone = job.status === 'completed' || isJobCompleted(job);
+    const patch: Partial<EpubTranslationJob> = {};
 
-  updateJobInMemory(jobId, (j) => ({
-    ...j,
-    ...nextUpdates,
-    updatedAt: Date.now(),
-  }));
+    if (job.sourceType === 'pdf' && job.pdfOutputFormat !== resolvedPdfFmt) {
+      patch.pdfOutputFormat = resolvedPdfFmt;
+    }
 
-  await updateEpubJobMetadata(jobId, {
-    ...(updates.genre ? { genre: updates.genre } : {}),
-    ...(typeof updates.customNotes === 'string' ? { customNotes: updates.customNotes } : {}),
-    ...(updates.pdfOutputFormat ? { pdfOutputFormat: updates.pdfOutputFormat } : {}),
-    ...(updates.pdfProcessingMode && rebuiltUnits
-      ? { pdfProcessingMode: updates.pdfProcessingMode, pdfUnits: rebuiltUnits }
-      : {}),
+    if (!isActiveTranslating && !isDone) {
+      if (job.genre !== nextSettings.genre) {
+        patch.genre = nextSettings.genre;
+      }
+      if (job.customNotes !== nextSettings.customNotes) {
+        patch.customNotes = nextSettings.customNotes;
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return job;
+    }
+
+    metadataUpdates.push(updateEpubJobMetadata(job.jobId, patch));
+    return {
+      ...job,
+      ...patch,
+      updatedAt: now,
+    };
   });
+
+  setState({
+    globalSettings: nextSettings,
+    jobs: updatedJobs,
+  });
+
+  if (metadataUpdates.length > 0) {
+    await Promise.all(metadataUpdates);
+  }
 }
 
 export async function resetQueuedJob(jobId: string): Promise<void> {
@@ -955,8 +1101,8 @@ export async function startOrResumeBookQueue(
           job: currentJob,
           parsedPdf: currentJob.parsedPdfData,
           processingMode: currentJob.pdfProcessingMode || 'auto',
-          genre: currentJob.genre,
-          customNotes: currentJob.customNotes,
+          genre: state.globalSettings.genre,
+          customNotes: state.globalSettings.customNotes,
           stopSignal,
           getElapsedMs,
           onProgress: (prog) => {
@@ -1021,8 +1167,8 @@ export async function startOrResumeBookQueue(
       } else {
         const res = await runParallelEpubTranslation({
           job: currentJob,
-          genre: currentJob.genre,
-          customNotes: currentJob.customNotes,
+          genre: state.globalSettings.genre,
+          customNotes: state.globalSettings.customNotes,
           stopSignal,
           getElapsedMs,
           onProgress: (prog) => {

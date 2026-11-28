@@ -4,6 +4,12 @@ import {
   EpubTranslatableSegment,
   EpubTranslationChunk,
   ParsedEpubData,
+  ParsedPdfData,
+  PdfBlockTag,
+  PdfChapterInfo,
+  PdfExtractedAsset,
+  PdfParsedPage,
+  PdfTranslatedBlock,
   SerializedInlineTag,
 } from '../types';
 
@@ -959,3 +965,475 @@ export async function reassembleAndPackageEpub(
 
   return { blob, translatedTitle };
 }
+
+function mapDomTagToPdfBlockTag(host?: Element): PdfBlockTag {
+  if (!host) return 'p';
+  const tag = (host.localName || host.tagName || '').toUpperCase();
+  if (tag === 'H1') return 'h1';
+  if (tag === 'H2') return 'h2';
+  if (tag === 'H3' || tag === 'H4' || tag === 'H5' || tag === 'H6') return 'h3';
+  if (tag === 'BLOCKQUOTE') return 'blockquote';
+  if (tag === 'PRE' || tag === 'CODE') return 'pre';
+  if (tag === 'LI') {
+    const parentTag = (host.parentElement?.localName || host.parentElement?.tagName || '').toUpperCase();
+    return parentTag === 'OL' ? 'ol' : 'ul';
+  }
+  return 'p';
+}
+
+function parsePngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  if (
+    bytes.length >= 24 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const width = view.getUint32(16, false);
+    const height = view.getUint32(20, false);
+    if (width > 0 && height > 0) return { width, height };
+  }
+  return null;
+}
+
+function parseJpegDimensions(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 3 < bytes.length) {
+    if (bytes[i] !== 0xff) {
+      i += 1;
+      continue;
+    }
+    const marker = bytes[i + 1];
+    if (marker === 0xd8 || marker === 0xd9 || marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) {
+      i += 2;
+      continue;
+    }
+    if (i + 3 >= bytes.length) break;
+    const segLen = (bytes[i + 2] << 8) | bytes[i + 3];
+    if (segLen < 2 || i + 2 + segLen > bytes.length) break;
+    if (
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    ) {
+      if (i + 8 < bytes.length) {
+        const height = (bytes[i + 5] << 8) | bytes[i + 6];
+        const width = (bytes[i + 7] << 8) | bytes[i + 8];
+        if (width > 0 && height > 0) return { width, height };
+      }
+      break;
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+async function decodeOrConvertImageToPdfAsset(
+  rawBytes: Uint8Array,
+  rawExtOrMime: string,
+  assetId: string,
+  pageNumber: number
+): Promise<PdfExtractedAsset | null> {
+  if (!rawBytes || rawBytes.byteLength === 0) return null;
+
+  const pngDims = parsePngDimensions(rawBytes);
+  if (pngDims) {
+    return {
+      assetId,
+      pageNumber,
+      fileName: `${assetId}.png`,
+      mimeType: 'image/png',
+      data: rawBytes,
+      width: pngDims.width,
+      height: pngDims.height,
+    };
+  }
+
+  const jpgDims = parseJpegDimensions(rawBytes);
+  if (jpgDims) {
+    return {
+      assetId,
+      pageNumber,
+      fileName: `${assetId}.jpg`,
+      mimeType: 'image/jpeg',
+      data: rawBytes,
+      width: jpgDims.width,
+      height: jpgDims.height,
+    };
+  }
+
+  // Chuyển đổi WEBP / GIF / SVG sang JPEG để nhúng tương thích 100% vào PDF
+  if (typeof document !== 'undefined') {
+    try {
+      const lower = (rawExtOrMime || '').toLowerCase();
+      const mimeGuess = lower.endsWith('.svg')
+        ? 'image/svg+xml'
+        : lower.endsWith('.webp')
+        ? 'image/webp'
+        : lower.endsWith('.gif')
+        ? 'image/gif'
+        : lower.endsWith('.png')
+        ? 'image/png'
+        : 'image/jpeg';
+
+      const safeCopy = new Uint8Array(rawBytes);
+      const blob = new Blob([safeCopy], { type: mimeGuess });
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const el = new Image();
+          el.onload = () => resolve(el);
+          el.onerror = () => reject(new Error('Decode image failed'));
+          el.src = url;
+        });
+        const w = Math.max(1, img.naturalWidth || img.width || 600);
+        const h = Math.max(1, img.naturalHeight || img.height || 400);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        try {
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return null;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          const jpgBlob = await new Promise<Blob | null>((resolve) =>
+            canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.88)
+          );
+          if (!jpgBlob) return null;
+          const jpgBytes = new Uint8Array(await jpgBlob.arrayBuffer());
+          return {
+            assetId,
+            pageNumber,
+            fileName: `${assetId}.jpg`,
+            mimeType: 'image/jpeg',
+            data: jpgBytes,
+            width: w,
+            height: h,
+          };
+        } finally {
+          canvas.width = 0;
+          canvas.height = 0;
+        }
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function getImageSrcFromElement(el: Element): string {
+  const tagUpper = (el.localName || el.tagName || '').toUpperCase();
+  if (tagUpper === 'IMG') {
+    return (el.getAttribute('src') || '').trim();
+  }
+  if (tagUpper === 'SVG') {
+    const imgChild = getElementsByLocalName(el, 'image')[0];
+    if (imgChild) {
+      return (
+        imgChild.getAttribute('href') ||
+        imgChild.getAttribute('xlink:href') ||
+        imgChild.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ||
+        ''
+      ).trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * Chuyển đổi dữ liệu EPUB đã dịch (gồm cả văn bản và toàn bộ ảnh minh họa/bìa)
+ * sang cấu trúc ParsedPdfData + translatedPages để xuất sang PDF.
+ */
+export async function buildPdfExportInputFromTranslatedEpub(
+  parsed: ParsedEpubData,
+  translatedSegments: Record<number, string>,
+  rawBuffer?: ArrayBuffer
+): Promise<{ parsedPdf: ParsedPdfData; translatedPages: Record<number, PdfTranslatedBlock[]> }> {
+  const segsByFile = new Map<string, EpubTranslatableSegment[]>();
+  for (const seg of parsed.segments) {
+    if (seg.kind !== 'html-block') continue;
+    const list = segsByFile.get(seg.filePath) || [];
+    list.push(seg);
+    segsByFile.set(seg.filePath, list);
+  }
+
+  let sourceZip: JSZip | null = null;
+  if (rawBuffer && rawBuffer.byteLength > 0) {
+    try {
+      sourceZip = await JSZip.loadAsync(rawBuffer);
+    } catch {
+      sourceZip = null;
+    }
+  }
+
+  const chapters: PdfChapterInfo[] = [];
+  const pages: PdfParsedPage[] = [];
+  const translatedPages: Record<number, PdfTranslatedBlock[]> = {};
+  const assets: Record<string, PdfExtractedAsset> = {};
+  const pathToAssetId = new Map<string, string>();
+  let nextAssetNum = 1;
+
+  const extractImageAsset = async (
+    htmlDir: string,
+    rawSrc: string,
+    pageNumber: number
+  ): Promise<string | null> => {
+    if (!rawSrc) return null;
+
+    if (rawSrc.startsWith('data:image/')) {
+      const existingId = pathToAssetId.get(rawSrc.slice(0, 180));
+      if (existingId) return existingId;
+      const commaIdx = rawSrc.indexOf(',');
+      if (commaIdx === -1) return null;
+      const meta = rawSrc.slice(5, commaIdx).toLowerCase();
+      if (!meta.includes('base64')) return null;
+      try {
+        const binStr = atob(rawSrc.slice(commaIdx + 1));
+        const bytes = new Uint8Array(binStr.length);
+        for (let k = 0; k < binStr.length; k++) {
+          bytes[k] = binStr.charCodeAt(k);
+        }
+        const assetId = `epub_img_${nextAssetNum++}`;
+        const extHint = meta.includes('png') ? '.png' : meta.includes('webp') ? '.webp' : '.jpg';
+        const asset = await decodeOrConvertImageToPdfAsset(bytes, extHint, assetId, pageNumber);
+        if (!asset) return null;
+        assets[assetId] = asset;
+        pathToAssetId.set(rawSrc.slice(0, 180), assetId);
+        return assetId;
+      } catch {
+        return null;
+      }
+    }
+
+    if (!sourceZip || /^https?:/i.test(rawSrc)) return null;
+    const resolvedPath = resolveEpubPath(htmlDir, rawSrc);
+    if (!resolvedPath) return null;
+
+    const existingId = pathToAssetId.get(resolvedPath.toLowerCase());
+    if (existingId) return existingId;
+
+    const imgEntry = findZipEntry(sourceZip, resolvedPath);
+    if (!imgEntry || imgEntry.dir) return null;
+
+    try {
+      const bytes = await imgEntry.async('uint8array');
+      const assetId = `epub_img_${nextAssetNum++}`;
+      const asset = await decodeOrConvertImageToPdfAsset(bytes, resolvedPath, assetId, pageNumber);
+      if (!asset) return null;
+      assets[assetId] = asset;
+      pathToAssetId.set(resolvedPath.toLowerCase(), assetId);
+      return assetId;
+    } catch {
+      return null;
+    }
+  };
+
+  const spinePaths =
+    parsed.spineFilePaths.length > 0 ? parsed.spineFilePaths : Array.from(segsByFile.keys());
+
+  for (let i = 0; i < spinePaths.length; i++) {
+    const htmlPath = spinePaths[i];
+    const slashIdx = htmlPath.lastIndexOf('/');
+    const htmlDir = slashIdx >= 0 ? htmlPath.slice(0, slashIdx + 1) : '';
+    const pageNumber = i + 1;
+    const fileSegs = segsByFile.get(htmlPath) || [];
+    const blocks: PdfTranslatedBlock[] = [];
+    const pageAssetIds: string[] = [];
+    let chapterTitle = `Phần ${pageNumber}`;
+
+    const entry = sourceZip ? findZipEntry(sourceZip, htmlPath) : undefined;
+    if (entry) {
+      try {
+        const rawHtml = await entry.async('string');
+        const { doc } = parseXhtmlOrHtmlDoc(rawHtml);
+        const slots = collectTranslatableDomSlots(doc);
+
+        const slotByFirstNode = new Map<
+          Node,
+          {
+            slot: ExtractedDomSlot;
+            matchingSeg?: EpubTranslatableSegment;
+            domTagNodes: Map<number, Element>;
+          }
+        >();
+        const slotOwnedNodes = new Set<Node>();
+
+        let segIdx = 0;
+        for (const slot of slots) {
+          const { tokenText, domTagNodes } = serializeNodesToTokenText(slot.nodes);
+          if (!hasTranslatableText(tokenText)) continue;
+          const matchingSeg = fileSegs[segIdx++];
+
+          if (slot.isTitleElement) {
+            if (matchingSeg) {
+              const rawOut = translatedSegments[matchingSeg.segId] || matchingSeg.tokenText || '';
+              const titleText = rawOut
+                .replace(/\[\[(\/?E\d+|V\d+)\]\]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+              if (titleText) chapterTitle = titleText;
+            }
+            continue;
+          }
+
+          if (slot.nodes.length > 0) {
+            slotByFirstNode.set(slot.nodes[0], { slot, matchingSeg, domTagNodes });
+            for (const n of slot.nodes) {
+              slotOwnedNodes.add(n);
+            }
+          }
+        }
+
+        const rootBody = doc.body || doc.documentElement;
+        const walkDom = async (node: Node): Promise<void> => {
+          const slotMatch = slotByFirstNode.get(node);
+          if (slotMatch) {
+            const { slot, matchingSeg, domTagNodes } = slotMatch;
+            if (!matchingSeg) return;
+
+            const imgAssetByTagId = new Map<number, string>();
+            for (const [tagId, el] of domTagNodes.entries()) {
+              const imgSrc = getImageSrcFromElement(el);
+              if (imgSrc) {
+                const assetId = await extractImageAsset(htmlDir, imgSrc, pageNumber);
+                if (assetId) {
+                  imgAssetByTagId.set(tagId, assetId);
+                  if (!pageAssetIds.includes(assetId)) pageAssetIds.push(assetId);
+                }
+              }
+            }
+
+            const rawOut = translatedSegments[matchingSeg.segId] || matchingSeg.tokenText || '';
+            const usedTagIds = new Set<number>();
+            let withImages = rawOut.replace(/\[\[V(\d+)\]\]/g, (_m, idStr) => {
+              const id = Number.parseInt(idStr, 10);
+              const assetId = imgAssetByTagId.get(id);
+              if (assetId) {
+                usedTagIds.add(id);
+                return ` [[PDF_IMG_${assetId}]] `;
+              }
+              return '';
+            });
+
+            for (const [id, assetId] of imgAssetByTagId.entries()) {
+              if (!usedTagIds.has(id)) {
+                withImages += ` [[PDF_IMG_${assetId}]]`;
+              }
+            }
+
+            const cleanText = withImages
+              .replace(/\[\[(\/?E\d+|V\d+)\]\]/g, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+            if (!cleanText) return;
+
+            const tag = mapDomTagToPdfBlockTag(slot.hostElement);
+            if ((tag === 'h1' || tag === 'h2') && chapterTitle === `Phần ${pageNumber}`) {
+              chapterTitle = cleanText.replace(/\[\[PDF_IMG_[a-zA-Z0-9_-]+\]\]/g, '').trim() || chapterTitle;
+            }
+            blocks.push({ tag, html: cleanText });
+            return;
+          }
+
+          if (slotOwnedNodes.has(node)) {
+            return;
+          }
+
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node as Element;
+            const tagUpper = (el.localName || el.tagName || '').toUpperCase();
+            if (SKIP_TAGS.has(tagUpper) && tagUpper !== 'SVG') return;
+
+            const standaloneSrc = getImageSrcFromElement(el);
+            if (standaloneSrc) {
+              const assetId = await extractImageAsset(htmlDir, standaloneSrc, pageNumber);
+              if (assetId) {
+                if (!pageAssetIds.includes(assetId)) pageAssetIds.push(assetId);
+                blocks.push({ tag: 'figure', html: `[[PDF_IMG_${assetId}]]` });
+              }
+              return;
+            }
+
+            const children = Array.from(el.childNodes);
+            for (const child of children) {
+              await walkDom(child);
+            }
+          }
+        };
+
+        if (rootBody) {
+          await walkDom(rootBody);
+        }
+      } catch {
+        // Fallback nếu không parse lại được XHTML gốc
+      }
+    }
+
+    if (blocks.length === 0 && fileSegs.length > 0) {
+      for (const seg of fileSegs) {
+        const rawOut = translatedSegments[seg.segId] || seg.tokenText || '';
+        const cleanText = rawOut
+          .replace(/\[\[(\/?E\d+|V\d+)\]\]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (cleanText) {
+          blocks.push({ tag: 'p', html: cleanText });
+        }
+      }
+    }
+
+    if (blocks.length > 0) {
+      const chIndex = chapters.length;
+      chapters.push({
+        chapterIndex: chIndex,
+        title: chapterTitle,
+        startPage: pageNumber,
+        endPage: pageNumber,
+      });
+      pages.push({
+        pageNumber,
+        chapterIndex: chIndex,
+        chapterTitle,
+        rawDigitalText: blocks.map((b) => b.html).join('\n'),
+        requiresVision: false,
+        hasFigures: pageAssetIds.length > 0,
+        hasTables: false,
+        isMultiColumn: false,
+        assetIds: pageAssetIds,
+        blocks: [],
+      });
+      translatedPages[pageNumber] = blocks;
+    }
+
+    if ((i + 1) % 5 === 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  return {
+    parsedPdf: {
+      bookTitle: parsed.bookTitle || 'Sách EPUB',
+      bookAuthor: parsed.bookAuthor || 'Khuyết danh',
+      bookPublisher: parsed.bookPublisher || '',
+      totalPages: Math.max(1, pages.length),
+      chapters:
+        chapters.length > 0
+          ? chapters
+          : [{ chapterIndex: 0, title: parsed.bookTitle || 'Nội dung', startPage: 1, endPage: 1 }],
+      pages,
+      assets,
+      visionPageCount: 0,
+      textOnlyPageCount: pages.length,
+    },
+    translatedPages,
+  };
+}
+

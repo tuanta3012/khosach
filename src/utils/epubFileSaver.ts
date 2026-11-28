@@ -74,7 +74,7 @@ function triggerWebBlobDownload(blob: Blob, fileName: string): void {
   }, 1500);
 }
 
-const NATIVE_WRITE_CHUNK_BYTES = 1_572_864; // 1.5 MiB (chia hết cho 3 cho base64 sạch)
+const NATIVE_WRITE_CHUNK_BYTES = 786_432; // 768 KiB (chia hết cho 3 cho base64 sạch, giảm tải bridge Android)
 
 function formatMb(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -128,7 +128,7 @@ async function writeBlobToDirectoryChunked(
       offset = end;
       chunkIndex += 1;
       onChunkProgress?.(offset, totalBytes);
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 16));
     }
     return fileUri;
   } catch (err) {
