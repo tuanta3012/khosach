@@ -1161,12 +1161,10 @@ export async function parseDigitalPdfCore(
         hasMathOrGarbled,
       });
 
-      if (pageNumber % 3 === 0 || pageNumber === totalPages) {
-        if (onProgress) {
-          onProgress(pageNumber, totalPages);
-        }
-        await yieldToEventLoopFast();
+      if (onProgress) {
+        onProgress(pageNumber, totalPages);
       }
+      await yieldToEventLoopFast();
     }
 
     let bodyFontSize = 11;

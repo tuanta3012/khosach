@@ -23,6 +23,10 @@ import {
   yieldToEventLoopFast,
 } from './pdfDigitalParserCore';
 import type { PdfWorkerRequest, PdfWorkerResponse } from '../workers/pdfDigitalWorker';
+import {
+  acquireBackgroundKeepAlive,
+  releaseBackgroundKeepAlive,
+} from '../utils/wakeLockService';
 
 export { evaluateHybridVisionNeeded };
 
@@ -179,23 +183,28 @@ export async function parseDigitalPdfFile(
   onProgress?: (currentPage: number, totalPages: number) => void,
   stopSignal?: { current: boolean }
 ): Promise<ParsedPdfData> {
-  const canUseOffscreenWorker =
-    typeof Worker !== 'undefined' &&
-    typeof OffscreenCanvas !== 'undefined' &&
-    typeof OffscreenCanvas.prototype.convertToBlob === 'function';
+  await acquireBackgroundKeepAlive();
+  try {
+    const canUseOffscreenWorker =
+      typeof Worker !== 'undefined' &&
+      typeof OffscreenCanvas !== 'undefined' &&
+      typeof OffscreenCanvas.prototype.convertToBlob === 'function';
 
-  if (canUseOffscreenWorker) {
-    try {
-      return await parseDigitalPdfInWorker(arrayBuffer, fileName, onProgress, stopSignal);
-    } catch (err) {
-      if (stopSignal?.current || !(err instanceof WorkerFallbackError)) {
-        throw err;
+    if (canUseOffscreenWorker) {
+      try {
+        return await parseDigitalPdfInWorker(arrayBuffer, fileName, onProgress, stopSignal);
+      } catch (err) {
+        if (stopSignal?.current || !(err instanceof WorkerFallbackError)) {
+          throw err;
+        }
+        console.warn('[PdfDigital] Worker khởi tạo thất bại, tự động fallback về main thread:', err.message);
       }
-      console.warn('[PdfDigital] Worker khởi tạo thất bại, tự động fallback về main thread:', err.message);
     }
-  }
 
-  return parseDigitalPdfCore(arrayBuffer, fileName, mainThreadAdapter, onProgress, stopSignal);
+    return await parseDigitalPdfCore(arrayBuffer, fileName, mainThreadAdapter, onProgress, stopSignal);
+  } finally {
+    await releaseBackgroundKeepAlive();
+  }
 }
 
 export function buildPdfTranslationUnits(
@@ -620,9 +629,11 @@ export async function reassemblePdfTranslationToEpub(
   onProgress?: (progress: BookExportProgress) => void,
   originalPdfBuffer?: ArrayBuffer
 ): Promise<{ blob: Blob; translatedTitle: string }> {
-  if (originalPdfBuffer) {
-    await ensureAssetsExtracted(originalPdfBuffer, parsedPdf, onProgress);
-  }
+  await acquireBackgroundKeepAlive();
+  try {
+    if (originalPdfBuffer) {
+      await ensureAssetsExtracted(originalPdfBuffer, parsedPdf, onProgress);
+    }
   const baseName = originalFileName.replace(/\.pdf$/i, '').trim();
   const translatedTitle = appendVnSuffix(
     parsedPdf.bookTitle && parsedPdf.bookTitle !== 'Sach_PDF' ? parsedPdf.bookTitle : baseName
@@ -874,6 +885,9 @@ ${spineRefs}
   );
 
   return { blob, translatedTitle };
+  } finally {
+    await releaseBackgroundKeepAlive();
+  }
 }
 
 function wrapTextToLines(
@@ -1000,9 +1014,11 @@ export async function exportTranslatedPdfFile(
   onProgress?: (progress: BookExportProgress) => void,
   originalPdfBuffer?: ArrayBuffer
 ): Promise<{ blob: Blob; translatedTitle: string }> {
-  if (originalPdfBuffer) {
-    await ensureAssetsExtracted(originalPdfBuffer, parsedPdf, onProgress);
-  }
+  await acquireBackgroundKeepAlive();
+  try {
+    if (originalPdfBuffer) {
+      await ensureAssetsExtracted(originalPdfBuffer, parsedPdf, onProgress);
+    }
   const baseName = originalFileName.replace(/\.pdf$/i, '').trim();
   const translatedTitle = appendVnSuffix(
     parsedPdf.bookTitle && parsedPdf.bookTitle !== 'Sach_PDF' ? parsedPdf.bookTitle : baseName
@@ -1308,4 +1324,7 @@ export async function exportTranslatedPdfFile(
   const pdfBytes = await buildPdfBytes();
   const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
   return { blob, translatedTitle };
+  } finally {
+    await releaseBackgroundKeepAlive();
+  }
 }

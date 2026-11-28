@@ -41,6 +41,10 @@ import {
   SavedEpubResult,
   saveTranslatedEpubToDevice,
 } from '../utils/epubFileSaver';
+import {
+  acquireBackgroundKeepAlive,
+  releaseBackgroundKeepAlive,
+} from '../utils/wakeLockService';
 
 export interface QueueNotice {
   id: number;
@@ -166,64 +170,7 @@ export function formatElapsedTime(ms: number): string {
   return `${pad(minutes)}:${pad(seconds)}`;
 }
 
-async function acquireBackgroundKeepAlive(): Promise<void> {
-  // 1. Screen/CPU WakeLock (trình duyệt & Android WebView)
-  try {
-    const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { wakeLock?: { request: (type: 'screen') => Promise<WakeLockSentinel> } }) : null;
-    if (nav?.wakeLock && !wakeLockSentinel) {
-      wakeLockSentinel = await nav.wakeLock.request('screen');
-      wakeLockSentinel.addEventListener?.('release', () => {
-        wakeLockSentinel = null;
-      });
-    }
-  } catch {}
-
-  // 2. Audio im lặng giữ WebView không bị hệ điều hành bóp CPU timer khi chạy ngầm
-  try {
-    if (typeof window !== 'undefined' && !keepAliveAudioCtx) {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (AudioCtx) {
-        const ctx = new AudioCtx();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        gain.gain.value = 0.00001; // Gần như im lặng hoàn toàn
-        osc.frequency.value = 30;
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        if (ctx.state === 'suspended') {
-          await ctx.resume().catch(() => {});
-        }
-        keepAliveAudioCtx = ctx;
-        keepAliveOscillator = osc;
-      }
-    }
-  } catch {}
-}
-
-async function releaseBackgroundKeepAlive(): Promise<void> {
-  if (wakeLockSentinel) {
-    try {
-      await wakeLockSentinel.release();
-    } catch {}
-    wakeLockSentinel = null;
-  }
-  if (keepAliveOscillator) {
-    try {
-      keepAliveOscillator.stop();
-      keepAliveOscillator.disconnect();
-    } catch {}
-    keepAliveOscillator = null;
-  }
-  if (keepAliveAudioCtx) {
-    try {
-      await keepAliveAudioCtx.close();
-    } catch {}
-    keepAliveAudioCtx = null;
-  }
-}
+// Using acquireBackgroundKeepAlive and releaseBackgroundKeepAlive from wakeLockService
 
 async function sendBackgroundNotification(title: string, body: string): Promise<void> {
   if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
@@ -378,6 +325,7 @@ export async function addFilesToQueue(
     return { addedCount: 0, restoredCount: 0, skippedCount: 0 };
   }
 
+  await acquireBackgroundKeepAlive();
   stopParsingRef.current = false;
   setState({ isParsingFiles: true, parseStatusText: `Đang kiểm tra ${files.length} tệp...` });
 
@@ -579,6 +527,7 @@ export async function addFilesToQueue(
     }
   } finally {
     setState({ isParsingFiles: false, parseStatusText: '' });
+    await releaseBackgroundKeepAlive();
   }
 
   return { addedCount, restoredCount, skippedCount };
@@ -631,6 +580,7 @@ export async function exportBookJobToDevice(
     },
   });
 
+  await acquireBackgroundKeepAlive();
   try {
     const isPdfJob = targetJob.sourceType === 'pdf' && Boolean(targetJob.parsedPdfData);
     let blob: Blob;
@@ -713,6 +663,7 @@ export async function exportBookJobToDevice(
     if (state.packagingJobId === jobId) {
       setState({ packagingJobId: null, packagingProgress: null });
     }
+    await releaseBackgroundKeepAlive();
   }
 }
 
