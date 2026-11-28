@@ -64,14 +64,48 @@ function escapeXml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function dataUrlToUint8Array(dataUrl: string): Uint8Array {
+  const commaIdx = dataUrl.indexOf(',');
+  const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+  const binStr = atob(b64);
+  const len = binStr.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binStr.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function canvasToJpegBlobSafe(
+  canvas: HTMLCanvasElement,
+  quality = 0.86
+): Promise<Blob> {
+  try {
+    const blob = await new Promise<Blob | null>((resolve) => {
+      try {
+        canvas.toBlob((b) => resolve(b), 'image/jpeg', quality);
+      } catch {
+        resolve(null);
+      }
+    });
+    if (blob && blob.size >= 32) {
+      return blob;
+    }
+  } catch {}
+
+  const dataUrl = canvas.toDataURL('image/jpeg', quality);
+  if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+    throw new Error('Không xuất được ảnh từ canvas.');
+  }
+  const bytes = dataUrlToUint8Array(dataUrl);
+  if (bytes.byteLength < 32) {
+    throw new Error('Ảnh xuất từ canvas bị rỗng.');
+  }
+  return new Blob([bytes.buffer as ArrayBuffer], { type: 'image/jpeg' });
+}
+
 async function canvasToJpegBytes(canvas: HTMLCanvasElement, quality = 0.86): Promise<Uint8Array> {
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error('Không xuất được ảnh từ canvas.'))),
-      'image/jpeg',
-      quality
-    );
-  });
+  const blob = await canvasToJpegBlobSafe(canvas, quality);
   return new Uint8Array(await blob.arrayBuffer());
 }
 
@@ -84,6 +118,9 @@ export const mainThreadAdapter: PdfParserRuntimeAdapter = {
   },
   canvasToJpegBytes: (canvas: PdfCanvasLike, quality = 0.86) =>
     canvasToJpegBytes(canvas as unknown as HTMLCanvasElement, quality),
+  documentOptions: {
+    isImageDecoderSupported: false,
+  },
   pageYieldMs: 0,
 };
 
@@ -654,9 +691,13 @@ async function extractAssetsInWorker(
   });
 }
 
+function isValidExtractedAsset(asset?: PdfExtractedAsset | null): asset is PdfExtractedAsset {
+  return Boolean(asset && asset.data instanceof Uint8Array && asset.data.byteLength >= 32);
+}
+
 /**
  * Đảm bảo toàn bộ ảnh minh họa cần thiết trong các trang PDF đã được trích xuất
- * trước khi đóng gói EPUB hoặc kết xuất PDF (ưu tiên OffscreenCanvas Worker, tránh nghẽn main thread).
+ * trước khi đóng gói EPUB hoặc kết xuất PDF (ưu tiên OffscreenCanvas Worker, tự động fallback về main thread nếu Worker thiếu/lỗi ảnh).
  */
 export async function ensureAssetsExtracted(
   pdfBuffer: ArrayBuffer | undefined,
@@ -664,17 +705,24 @@ export async function ensureAssetsExtracted(
   onProgress?: (progress: BookExportProgress) => void
 ): Promise<void> {
   if (!pdfBuffer || !parsedPdf.pages) return;
-  const missingPages = parsedPdf.pages.filter((p) => {
-    if (!p.figureBoxes || p.figureBoxes.length === 0) return false;
-    return (p.assetIds || []).some((id) => !parsedPdf.assets?.[id]);
-  });
 
-  if (missingPages.length === 0) return;
+  const findMissingPages = () =>
+    parsedPdf.pages.filter((p) => {
+      if (!p.figureBoxes || p.figureBoxes.length === 0) return false;
+      const expectedIds =
+        p.assetIds && p.assetIds.length > 0
+          ? p.assetIds
+          : p.figureBoxes.map((b, idx) => b.assetId || `p${p.pageNumber}_fig${idx + 1}`);
+      return expectedIds.some((id) => !isValidExtractedAsset(parsedPdf.assets?.[id]));
+    });
+
+  const initialMissingPages = findMissingPages();
+  if (initialMissingPages.length === 0) return;
 
   onProgress?.({
-    stage: `Đang trích xuất hình ảnh (${missingPages.length} trang có ảnh)...`,
+    stage: `Đang trích xuất hình ảnh (${initialMissingPages.length} trang có ảnh)...`,
     current: 0,
-    total: missingPages.length,
+    total: initialMissingPages.length,
     percent: 2,
   });
 
@@ -687,7 +735,7 @@ export async function ensureAssetsExtracted(
     try {
       const workerAssets = await extractAssetsInWorker(
         pdfBuffer,
-        missingPages.map((p) => ({
+        initialMissingPages.map((p) => ({
           pageNumber: p.pageNumber,
           figureBoxes: p.figureBoxes || [],
         })),
@@ -697,9 +745,10 @@ export async function ensureAssetsExtracted(
         parsedPdf.assets = {};
       }
       for (const [id, asset] of Object.entries(workerAssets)) {
-        parsedPdf.assets[id] = asset;
+        if (isValidExtractedAsset(asset)) {
+          parsedPdf.assets[id] = asset;
+        }
       }
-      return;
     } catch (err) {
       if (!(err instanceof WorkerFallbackError)) {
         throw err;
@@ -708,12 +757,24 @@ export async function ensureAssetsExtracted(
     }
   }
 
+  const remainingMissingPages = findMissingPages();
+  if (remainingMissingPages.length === 0) {
+    return;
+  }
+
+  console.warn(
+    `[PdfExport] Trích xuất bổ sung ${remainingMissingPages.length} trang ảnh trên luồng chính để đảm bảo không sót ảnh.`
+  );
+
   const bytesCopy = new Uint8Array(pdfBuffer.slice(0));
-  const loadingTask = pdfjsLib.getDocument({ data: bytesCopy });
+  const loadingTask = pdfjsLib.getDocument({
+    data: bytesCopy,
+    isImageDecoderSupported: false,
+  } as any);
   try {
     const pdfDoc = await loadingTask.promise;
-    for (let i = 0; i < missingPages.length; i++) {
-      const p = missingPages[i];
+    for (let i = 0; i < remainingMissingPages.length; i++) {
+      const p = remainingMissingPages[i];
       try {
         const pageProxy = await pdfDoc.getPage(p.pageNumber);
         const baseVp = pageProxy.getViewport({ scale: 1 });
@@ -728,17 +789,19 @@ export async function ensureAssetsExtracted(
           parsedPdf.assets = {};
         }
         for (const c of cropped) {
-          parsedPdf.assets[c.asset.assetId] = c.asset;
+          if (isValidExtractedAsset(c.asset)) {
+            parsedPdf.assets[c.asset.assetId] = c.asset;
+          }
         }
       } catch (err) {
         console.warn(`[PdfExport] Bỏ qua trích xuất ảnh trang ${p.pageNumber}:`, err);
       }
 
-      const pct = 2 + Math.round(((i + 1) / missingPages.length) * 10);
+      const pct = 2 + Math.round(((i + 1) / remainingMissingPages.length) * 10);
       onProgress?.({
-        stage: `Đang trích xuất hình ảnh (${i + 1}/${missingPages.length})...`,
+        stage: `Đang trích xuất hình ảnh (${i + 1}/${remainingMissingPages.length})...`,
         current: i + 1,
-        total: missingPages.length,
+        total: remainingMissingPages.length,
         percent: pct,
       });
       await yieldToEventLoopFast(true);
@@ -1067,16 +1130,8 @@ const mainThreadExportAdapter: PdfExportRuntimeAdapter = {
     canvas.height = height;
     return canvas as unknown as PdfExportCanvasLike;
   },
-  canvasToJpegBlob: (canvas: PdfExportCanvasLike, quality: number): Promise<Blob> => {
-    const htmlCanvas = canvas as unknown as HTMLCanvasElement;
-    return new Promise<Blob>((resolve, reject) => {
-      htmlCanvas.toBlob(
-        (b) => (b ? resolve(b) : reject(new Error('Không xuất được ảnh từ canvas.'))),
-        'image/jpeg',
-        quality
-      );
-    });
-  },
+  canvasToJpegBlob: (canvas: PdfExportCanvasLike, quality: number): Promise<Blob> =>
+    canvasToJpegBlobSafe(canvas as unknown as HTMLCanvasElement, quality),
   decodeAssetToDrawable: decodeAssetOnMainThread,
   yieldPage: () => yieldToEventLoopFast(true),
   isWorker: false,

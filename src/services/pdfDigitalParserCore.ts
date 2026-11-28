@@ -9,7 +9,7 @@ import {
   PdfPreParsedBlock,
 } from '../types';
 
-export const DIGITAL_PDF_PARSER_VERSION = 3;
+export const DIGITAL_PDF_PARSER_VERSION = 4;
 
 /**
  * Cơ chế nhường luồng thực sự (dùng scheduler.yield() hoặc setTimeout(0/16))
@@ -481,18 +481,12 @@ export async function cropFiguresFromPage(
     Math.max(1, Math.round(renderViewport.height))
   );
 
-  const ctx = pageCanvas.getContext('2d');
-  if (!ctx) return [];
-
   const extracted: CroppedFigureEntry[] = [];
   try {
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
-
     await page.render({
       canvas: pageCanvas as unknown as HTMLCanvasElement,
-      canvasContext: ctx as unknown as CanvasRenderingContext2D,
       viewport: renderViewport,
+      background: '#ffffff',
       annotationMode: 0,
       intent: 'print', // Bắt buộc intent: 'print' để tắt useRequestAnimationFrame, tránh bị treo trên Android WebView khi không chạm màn hình
     } as any).promise;
@@ -511,12 +505,33 @@ export async function cropFiguresFromPage(
       if (cw < 48 || ch < 36) continue;
 
       const cropCanvas = adapter.createCanvas(cw, ch);
-      const cropCtx = cropCanvas.getContext('2d');
-      if (cropCtx) {
+      const cropCtx =
+        cropCanvas.getContext('2d', { alpha: false, willReadFrequently: true }) ||
+        cropCanvas.getContext('2d');
+      if (!cropCtx) {
+        cropCanvas.width = 0;
+        cropCanvas.height = 0;
+        throw new Error('Không khởi tạo được canvas 2D để cắt ảnh PDF.');
+      }
+
+      try {
         cropCtx.fillStyle = '#ffffff';
         cropCtx.fillRect(0, 0, cw, ch);
-        cropCtx.drawImage(pageCanvas as unknown as CanvasImageSource, sx, sy, cw, ch, 0, 0, cw, ch);
+        cropCtx.drawImage(
+          pageCanvas as unknown as CanvasImageSource,
+          sx,
+          sy,
+          cw,
+          ch,
+          0,
+          0,
+          cw,
+          ch
+        );
         const bytes = await adapter.canvasToJpegBytes(cropCanvas, 0.86);
+        if (!bytes || bytes.byteLength < 32) {
+          throw new Error(`Dữ liệu ảnh cắt trang ${pageNumber} bị rỗng.`);
+        }
         const assetId = b.assetId || `p${pageNumber}_fig${i + 1}`;
         extracted.push({
           asset: {
@@ -535,9 +550,10 @@ export async function cropFiguresFromPage(
             area: Math.max(0, b.maxX - b.minX) * Math.max(0, b.maxY - b.minY),
           },
         });
+      } finally {
+        cropCanvas.width = 0;
+        cropCanvas.height = 0;
       }
-      cropCanvas.width = 0;
-      cropCanvas.height = 0;
     }
   } finally {
     pageCanvas.width = 0;
@@ -1065,6 +1081,8 @@ export async function parseDigitalPdfCore(
     const rawPages: RawPageExtract[] = [];
     const assets: Record<string, PdfExtractedAsset> = {};
     const fontSizeFreq = new Map<number, number>();
+    let figureDetectErrors = 0;
+    let totalDetectedBoxes = 0;
 
     for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
       if (stopSignal?.current) {
@@ -1123,6 +1141,7 @@ export async function parseDigitalPdfCore(
 
       try {
         const detectedBoxes = await detectPageFigureBoxes(page, viewport, hasTables);
+        totalDetectedBoxes += detectedBoxes.length;
         for (let fIdx = 0; fIdx < detectedBoxes.length; fIdx++) {
           const b = detectedBoxes[fIdx];
           const assetId = `p${pageNumber}_fig${fIdx + 1}`;
@@ -1144,7 +1163,15 @@ export async function parseDigitalPdfCore(
           totalFigureArea += area;
         }
       } catch (figErr) {
+        figureDetectErrors += 1;
         console.warn(`[PdfParser] Bỏ qua dò khung hình trang ${pageNumber}:`, figErr);
+        if (
+          adapter.isWorker &&
+          totalDetectedBoxes === 0 &&
+          (pageNumber <= 5 || figureDetectErrors >= 3)
+        ) {
+          throw new Error('Worker gặp lỗi dò khung hình ảnh PDF, chuyển về luồng chính.');
+        }
       }
 
       const pageArea = Math.max(1, viewport.width * viewport.height);

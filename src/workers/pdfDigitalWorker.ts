@@ -69,9 +69,12 @@ class WorkerCanvasFactory {
     const w = normalizeCanvasDimension(width);
     const h = normalizeCanvasDimension(height);
     const canvas = new OffscreenCanvas(w, h);
+    const context =
+      canvas.getContext('2d', { alpha: false, willReadFrequently: true }) ||
+      canvas.getContext('2d');
     return {
       canvas,
-      context: canvas.getContext('2d', { willReadFrequently: true }),
+      context,
     };
   }
 
@@ -146,6 +149,9 @@ const workerAdapter: PdfParserRuntimeAdapter = {
   canvasToJpegBytes: async (canvas: PdfCanvasLike, quality = 0.86): Promise<Uint8Array> => {
     const offscreen = canvas as unknown as OffscreenCanvas;
     const blob = await offscreen.convertToBlob({ type: 'image/jpeg', quality });
+    if (!blob || blob.size < 32) {
+      throw new Error('OffscreenCanvas convertToBlob trả về ảnh rỗng.');
+    }
     return new Uint8Array(await blob.arrayBuffer());
   },
   documentOptions: {
@@ -153,6 +159,7 @@ const workerAdapter: PdfParserRuntimeAdapter = {
     FilterFactory: WorkerFilterFactory,
     disableFontFace: true,
     useWorkerFetch: false,
+    isImageDecoderSupported: false,
   },
   pageYieldMs: 0,
   isWorker: true,
@@ -244,6 +251,8 @@ workerScope.onmessage = async (event: MessageEvent<PdfWorkerRequest>) => {
       const pdfDoc = await loadingTask.promise;
       const assets: Record<string, PdfExtractedAsset> = {};
       const total = payload.pages.length;
+      let failedPages = 0;
+      let lastPageError = '';
 
       for (let i = 0; i < total; i++) {
         if (stopSignal.current) {
@@ -264,6 +273,8 @@ workerScope.onmessage = async (event: MessageEvent<PdfWorkerRequest>) => {
             assets[c.asset.assetId] = c.asset;
           }
         } catch (err) {
+          failedPages += 1;
+          lastPageError = err instanceof Error ? err.message : String(err || '');
           console.warn(`[PdfWorker] Bỏ qua trích xuất ảnh trang ${p.pageNumber}:`, err);
         }
 
@@ -274,6 +285,12 @@ workerScope.onmessage = async (event: MessageEvent<PdfWorkerRequest>) => {
           totalPages: total,
         });
         await yieldToEventLoopFast(false);
+      }
+
+      if (failedPages > 0 && Object.keys(assets).length === 0) {
+        throw new Error(
+          lastPageError || 'Worker không trích xuất được hình ảnh PDF.'
+        );
       }
 
       const seen = new Set<ArrayBuffer>();

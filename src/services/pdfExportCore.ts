@@ -594,9 +594,16 @@ export async function exportTranslatedPdfCore({
         // Vẽ ảnh nhúng nếu có và giải phóng ImageBitmap ngay sau khi vẽ
         for (const match of imgTokens) {
           const asset = parsedPdf.assets?.[match[1]];
-          if (!asset) continue;
+          if (!asset || !(asset.data instanceof Uint8Array) || asset.data.byteLength < 32) {
+            continue;
+          }
           const drawable = await adapter.decodeAssetToDrawable(asset);
-          if (!drawable) continue;
+          if (!drawable) {
+            if (adapter.isWorker) {
+              throw new Error('Worker không giải mã được ảnh nhúng, chuyển về luồng chính.');
+            }
+            continue;
+          }
 
           try {
             const maxImgW = CONTENT_W;
@@ -807,6 +814,9 @@ export async function exportTranslatedDigitalPdfCore({
 
   const embeddedImages = new Map<string, PDFImage | null>();
   const embedAssetImage = async (asset: PdfExtractedAsset): Promise<PDFImage | null> => {
+    if (!asset?.data || !(asset.data instanceof Uint8Array) || asset.data.byteLength < 32) {
+      return null;
+    }
     if (embeddedImages.has(asset.assetId)) {
       return embeddedImages.get(asset.assetId) || null;
     }
@@ -829,6 +839,9 @@ export async function exportTranslatedDigitalPdfCore({
       }
       if (!img) {
         const drawable = await adapter.decodeAssetToDrawable(asset);
+        if (!drawable && adapter.isWorker) {
+          throw new Error('Worker không giải mã được ảnh nhúng, chuyển về luồng chính.');
+        }
         if (drawable) {
           const tmpCanvas = adapter.createCanvas(
             Math.max(1, drawable.width),
@@ -851,7 +864,14 @@ export async function exportTranslatedDigitalPdfCore({
           }
         }
       }
-    } catch {
+    } catch (err) {
+      if (
+        adapter.isWorker &&
+        err instanceof Error &&
+        err.message.includes('chuyển về luồng chính')
+      ) {
+        throw err;
+      }
       img = null;
     }
 
