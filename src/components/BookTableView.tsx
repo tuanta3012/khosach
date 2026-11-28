@@ -149,12 +149,12 @@ export const BookTableView: React.FC<BookTableViewProps> = React.memo(({
 
     const getBookTime = (b: BookRecord) => {
       if (typeof b.created_at === "number" && b.created_at > 0) return b.created_at;
-      if (typeof b.updated_at === "number" && b.updated_at > 0) return b.updated_at;
-      if (b.id && b.id.startsWith("book_")) {
+      if (b.id && (b.id.startsWith("book_") || b.id.startsWith("imp_"))) {
         const parts = b.id.split("_");
         const num = Number(parts[1]);
         if (!isNaN(num) && num > 0) return num;
       }
+      if (typeof b.updated_at === "number" && b.updated_at > 0) return b.updated_at;
       return 0;
     };
 

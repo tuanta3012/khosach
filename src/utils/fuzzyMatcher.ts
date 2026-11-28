@@ -799,6 +799,13 @@ export function deduplicateBookList(books: BookRecord[]): { cleanBooks: BookReco
       const existing = result[matchIndex];
       // Giữ lại bản ghi đầy đủ hơn
       const prefersNew = calculateBookRichness(book) > calculateBookRichness(existing);
+      const existingCreated = typeof existing.created_at === 'number' && existing.created_at > 0 ? existing.created_at : 0;
+      const incomingCreated = typeof book.created_at === 'number' && book.created_at > 0 ? book.created_at : 0;
+      const preservedCreatedAt =
+        existingCreated && incomingCreated
+          ? Math.min(existingCreated, incomingCreated)
+          : existingCreated || incomingCreated;
+
       result[matchIndex] = {
         ...existing,
         title: prefersNew ? book.title : existing.title,
@@ -807,6 +814,7 @@ export function deduplicateBookList(books: BookRecord[]): { cleanBooks: BookReco
         category: (book.category && book.category !== 'Chung') ? book.category : existing.category,
         is_ai_normalized: existing.is_ai_normalized || book.is_ai_normalized,
         cover_url: prefersNew ? (book.cover_url || existing.cover_url) : (existing.cover_url || book.cover_url),
+        ...(preservedCreatedAt > 0 ? { created_at: preservedCreatedAt } : {}),
         updated_at: Date.now(),
       };
     }

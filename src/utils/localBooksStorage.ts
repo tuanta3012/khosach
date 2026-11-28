@@ -412,14 +412,34 @@ export function setMasterRestoreRequired(required: boolean): void {
   } catch {}
 }
 
+export function parseCreatedTimestampFromBookId(bookId?: string): number {
+  if (!bookId || typeof bookId !== 'string') return 0;
+  const match = bookId.match(/^(?:book|imp)_(\d{12,15})(?:_|$)/);
+  if (!match) return 0;
+  const num = Number(match[1]);
+  return Number.isFinite(num) && num > 0 ? num : 0;
+}
+
 /**
  * Làm sạch và chuẩn hóa đối tượng sách trước khi lưu
  */
 export function sanitizeBookRecord(book: BookRecord): BookRecord {
+  const now = Date.now();
   const cleanCover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
   const cleanSummary = typeof book.summary === 'string' ? book.summary.trim() : '';
+  const idStr = String(book.id || `book_${now}_${Math.random().toString(36).substring(2, 7)}`);
+  const rawCreated = Number(book.created_at);
+  const rawUpdated = Number(book.updated_at);
+  const resolvedCreatedAt =
+    (Number.isFinite(rawCreated) && rawCreated > 0 ? rawCreated : 0) ||
+    parseCreatedTimestampFromBookId(idStr) ||
+    (Number.isFinite(rawUpdated) && rawUpdated > 0 ? rawUpdated : 0) ||
+    now;
+  const resolvedUpdatedAt =
+    Number.isFinite(rawUpdated) && rawUpdated > 0 ? rawUpdated : resolvedCreatedAt;
+
   return {
-    id: String(book.id || `book_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`),
+    id: idStr,
     title: String(book.title || '').trim(),
     author: String(book.author || 'Chưa rõ').trim(),
     category: String(book.category || 'Chung').trim(),
@@ -427,8 +447,8 @@ export function sanitizeBookRecord(book: BookRecord): BookRecord {
     is_ai_normalized: !!book.is_ai_normalized,
     ...(cleanSummary ? { summary: cleanSummary } : {}),
     ...(cleanCover ? { cover_url: cleanCover } : {}),
-    created_at: Number(book.created_at) || Date.now(),
-    updated_at: Number(book.updated_at) || Date.now(),
+    created_at: resolvedCreatedAt,
+    updated_at: resolvedUpdatedAt,
   };
 }
 
@@ -484,10 +504,18 @@ export function saveAllLocalBooks(books: BookRecord[]): void {
 export function upsertLocalBook(book: BookRecord): BookRecord[] {
   const current = loadLocalBooks();
   const index = current.findIndex((b) => b.id === book.id);
+  const existing = index !== -1 ? current[index] : undefined;
   let updated: BookRecord[];
-  
+
+  const now = Date.now();
   const cleanCover = typeof book.cover_url === 'string' ? book.cover_url.trim() : '';
   const cleanSummary = typeof book.summary === 'string' ? book.summary.trim() : '';
+  const preservedCreatedAt =
+    (typeof existing?.created_at === 'number' && existing.created_at > 0 ? existing.created_at : 0) ||
+    (typeof book.created_at === 'number' && book.created_at > 0 ? book.created_at : 0) ||
+    parseCreatedTimestampFromBookId(book.id) ||
+    now;
+
   const cleanBook: BookRecord = {
     ...book,
     title: String(book.title || '').trim(),
@@ -496,8 +524,8 @@ export function upsertLocalBook(book: BookRecord): BookRecord[] {
     publisher: String(book.publisher || '').trim(),
     ...(cleanSummary ? { summary: cleanSummary } : { summary: undefined }),
     ...(cleanCover ? { cover_url: cleanCover } : { cover_url: undefined }),
-    updated_at: Date.now(),
-    created_at: book.created_at || Date.now(),
+    updated_at: now,
+    created_at: preservedCreatedAt,
   };
 
   if (index !== -1) {
@@ -542,12 +570,20 @@ export function batchDeleteLocalBooks(idsToDelete: string[]): BookRecord[] {
 export function batchUpsertLocalBooks(newOrUpdatedBooks: BookRecord[]): BookRecord[] {
   const current = loadLocalBooks();
   const map = new Map<string, BookRecord>();
-  
+  const now = Date.now();
+
   current.forEach((b) => map.set(b.id, b));
   newOrUpdatedBooks.forEach((b) => {
-    const isNew = !map.has(b.id);
+    const existing = map.get(b.id);
+    const isNew = !existing;
     const cleanCover = typeof b.cover_url === 'string' ? b.cover_url.trim() : '';
     const cleanSummary = typeof b.summary === 'string' ? b.summary.trim() : '';
+    const preservedCreatedAt =
+      (typeof existing?.created_at === 'number' && existing.created_at > 0 ? existing.created_at : 0) ||
+      (typeof b.created_at === 'number' && b.created_at > 0 ? b.created_at : 0) ||
+      parseCreatedTimestampFromBookId(b.id) ||
+      now;
+
     const item: BookRecord = {
       ...b,
       title: String(b.title || '').trim(),
@@ -556,8 +592,8 @@ export function batchUpsertLocalBooks(newOrUpdatedBooks: BookRecord[]): BookReco
       publisher: String(b.publisher || '').trim(),
       ...(cleanSummary ? { summary: cleanSummary } : { summary: undefined }),
       ...(cleanCover ? { cover_url: cleanCover } : { cover_url: undefined }),
-      updated_at: b.updated_at || Date.now(),
-      created_at: b.created_at || Date.now(),
+      updated_at: b.updated_at || now,
+      created_at: preservedCreatedAt,
     };
     map.set(b.id, item);
     enqueueBookMutation(isNew ? 'CREATE' : 'UPDATE', item.id, item);

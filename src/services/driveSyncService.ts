@@ -18,6 +18,7 @@ import {
   setMasterRestoreRequired,
   getLastDriveSyncTimestamp,
   setLastDriveSyncTimestamp,
+  parseCreatedTimestampFromBookId,
 } from '../utils/localBooksStorage';
 import { log } from '../utils/logger';
 import {
@@ -720,28 +721,36 @@ async function ensureSpreadsheetTabs(accessToken: string, spreadsheetId: string,
 }
 
 /**
- * Hàm phân tích ngày tháng tiếng Việt chuẩn (Ví dụ: "22:01:36 29/9/2026")
+ * Hàm phân tích ngày tháng tiếng Việt chuẩn (Ví dụ: "22:01:36 29/9/2026" hoặc "22:01:36.123 29/9/2026")
  */
 function parseVietnameseDate(dateStr: string): number {
   if (!dateStr) return Date.now();
+  const trimmed = dateStr.trim();
+  if (/^\d{10,15}$/.test(trimmed)) {
+    const num = Number(trimmed);
+    if (!isNaN(num) && num > 0) return num;
+  }
   try {
-    const parts = dateStr.trim().split(' ');
+    const parts = trimmed.split(' ');
     if (parts.length === 2) {
-      const timePart = parts[0]; // "22:01:36"
+      const timePart = parts[0]; // "22:01:36" hoặc "22:01:36.123"
       const datePart = parts[1]; // "29/9/2026"
       const timeSubparts = timePart.split(':');
       const dateSubparts = datePart.split('/');
       if (timeSubparts.length >= 2 && dateSubparts.length === 3) {
         const hours = parseInt(timeSubparts[0], 10);
         const minutes = parseInt(timeSubparts[1], 10);
-        const seconds = parseInt(timeSubparts[2] || '0', 10);
+        const secParts = (timeSubparts[2] || '0').split('.');
+        const seconds = parseInt(secParts[0] || '0', 10);
+        const ms = secParts[1] ? parseInt(secParts[1].padEnd(3, '0').slice(0, 3), 10) : 0;
         const day = parseInt(dateSubparts[0], 10);
         const month = parseInt(dateSubparts[1], 10) - 1; // 0-indexed month
         const year = parseInt(dateSubparts[2], 10);
-        return new Date(year, month, day, hours, minutes, seconds).getTime();
+        const ts = new Date(year, month, day, hours, minutes, seconds, ms).getTime();
+        if (!isNaN(ts)) return ts;
       }
     }
-    const parsed = Date.parse(dateStr);
+    const parsed = Date.parse(trimmed);
     if (!isNaN(parsed)) return parsed;
   } catch {}
   return Date.now();
@@ -753,6 +762,7 @@ function parseVietnameseDate(dateStr: string): number {
 function formatVietnameseDate(timestamp: number): string {
   try {
     const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return '';
     const hours = String(d.getHours()).padStart(2, '0');
     const minutes = String(d.getMinutes()).padStart(2, '0');
     const seconds = String(d.getSeconds()).padStart(2, '0');
@@ -760,6 +770,26 @@ function formatVietnameseDate(timestamp: number): string {
     const month = d.getMonth() + 1;
     const year = d.getFullYear();
     return `${hours}:${minutes}:${seconds} ${day}/${month}/${year}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Định dạng Timestamp kèm mili-giây cho cột Ngày Tạo để giữ nguyên thứ tự chính xác khi thêm nhiều sách liên tiếp
+ */
+function formatVietnameseDateWithMs(timestamp: number): string {
+  try {
+    const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return '';
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    const ms = String(d.getMilliseconds()).padStart(3, '0');
+    const day = d.getDate();
+    const month = d.getMonth() + 1;
+    const year = d.getFullYear();
+    return `${hours}:${minutes}:${seconds}.${ms} ${day}/${month}/${year}`;
   } catch {
     return '';
   }
@@ -1351,15 +1381,15 @@ async function initializeSheetHeaders(
 
     // 1. Tab Khosach: Kiểm tra xem hàng tiêu đề dòng 1 đã có chưa
     try {
-      const headerCheck = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1:I1`, {
+      const headerCheck = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1:J1`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const headerData = headerCheck.ok ? await headerCheck.json() : null;
       if (!headerData?.values || headerData.values.length === 0 || !headerData.values[0] || headerData.values[0].length === 0) {
         const khosachHeader = [
-          ['ID', 'Tên Sách', 'Tác Giả', 'Thể Loại', 'Nhà Xuất Bản', 'Ngày Cập Nhật', 'Đã AI', 'Ảnh Bìa', 'Tóm Tắt']
+          ['ID', 'Tên Sách', 'Tác Giả', 'Thể Loại', 'Nhà Xuất Bản', 'Ngày Cập Nhật', 'Đã AI', 'Ảnh Bìa', 'Tóm Tắt', 'Ngày Tạo']
         ];
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1:I1?valueInputOption=USER_ENTERED`, {
+        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A1:J1?valueInputOption=USER_ENTERED`, {
           method: 'PUT',
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -1368,7 +1398,7 @@ async function initializeSheetHeaders(
           body: JSON.stringify({ values: khosachHeader }),
         });
       }
-      // Tự động áp dụng ẩn các cột kỹ thuật (ID, Ngày Cập Nhật, Đã AI) và chỉ hiển thị 4 cột người dùng cần xem
+      // Tự động áp dụng ẩn các cột kỹ thuật (ID, Ngày Cập Nhật, Đã AI, Ảnh Bìa, Tóm Tắt, Ngày Tạo) và chỉ hiển thị 4 cột người dùng cần xem
       await applySheetColumnVisibility(accessToken, spreadsheetId).catch(() => {});
     } catch {}
 
@@ -1447,8 +1477,8 @@ export async function applySheetColumnVisibility(
     }
 
     const khosachSheetId = khosachSheet.properties.sheetId;
-    const totalCols = khosachSheet.properties?.gridProperties?.columnCount || 9;
-    const safeEndIndex = Math.max(9, totalCols);
+    const totalCols = khosachSheet.properties?.gridProperties?.columnCount || 10;
+    const safeEndIndex = Math.max(10, totalCols);
 
     const requests: any[] = [
       // 1. Ẩn cột A (ID) - index 0 đến 1
@@ -1635,7 +1665,7 @@ export async function fetchBooksFromGoogleSheet(
   accessToken: string,
   spreadsheetId: string
 ): Promise<BookRecord[]> {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A:I`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${KHOSACH_SHEET_TITLE}!A:J`;
 
   const resp = await fetch(url, {
     cache: 'no-store',
@@ -1663,7 +1693,18 @@ export async function fetchBooksFromGoogleSheet(
   let authorIdx = headerRow.findIndex((h) => h === 'tác giả' || h === 'tac gia' || h === 'author');
   let catIdx = headerRow.findIndex((h) => h === 'thể loại' || h === 'the loai' || h === 'category');
   let pubIdx = headerRow.findIndex((h) => h === 'nhà xuất bản' || h === 'nha xuat ban' || h === 'nxb' || h === 'publisher');
-  let dateIdx = headerRow.findIndex((h) => h.includes('ngày') || h.includes('ngay') || h.includes('date') || h.includes('updated'));
+  const createdIdx = headerRow.findIndex(
+    (h) => h === 'ngày tạo' || h === 'ngay tao' || h === 'created_at' || h === 'created at' || h === 'created'
+  );
+  let dateIdx = headerRow.findIndex(
+    (h) =>
+      h !== 'ngày tạo' &&
+      h !== 'ngay tao' &&
+      h !== 'created_at' &&
+      h !== 'created at' &&
+      h !== 'created' &&
+      (h.includes('ngày') || h.includes('ngay') || h.includes('date') || h.includes('updated'))
+  );
   let aiIdx = headerRow.findIndex((h) => h.includes('ai'));
   let coverIdx = headerRow.findIndex((h) => h.includes('bìa') || h.includes('bia') || h.includes('cover') || h.includes('image') || h.includes('url'));
   let summaryIdx = headerRow.findIndex((h) => h.includes('tóm') || h.includes('tom') || h.includes('summary') || h.includes('mô tả') || h.includes('giới thiệu'));
@@ -1708,6 +1749,11 @@ export async function fetchBooksFromGoogleSheet(
 
     const rawDate = dateIdx >= 0 ? String(row[dateIdx] || '').trim() : '';
     const updatedAt = rawDate ? parseVietnameseDate(rawDate) : Date.now();
+    const rawCreatedDate = createdIdx >= 0 ? String(row[createdIdx] || '').trim() : String(row[9] || '').trim();
+    const idTimestamp = parseCreatedTimestampFromBookId(bookId);
+    const createdAt = rawCreatedDate
+      ? parseVietnameseDate(rawCreatedDate)
+      : idTimestamp || updatedAt;
 
     const rawAi = aiIdx >= 0 ? String(row[aiIdx] || '').toLowerCase().trim() : '';
     const isNormalized = rawAi === 'có' || rawAi === '1' || rawAi === 'true' || rawAi === 'yes';
@@ -1724,13 +1770,16 @@ export async function fetchBooksFromGoogleSheet(
       is_ai_normalized: isNormalized,
       ...(rawCover ? { cover_url: rawCover } : {}),
       ...(rawSummary ? { summary: rawSummary } : {}),
-      created_at: updatedAt,
+      created_at: createdAt,
       updated_at: updatedAt,
     };
 
-    // Đánh dấu cờ nội bộ nếu sách được nhập từ Google Drive thiếu ID để hai chiều tự ghi lại ID
+    // Đánh dấu cờ nội bộ nếu sách được nhập từ Google Drive thiếu ID hoặc thiếu Ngày Tạo để tự bổ sung lên Sheet
     if (!rawId) {
       (bookItem as any)._isMissingSheetId = true;
+    }
+    if (!rawCreatedDate) {
+      (bookItem as any)._isMissingCreatedAt = true;
     }
 
     books.push(bookItem);
@@ -1748,22 +1797,25 @@ export async function saveBooksToGoogleSheet(
   books: BookRecord[]
 ): Promise<void> {
   clearSyncCaches(spreadsheetId);
-  // Chuẩn bị mảng hàng: Cột A là ID (ẩn), Cột B:E là Tên Sách, Tác Giả, Thể Loại, NXB (hiện), Cột F:I là Ngày Cập Nhật, Đã AI, Ảnh Bìa, Tóm Tắt (ẩn)
+  // Chuẩn bị mảng hàng: Cột A là ID (ẩn), Cột B:E là Tên Sách, Tác Giả, Thể Loại, NXB (hiện), Cột F:J là Ngày Cập Nhật, Đã AI, Ảnh Bìa, Tóm Tắt, Ngày Tạo (ẩn)
   const rows = [
-    ['ID', 'Tên Sách', 'Tác Giả', 'Thể Loại', 'Nhà Xuất Bản', 'Ngày Cập Nhật', 'Đã AI', 'Ảnh Bìa', 'Tóm Tắt'],
+    ['ID', 'Tên Sách', 'Tác Giả', 'Thể Loại', 'Nhà Xuất Bản', 'Ngày Cập Nhật', 'Đã AI', 'Ảnh Bìa', 'Tóm Tắt', 'Ngày Tạo'],
     ...books.map((b) => {
       const safeCover = b.cover_url && b.cover_url.length <= 45000 ? b.cover_url.trim() : '';
       const safeSummary = b.summary && b.summary.length <= 45000 ? b.summary.trim() : '';
+      const createdTs = b.created_at || parseCreatedTimestampFromBookId(b.id) || b.updated_at || Date.now();
+      const updatedTs = b.updated_at || createdTs;
       return [
         b.id || '',
         b.title || '',
         b.author || 'Chưa rõ',
         b.category || 'Chung',
         b.publisher || '',
-        formatVietnameseDate(b.updated_at || b.created_at || Date.now()),
+        formatVietnameseDate(updatedTs),
         b.is_ai_normalized ? 'Có' : 'Chưa',
         safeCover,
         safeSummary,
+        formatVietnameseDateWithMs(createdTs),
       ];
     }),
   ];
@@ -1774,7 +1826,7 @@ export async function saveBooksToGoogleSheet(
   });
 
   // 2. Xóa vùng dữ liệu cũ trước để tránh rác
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(KHOSACH_SHEET_TITLE + '!A:I')}:clear`, {
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(KHOSACH_SHEET_TITLE + '!A:J')}:clear`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -1794,7 +1846,7 @@ export async function saveBooksToGoogleSheet(
       valueInputOption: 'USER_ENTERED',
       data: [
         {
-          range: `${KHOSACH_SHEET_TITLE}!A1:I${rows.length}`,
+          range: `${KHOSACH_SHEET_TITLE}!A1:J${rows.length}`,
           majorDimension: 'ROWS',
           values: rows,
         },
@@ -2605,6 +2657,14 @@ export async function syncBooksTwoWay(
     await syncIgnoredDuplicatePairsWithDrive(accessToken, spreadsheetId);
   } catch {}
 
+  const stripInternalSyncFlags = (book: BookRecord): BookRecord => {
+    if ((book as any)._isMissingSheetId === undefined && (book as any)._isMissingCreatedAt === undefined) {
+      return book;
+    }
+    const { _isMissingSheetId, _isMissingCreatedAt, ...cleanBook } = book as any;
+    return cleanBook as BookRecord;
+  };
+
   // 1b. KIỂM TRA CỜ PHỤC HỒI MASTER (Master Restore Protection)
   // Nếu local bị người dùng xóa trắng (clear all) hoặc cài đặt mới, kéo toàn bộ Master về máy
   if (isMasterRestoreRequired()) {
@@ -2612,7 +2672,7 @@ export async function syncBooksTwoWay(
     setMasterRestoreRequired(false);
     clearPendingBookMutations();
     return {
-      mergedBooks: remoteBooks,
+      mergedBooks: remoteBooks.map(stripInternalSyncFlags),
       cloudCount: remoteBooks.length,
       localCount: 0,
       hasChanges: true,
@@ -2623,7 +2683,7 @@ export async function syncBooksTwoWay(
   if (userRole === 'VIEWER') {
     log.info(`[DriveSync] Quyền Viewer: Cập nhật thư viện theo chuẩn Master Drive (${remoteBooks.length} cuốn).`);
     return {
-      mergedBooks: remoteBooks,
+      mergedBooks: remoteBooks.map(stripInternalSyncFlags),
       cloudCount: remoteBooks.length,
       localCount: localBooks.length,
       hasChanges: true, // Cho phép ghi đè hoàn toàn cục bộ
@@ -2644,6 +2704,26 @@ export async function syncBooksTwoWay(
   const pendingMutations = getPendingBookMutations();
   const appliedMutationIds: string[] = [];
 
+  const resolvePreservedCreatedAt = (remoteBook?: BookRecord, localBook?: BookRecord): number | undefined => {
+    const remoteHasValidCol =
+      remoteBook && !(remoteBook as any)._isMissingCreatedAt && typeof remoteBook.created_at === 'number' && remoteBook.created_at > 0;
+    if (remoteHasValidCol) {
+      return remoteBook!.created_at;
+    }
+    const localCreated =
+      typeof localBook?.created_at === 'number' && localBook.created_at > 0 ? localBook.created_at : 0;
+    const remoteCreated =
+      typeof remoteBook?.created_at === 'number' && remoteBook.created_at > 0 ? remoteBook.created_at : 0;
+    const idCreated = parseCreatedTimestampFromBookId(remoteBook?.id || localBook?.id);
+    if (idCreated > 0) {
+      return localCreated > 0 ? Math.min(localCreated, idCreated) : idCreated;
+    }
+    if (localCreated > 0 && remoteCreated > 0) {
+      return Math.min(localCreated, remoteCreated);
+    }
+    return localCreated || remoteCreated || undefined;
+  };
+
   // 2a. ÁP DỤNG HÀNG ĐỢI BIẾN ĐỘNG (MUTATION REPLAY) NẾU CÓ
   if (pendingMutations.length > 0) {
     log.info(`[DriveSync] Đang phát lại ${pendingMutations.length} thao tác ngoại tuyến (Mutations)...`);
@@ -2657,9 +2737,11 @@ export async function syncBooksTwoWay(
         // Chỉ áp dụng biến động cập nhật nếu cuốn sách thực sự đang tồn tại trên Google Drive
         if (mutation.book && mergedMap.has(mutation.bookId)) {
           const remoteExisting = mergedMap.get(mutation.bookId)!;
+          const preservedCreatedAt = resolvePreservedCreatedAt(remoteExisting, mutation.book);
           mergedMap.set(mutation.bookId, {
             ...remoteExisting,
             ...mutation.book,
+            ...(preservedCreatedAt ? { created_at: preservedCreatedAt } : {}),
             ...(mutation.book.cover_url === undefined && remoteExisting.cover_url
               ? { cover_url: remoteExisting.cover_url }
               : {}),
@@ -2769,10 +2851,13 @@ export async function syncBooksTwoWay(
         (lBook.cover_url || '').trim() !== (existing.cover_url || '').trim() ||
         !!lBook.is_ai_normalized !== !!existing.is_ai_normalized;
 
+      const preservedCreatedAt = resolvePreservedCreatedAt(existing, lBook);
+
       if (hasUpdateMutation) {
         mergedMap.set(lBook.id, {
           ...existing,
           ...lBook,
+          ...(preservedCreatedAt ? { created_at: preservedCreatedAt } : {}),
           updated_at: lBook.updated_at || Date.now(),
         });
         localChangesMade = true;
@@ -2783,6 +2868,7 @@ export async function syncBooksTwoWay(
           mergedMap.set(lBook.id, {
             ...existing,
             ...lBook,
+            ...(preservedCreatedAt ? { created_at: preservedCreatedAt } : {}),
             cover_url: lBook.cover_url || existing.cover_url,
             summary: lBook.summary || existing.summary,
             updated_at: lTime,
@@ -2791,16 +2877,27 @@ export async function syncBooksTwoWay(
         } else if ((!existing.cover_url && lBook.cover_url) || (!existing.summary && lBook.summary)) {
           mergedMap.set(lBook.id, {
             ...existing,
+            ...(preservedCreatedAt ? { created_at: preservedCreatedAt } : {}),
             cover_url: lBook.cover_url || existing.cover_url,
             summary: lBook.summary || existing.summary,
           });
           localChangesMade = true;
+        } else if ((existing as any)._isMissingCreatedAt && preservedCreatedAt) {
+          mergedMap.set(lBook.id, {
+            ...existing,
+            created_at: preservedCreatedAt,
+          });
         }
+      } else if ((existing as any)._isMissingCreatedAt && preservedCreatedAt) {
+        mergedMap.set(lBook.id, {
+          ...existing,
+          created_at: preservedCreatedAt,
+        });
       }
     }
   }
 
-  const finalMergedList = Array.from(mergedMap.values());
+  const finalMergedList = Array.from(mergedMap.values()).map(stripInternalSyncFlags);
 
   const hasActualContentDifference = (listA: BookRecord[], listB: BookRecord[]): boolean => {
     if (listA.length !== listB.length) return true;
@@ -2824,7 +2921,12 @@ export async function syncBooksTwoWay(
   };
 
   const hasDriveBooksMissingId = remoteBooks.some((b: any) => b._isMissingSheetId);
-  const isContentChanged = localChangesMade || hasActualContentDifference(finalMergedList, remoteBooks) || hasDriveBooksMissingId;
+  const hasDriveBooksMissingCreatedAt = remoteBooks.some((b: any) => b._isMissingCreatedAt);
+  const isContentChanged =
+    localChangesMade ||
+    hasActualContentDifference(finalMergedList, remoteBooks) ||
+    hasDriveBooksMissingId ||
+    hasDriveBooksMissingCreatedAt;
 
   // 3. Nếu phát sinh thay đổi thực sự, ghi đè cập nhật lại lên Master Database trên Google Drive
   if (isContentChanged) {

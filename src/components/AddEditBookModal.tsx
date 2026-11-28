@@ -210,7 +210,13 @@ export const AddEditBookModal: React.FC<AddEditBookModalProps> = ({
         ...(cleanSummary ? { summary: cleanSummary } : {}),
         ...(cleanCover ? { cover_url: cleanCover } : {}),
         is_ai_normalized: isAiNormalized || Boolean(initialBook?.is_ai_normalized),
-        created_at: initialBook?.created_at || now,
+        created_at:
+          initialBook?.created_at ||
+          (() => {
+            const match = initialBook?.id?.match(/^(?:book|imp)_(\d{12,15})(?:_|$)/);
+            const num = match ? Number(match[1]) : 0;
+            return num > 0 ? num : initialBook?.updated_at || now;
+          })(),
         updated_at: now,
       };
 
